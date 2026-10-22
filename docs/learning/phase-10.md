@@ -156,7 +156,7 @@ A deliberate break of the property a criterion claims, in a throwaway worktree t
 
 The master plan says "golden-scenario test in CI". The job exists, but GitHub Actions hasn't run since PR #149 (the spending limit). The proof is the gate on the owner's machine, recorded with its commit and image digests. Writing the difference into the criterion's row, rather than into a footnote, keeps a reader from assuming a CI log exists that no one can open. The same goes for the two golden regenerations made without the owner's approval: SC2 is met by the test, with the snapshots' provenance pending the owner.
 
-**27. Why does the report list 70-odd decisions for the owner rather than just the important ones?**
+**27. Why does the report list 69 items (62 decisions) for the owner rather than just the important ones?**
 
 Because "important" is the owner's judgement, not the coordinator's. Under the standing instruction the coordinator took every decision the plans hadn't, so the work wouldn't stop. A register that lists each, with where it is recorded and a column for the owner's answer, lets him approve or reject each one; a rejection becomes an issue he marks release-blocking or not. Leaving some out would have decided for him that they didn't matter.
 

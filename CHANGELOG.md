@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### Changed
+
+- README: points to release 1.0.0 and the final report, and names the Phase 10 report as the latest (it still said Phase 9; R10-14 (12)). The quick-start block is unchanged.
+
 ## [1.0.0] - 2026-10-22
 
 The first release: everything from Phase 0 to Phase 10, the v1 scope of the master plan (`docs/project-plan.md`). The date is the sign-off date: the sign-off was decided by the coordinator under the owner's delegation of 2026-10-22, not by the owner's own review (P10-11, #286; `docs/final-report.md`, "Sign-off"); `v1.0.0` goes on the sign-off pull request's merge commit (runbook "Releasing"). By capability:

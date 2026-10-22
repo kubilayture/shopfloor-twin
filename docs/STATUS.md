@@ -8,7 +8,7 @@ Phase 10's eight exit criteria (`docs/phases/phase-10-plan.md`, "Exit criteria")
 
 - **1, fresh clone:** `pnpm test:fresh-clone` and the README's quick-start block in place (#277); `FRESH-CLONE-OK` on the PR's commits, cached and with `FRESH_CLONE_NO_CACHE=1`, not yet of record (the closing run must be on a commit in `origin/main`).
 - **2, SC2 to SC5:** the suites exist and passed at the Phase 9 close; their records on the candidate and the falsifiability probes come with P10-10.
-- **3, SC6:** not met, and not claimable by Claude: the owner's sign-off of Phases 4–10 (P10-11, #286).
+- **3, SC6:** not met, and not claimable by Claude: the owner's sign-off of Phases 4–10 (and Phases 2–3 to confirm, O-3) (P10-11, #286).
 - **4, seeds:** every `pnpm verify` prints one seed per fast-check workspace (#276); the three uncached runs of record come with P10-10.
 - **5, documentation:** the API references, glossary and documentation index (#279), README, runbook and STATUS (#278), the architecture views and `scripts/check-architecture.ts` (#280) done.
 - **6, demo:** `pnpm demo` passed twice in a row (#281); the recording, screenshots and captions in `docs/demo/` within the size limits, the video 6 min 35.0 s against the plan's 6 minutes (#282, a coordinator decision below); the closing gate's `pnpm demo` and the owner's approval of the recording to come.
@@ -32,7 +32,7 @@ Since the Phase 9 close (#246, PR #274, `d589ef7`, tag `phase-09`). Each entry i
 
 ## In progress
 
-- #283 (P10-08, branch `docs/283-final-report`): `docs/final-report.md` (summary and goals, phase history, SC1–SC6 with their evidence fields for P10-10, the closing gate's table, architecture, metrics, deviations, known limits, after v1.0, the register of 66 items awaiting the owner, lessons, the sign-off table) and ADR-0041 (no Sparkplug B in v1.x; a bridge beside the UNS if a consumer needs one; awaiting the owner's review).
+- #283 (P10-08, branch `docs/283-final-report`): `docs/final-report.md` (summary and goals, phase history, SC1–SC6 with their evidence fields for P10-10, the closing gate's table, architecture, metrics, deviations, known limits, after v1.0, the register of 69 items awaiting the owner, lessons, the sign-off table) and ADR-0041 (no Sparkplug B in v1.x; a bridge beside the UNS if a consumer needs one; awaiting the owner's review).
 
 ## Next up
 
@@ -56,7 +56,7 @@ None of these is claimed as met. `v1.0.0` is tagged only after the owner's sign-
   - the login-ceiling accepted risk: two attacker addresses at their 5/s caps fill the shared ceiling and a fresh-address login then gets through about 15–37 % of the time (ADR-0039 "Login throttling", #264 round 3);
   - every MQTT user bound to its client id, reversing round 1 finding 20 (ADR-0039 MQTT); `/scenario/recorded` kept off the console (ADR-0037); `notBefore` in the head time (ADR-0036 amendment); each golden's open order asserted open, not compared, in criterion 1 (PR #252);
   - the residual security risks listed apart in `docs/security-review.md`.
-- **Answer the register of decisions awaiting the owner** in `docs/final-report.md` ("Register of decisions awaiting the owner": 66 items, Phases 4–10, each with a link and a column for the answer); P10-11 asks for it. It also asks the owner to confirm Phases 2 and 3 (O-3): the Phase 10 plan counts them as signed off, their reports say Claude closed them without the owner's review. The Phase 10 decisions in it:
+- **Answer the register of decisions awaiting the owner** in `docs/final-report.md` ("Register of decisions awaiting the owner": 69 items, Phases 2–10, each with a link and a column for the answer); P10-11 asks for it. It also asks the owner to confirm Phases 2 and 3 (O-3): the Phase 10 plan counts them as signed off, their reports say Claude closed them without the owner's review; to confirm or move the tags `phase-02` to `phase-09`, which the coordinator set (O-2); and to approve the plans the coordinator approved under the standing instruction (O-4). The Phase 10 decisions in it:
   - the plan's decisions marked † (`docs/phases/phase-10-plan.md`, "Open decisions, decided here"): SC1's "one command" as a one-time init and `docker compose up -d --wait` in one command line, a deviation from the letter of section 1 ("`docker compose up` on a fresh clone"); SC2 proved by the local gate, not CI; SC6 and the tag only after the owner's sign-off, no version tag by Claude; Phase 10 started before Phase 9's sign-off; Sparkplug B not in v1.x ([ADR-0041](adr/0041-no-sparkplug-b-in-v1x.md), accepted by the coordinator, awaiting the owner's review); ADR-0011 amended by a dated note rather than left silent;
   - ADR-0011's note of 2026-10-21 (#279): the local gate in place of green CI since PR #149, as practised;
   - #276: `pnpm verify` prints ten seed lines, the nine fast-check workspaces plus `@shopfloor/fc-seed`'s own suite (P10-10 records the nine); and the rerun after PR #287's review was `GATE_STEPS=verify` instead of a second full gate (the review's changes touched only `fc-seed`'s own tests, config and parsing);

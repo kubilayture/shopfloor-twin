@@ -284,6 +284,7 @@ Every pull request had an independent review (ADR-0011); as in earlier phases, t
 - **Flakes to watch:** the ERP mock's readiness in the smoke and the `opcua-tools` S1 step on `lkt-01` (Phase 9). Neither recurred in either closing run: the ERP mock was ready at its first attempt in every smoke (the gates' and the fresh clones'), and every S1 step passed.
 - **Known limits of v1.0:** the final report's "Known limits of v1.0" (the ADRs' limits, the carry-overs from Phases 3–8, the resilience stand-in and the month-scale follow-ups, the residual security risks).
 - **The builder warning:** the smoke's builds print "buildx Docker CLI plugin not found: falling back to the classic builder"; the images build and pass, and the gate's prune keeps the cache bounded. Not a defect; noted for the owner's machine setup.
+- **The README names Phase 9 as the latest report** ("Documentation": "the latest report: Phase 9"). It is left as it is: the README is outside `docs/`, so changing it after the candidate would make a new candidate (runbook, "Releasing"; R10-14). `docs/README.md`'s index lists the Phase 10 report and learning notes. A later code change, or the owner, can update the line.
 - **Open bugs:** none.
 
 ## Owner items, deferred to the owner

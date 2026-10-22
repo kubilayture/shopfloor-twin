@@ -59,10 +59,10 @@ Records of their time: a plan, log or report is written for its phase and not re
 | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | --------------------------------------- |
 | [`phases/phase-NN-plan.md`](phases/) (00–10)                           | Phase scope, decisions, issue list, exit criteria, review decisions                            | Phase start; scope changes in the phase |
 | [`phases/phase-NN-log.md`](phases/) (00–06, 08–10)                     | Dated entries per merged pull request: what merged, gates, deviations                          | Every merged pull request of the phase  |
-| [`phases/phase-NN-report.md`](phases/) (00–09)                         | Outcome against the exit criteria, metrics, known issues, carry-overs                          | Phase close                             |
+| [`phases/phase-NN-report.md`](phases/) (00–10)                         | Outcome against the exit criteria, metrics, known issues, carry-overs                          | Phase close                             |
 | [`phases/phase-01-realism-check.md`](phases/phase-01-realism-check.md) | The simulated golden week against factory experience, for the owner (Phase 1 exit criterion 5) | Once (Phase 1)                          |
 | [`phases/phase-09-perf-results.md`](phases/phase-09-perf-results.md)   | The measured performance targets T1–T6 (ADR-0040)                                              | A `pnpm test:perf` run of record        |
-| [`learning/phase-NN.md`](learning/) (00–09)                            | Concepts, a reading order of the code, review questions, an exercise; the owner's answers      | Phase close (owner adds answers)        |
+| [`learning/phase-NN.md`](learning/) (00–10)                            | Concepts, a reading order of the code, review questions, an exercise; the owner's answers      | Phase close (owner adds answers)        |
 | [`spikes/`](spikes/)                                                   | Spike results: OPC UA servers (#47), OPC UA alarms (#48), Modbus and the buffer (#71)          | Once, by the spike                      |
 
 ## Elsewhere in the repository

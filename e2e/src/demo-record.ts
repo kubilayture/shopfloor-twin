@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { SCENES, plantClock } from './demo-plan.ts';
+import { DEMO, SCENES, plantClock, type SceneId } from './demo-plan.ts';
 
 const MiB = 1024 * 1024;
 
@@ -26,16 +26,49 @@ export const RECORDING = {
    */
   video: { width: 960, height: 540 },
   /**
-   * How long the recording holds each scene's last view (e2e/browser/demo/demo.ts `sceneEnd`). The
-   * first recording, without it, showed scenes 6 and 8 for under a second each (their facts exist
-   * long before they open).
+   * The views each scene asserts (#303), in the order it shows them: the screens whose content the
+   * scene asserts as what it shows (docs/demo.md's scene table, "It shows"), not the forms its
+   * actions pass through. Under `pnpm demo:record` each is held once its assertions have passed
+   * (e2e/browser/demo/demo.ts `holdView`, scrolled to what it asserts where that is below the fold)
+   * and its dwell written to the record; a recording with a view missing or held under
+   * `minViewMs` is refused (`recordingProblems`). The first committed recording held only each
+   * scene's last view: scene 5 showed its OEE dashboard for under half a second, still loading,
+   * and never its order's OEE section.
+   */
+  views: {
+    overview: ['overview'],
+    orders: ['orders', ...DEMO.orders.map((o) => `order-${o.id}`)],
+    console: ['console'],
+    alarms: ['alarm-active', 'alarm-acknowledged', 'downtime-coded'],
+    oee: ['oee-line', 'oee-machines', 'oee-pareto', 'order-oee'],
+    spc: ['spc-episode'],
+    hold: ['hold-opened', 'holds-list', 'hold-detail', 'close-refused'],
+    trace: ['trace-carton', 'trace-serial', 'trace-lot'],
+  } satisfies Readonly<Record<SceneId, readonly string[]>>,
+  /**
+   * The view each scene's screenshot shows, where not its last: its main asserted content (#303).
+   * Scene 5's is the OEE figures (CNC-01's row among the machines), scene 8's the serial traced
+   * back (success criterion 4).
+   */
+  screenshotViews: { oee: 'oee-machines', trace: 'trace-serial' } as Readonly<
+    Partial<Record<SceneId, string>>
+  >,
+  /** How long the recording holds each asserted view (#303). */
+  viewMs: 2_000,
+  /**
+   * How long it holds the last view of a scene of `heldScenes` instead (#282): the first recording,
+   * without a hold, showed scenes 6 and 8 for under a second each (their facts exist long before
+   * they open), and scene 6's SPC charts load after its assertions.
    */
   dwellMs: 3_000,
   /**
-   * The scenes held (#282 review m5): from scene 3 on. Scenes 1 and 2 run before the timeline's
-   * pause at 06:14, where a hold would take from the dispatch's margin.
+   * The scenes whose last view gets `dwellMs` (#282 review m5): from scene 3 on. Scenes 1 and 2 run
+   * before the timeline's pause at 06:14; their views get `viewMs` only, which keeps the dispatch's
+   * acceptance well inside probe D1's envelope (by 06:14).
    */
   heldScenes: [3, 4, 5, 6, 7, 8],
+  /** The least a view may be held for the recording to be published (#303). */
+  minViewMs: 1_000,
   /** Where `pnpm demo:record` publishes (relative to the repository). */
   dir: 'docs/demo',
   videoFile: 'shopfloor-twin-v1.webm',
@@ -79,6 +112,56 @@ export const REENCODE_ARGS = [
 /** A scene's screenshot in docs/demo/: `NN-<scene>.png`. */
 export const screenshotName = (n: number, id: string): string =>
   `${String(n).padStart(2, '0')}-${id}.png`;
+
+/** A scene's asserted views (RECORDING.views), by its number. */
+export function viewsOf(n: number): readonly string[] {
+  const scene = SCENES.find((s) => s.n === n);
+  if (!scene) throw new Error(`no scene ${String(n)}`);
+  return RECORDING.views[scene.id];
+}
+
+/** The view a scene's screenshot is taken at: its RECORDING.screenshotViews entry, or its last. */
+export function screenshotView(n: number): string {
+  const views = viewsOf(n);
+  const id = SCENES.find((s) => s.n === n)?.id;
+  return (id && RECORDING.screenshotViews[id]) ?? views[views.length - 1] ?? '';
+}
+
+/** How long the recording holds a scene's view: `dwellMs` for a held scene's last, else `viewMs`. */
+export function holdMs(n: number, view: string): number {
+  const views = viewsOf(n);
+  const last = views[views.length - 1] === view;
+  return last && (RECORDING.heldScenes as readonly number[]).includes(n)
+    ? RECORDING.dwellMs
+    : RECORDING.viewMs;
+}
+
+/** A held view as the recording's record has it: where in the video, and for how long. */
+export interface HeldView {
+  readonly scene: number;
+  readonly view: string;
+  /** Its start in the video, s. */
+  readonly at: number;
+  /** How long it was held, s: from the end of its scroll to the walkthrough's next action. */
+  readonly seconds: number;
+}
+
+/** The held views from the run's view log (`views.jsonl`, a line per held view) and the video's start. */
+export function heldViewsFromLog(text: string, videoStartMs: number): HeldView[] {
+  return text
+    .split('\n')
+    .filter((line) => line.trim() !== '')
+    .map((line) => {
+      const v = JSON.parse(line) as { n: number; view: string; wallStart: string; wallEnd: string };
+      const start = Date.parse(v.wallStart);
+      return {
+        scene: v.n,
+        view: v.view,
+        at: Number(((start - videoStartMs) / 1000).toFixed(2)),
+        seconds: Number(((Date.parse(v.wallEnd) - start) / 1000).toFixed(2)),
+      };
+    });
+}
 
 /** What each scene shows, for its caption (docs/demo.md's scene table, shortened). */
 export const SHOWS: Readonly<Record<string, string>> = {
@@ -217,12 +300,17 @@ export interface StagedRecording {
   readonly screenshotBytes: number;
   /** The text files to publish or keep (captions, the record): searched for secrets. */
   readonly texts: readonly string[];
+  /** The scenes recorded: all eight (the size probe's, 1 to 3). */
+  readonly scenes: readonly number[];
+  /** Each view held, from the view log (#303). */
+  readonly views: readonly HeldView[];
 }
 
 /**
  * Why a staged recording must not be published (none: it may be): the video over 12 MiB or the
  * length limit or not at RECORDING.video's size, the screenshots over 4 MiB together, a secret of
- * the run in a text file.
+ * the run in a text file, a view a recorded scene asserts not held or held under
+ * RECORDING.minViewMs (#303).
  */
 export function recordingProblems(staged: StagedRecording, secrets: readonly string[]): string[] {
   const { limits, video } = RECORDING;
@@ -240,6 +328,21 @@ export function recordingProblems(staged: StagedRecording, secrets: readonly str
   }
   if (secrets.some((secret) => secret !== '' && staged.texts.some((t) => t.includes(secret)))) {
     problems.push('the captions or the record hold a secret of the run');
+  }
+  for (const n of staged.scenes) {
+    for (const view of viewsOf(n)) {
+      const held = staged.views.filter((v) => v.scene === n && v.view === view);
+      if (held.length === 0) {
+        problems.push(`scene ${String(n)}'s view ${view} is not held`);
+        continue;
+      }
+      const shortest = Math.min(...held.map((v) => v.seconds));
+      if (shortest * 1000 < RECORDING.minViewMs) {
+        problems.push(
+          `scene ${String(n)}'s view ${view} is held ${shortest.toFixed(2)} s, under ${String(RECORDING.minViewMs / 1000)} s`,
+        );
+      }
+    }
   }
   return problems;
 }

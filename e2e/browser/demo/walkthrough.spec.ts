@@ -13,12 +13,12 @@ import { account } from '../login.ts';
 import {
   closeDemoPage,
   eventually,
+  holdView,
   insideDemoRun,
   mes,
   openDemoPage,
   probeMs,
   recordScene,
-  sceneEnd,
   sim,
   simStatus,
   switchTo,
@@ -84,7 +84,6 @@ async function scene(n: number, body: () => Promise<Record<string, unknown>>): P
   const wallStart = new Date().toISOString();
   const plantStart = (await simStatus()).simTime;
   const facts = await body();
-  await sceneEnd(page, n, meta.id);
   await recordScene({
     n,
     id: meta.id,
@@ -229,6 +228,7 @@ test('the demo walkthrough: eight scenes, each asserting what it shows', async (
           .toBe(DEMO.pauseAt);
         moved = DEMO.pauseAt;
       }
+      await holdView(page, 1, 'overview');
       return { speed: status.speed, states, plantClock: [plantClock(first), plantClock(moved)] };
     });
   });
@@ -243,6 +243,7 @@ test('the demo walkthrough: eight scenes, each asserting what it shows', async (
           'imported',
         );
       }
+      await holdView(page, 2, 'orders');
       for (const order of DEMO.orders) {
         await page.goto('/orders');
         await page.getByTestId(`order-link-${order.id}`).click();
@@ -289,6 +290,7 @@ test('the demo walkthrough: eight scenes, each asserting what it shows', async (
         const shown = page.getByTestId(`command-${order.id}~OP10~1`);
         await expect(shown).toBeVisible();
         await expect(shown.getByTestId('command-confirmed')).toBeVisible();
+        await holdView(page, 2, `order-${order.id}`, { locator: shown, block: 'center' });
       }
       return { accepted };
     });
@@ -334,6 +336,7 @@ test('the demo walkthrough: eight scenes, each asserting what it shows', async (
         await expect.poll(async () => (await simStatus()).state).toBe(state);
         states.push(state);
       }
+      await holdView(page, 3, 'console');
       return {
         pausedAt: plantClock(DEMO.pauseAt),
         entries: loaded.scenario?.entries.length,
@@ -373,6 +376,7 @@ test('the demo walkthrough: eight scenes, each asserting what it shows', async (
       const row = page.getByTestId(`alarm-row-${alarm.id}`);
       await expect(row).toHaveAttribute('data-state', 'unacked-active');
       await expect(row).toHaveAttribute('data-code', DEMO.failure.code);
+      await holdView(page, 4, 'alarm-active', { locator: row, block: 'center' });
       await page.getByTestId(`ack-${alarm.id}`).click();
       // Acknowledged while still active: it leaves Active for the Acknowledged tab.
       await expect(row).toHaveCount(0);
@@ -387,6 +391,7 @@ test('the demo walkthrough: eight scenes, each asserting what it shows', async (
         'acked-active',
         maintenance.username,
       ]);
+      await holdView(page, 4, 'alarm-acknowledged', { locator: row, block: 'center' });
 
       // After the repair (30 minutes of plant time): the breakdown's record, closed, coded by hand.
       const repaired = DEMO.failure.at + 30 * 60_000;
@@ -441,6 +446,7 @@ test('the demo walkthrough: eight scenes, each asserting what it shows', async (
         await mes<{ records: DowntimeRecord[] }>(page, `/api/v1/downtime?${query.toString()}`)
       ).records.find((r) => r.id === record.id);
       expect(coded?.segments.map((s) => [s.reason, s.coded])).toEqual([[record.autoReason, true]]);
+      await holdView(page, 4, 'downtime-coded');
       return {
         alarm: alarm.id,
         acknowledgedBy: maintenance.username,
@@ -498,6 +504,10 @@ test('the demo walkthrough: eight scenes, each asserting what it shows', async (
       );
       const vb100 = shown.find((b) => b.product === 'VB-100');
       expect(vb100?.equipment).toBe(DEMO.bottleneck);
+      // The dashboard's three asserted views, loaded (asserted above), top to bottom.
+      await holdView(page, 5, 'oee-line', { locator: page.locator('#line-title') });
+      await holdView(page, 5, 'oee-machines', { locator: page.locator('#machines-title') });
+      await holdView(page, 5, 'oee-pareto', { locator: page.getByTestId('pareto') });
 
       // The first order completed: its OEE and first-pass yield on its detail, final.
       const { orders } = await mes<{ orders: Order[] }>(page, '/api/v1/orders');
@@ -536,6 +546,7 @@ test('the demo walkthrough: eight scenes, each asserting what it shows', async (
       );
       expect(api.oee.oee).not.toBeNull();
       expect(api.firstPassYield.yield).not.toBeNull();
+      await holdView(page, 5, 'order-oee', { locator: page.getByTestId('order-oee-section') });
       return {
         machine,
         availability: availability?.decimal,
@@ -599,6 +610,7 @@ test('the demo walkthrough: eight scenes, each asserting what it shows', async (
       await expect(row).toHaveAttribute('data-chart', signal.chart);
       await expect(row).toHaveAttribute('data-rule', String(signal.rule));
       await expect(row).toHaveAttribute('data-baseline', 'false');
+      await holdView(page, 6, 'spc-episode');
       return {
         signal: signal.id,
         chart: signal.chart,
@@ -654,12 +666,17 @@ test('the demo walkthrough: eight scenes, each asserting what it shows', async (
       expect(hold).toBeDefined();
       if (!hold) throw new Error('no open hold on the order');
       expect(hold.openedBy).toBe(account('quality').username);
+      await holdView(page, 7, 'hold-opened', {
+        locator: page.getByTestId(`open-result-order-${order}`),
+        block: 'center',
+      });
 
       // The holds screen: the hold and its scope.
       await page.goto('/quality/holds');
       const holdRow = page.getByTestId(`hold-row-${hold.id}`);
       await expect(holdRow).toHaveAttribute('data-subject', `order:${order}`, { timeout: 30_000 });
       await expect(holdRow).toHaveAttribute('data-state', 'open');
+      await holdView(page, 7, 'holds-list', { locator: holdRow, block: 'center' });
       await page.getByTestId(`hold-link-${hold.id}`).click();
       await expect(page.getByTestId('hold-summary')).toHaveAttribute('data-state', 'open', {
         timeout: 30_000,
@@ -672,6 +689,7 @@ test('the demo walkthrough: eight scenes, each asserting what it shows', async (
       await expect(counts).toHaveAttribute('data-orders', '1');
       const units = Number(await counts.getAttribute('data-units'));
       expect(units).toBeGreaterThan(0);
+      await holdView(page, 7, 'hold-detail');
 
       // Once the order is complete, its close is refused while the hold is open.
       await untilPlantTime(plantTime(CLOSE_AT));
@@ -697,6 +715,7 @@ test('the demo walkthrough: eight scenes, each asserting what it shows', async (
       await expect(page.getByTestId('action-message')).toHaveAttribute('data-type', QUALITY_HOLD);
       await expect(page.getByTestId(`action-hold-${hold.id}`)).toBeVisible();
       expect((await orderOf(order)).order.status).toBe('completed');
+      await holdView(page, 7, 'close-refused');
       learnt.held = { order, hold: hold.id };
       return { signal: episode.id, order, hold: hold.id, units, refused: QUALITY_HOLD };
     });
@@ -716,6 +735,7 @@ test('the demo walkthrough: eight scenes, each asserting what it shows', async (
       await expect(packed).toBeVisible();
       const serial = (await packed.getAttribute('data-serial')) ?? '';
       expect(serial).not.toBe('');
+      await holdView(page, 8, 'trace-carton', { locator: packed, block: 'center' });
       await packed.locator('[data-testid^="serial-link-"]').click();
 
       // Back: the serial's records, as the MES holds them, and what they must be.
@@ -780,6 +800,9 @@ test('the demo walkthrough: eight scenes, each asserting what it shows', async (
       for (const lot of unit.records.flatMap((r) => r.lots ?? [])) {
         expect(truthLots.find((l) => l.lot === lot.lot)?.units, lot.lot).toContain(unit.partId);
       }
+      await holdView(page, 8, 'trace-serial', {
+        locator: page.getByTestId('trace-records-section'),
+      });
 
       // Forward: the blank lot to its cartons, the serial's among them.
       await page.getByTestId('record-OP10-1').getByTestId(`lot-link-${blankLot}`).click();
@@ -799,6 +822,10 @@ test('the demo walkthrough: eight scenes, each asserting what it shows', async (
           await sim<{ trace: { lots: { lot: string; cartons: string[] }[] } }>('/ground-truth')
         ).trace.lots.find((l) => l.lot === blankLot)?.cartons ?? [];
       for (const id of shownCartons) expect(truthCartons, id).toContain(id);
+      await holdView(page, 8, 'trace-lot', {
+        locator: page.getByTestId('lot-cartons'),
+        block: 'center',
+      });
       return {
         carton: cartonId,
         serial,

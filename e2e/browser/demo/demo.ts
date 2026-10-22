@@ -1,9 +1,15 @@
 import { appendFile, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { expect, type Browser, type Page } from '@playwright/test';
-import { DEMO, plantClock } from '../../src/demo-plan.ts';
-import { RECORDING, screenshotName } from '../../src/demo-record.ts';
+import { expect, type Browser, type Locator, type Page } from '@playwright/test';
+import { DEMO, SCENES, plantClock } from '../../src/demo-plan.ts';
+import {
+  RECORDING,
+  holdMs,
+  screenshotName,
+  screenshotView,
+  viewsOf,
+} from '../../src/demo-record.ts';
 import { logIn, type Account } from '../login.ts';
 
 /**
@@ -99,18 +105,41 @@ export async function closeDemoPage(page: Page): Promise<void> {
 }
 
 /**
- * Under `pnpm demo:record`, as the scene ends: from scene 3 on, its last view held for
- * RECORDING.dwellMs (the page left as the assertions left it; nothing is done on it), so the video
- * shows what the scene asserted; then its screenshot (`NN-<scene>.png`), with what the page loads
- * after the assertions (the SPC charts) drawn. Scenes 1 and 2 aren't held: they run before the
- * timeline's pause at 06:14, and a hold there would take from the dispatch's margin, which must
- * stay as in `pnpm demo`. A hold before a wait for a plant time (scenes 4, 5 and 6, scene 7's
- * close) only shortens that wait; the others lengthen the video.
+ * Under `pnpm demo:record` (#303), once a scene's assertions on one of its views
+ * (RECORDING.views) have passed: the view scrolled to `show` where what it asserts is below the
+ * fold, then held (`holdMs`: RECORDING.viewMs, a held scene's last view RECORDING.dwellMs; nothing
+ * is done on the page meanwhile), so the video shows what the scene asserted; at the scene's
+ * screenshot view (`screenshotView`), its screenshot (`NN-<scene>.png`), with what the page loads
+ * after the assertions (the SPC charts) drawn. Each hold goes to the view log (`views.jsonl`), from
+ * which the harness refuses a recording with a view not held or held under RECORDING.minViewMs.
+ * In `pnpm demo` it does nothing: no scroll, no hold. A hold before a wait for a plant time (scenes
+ * 4 and 5, scene 7 before its close) only shortens that wait; the others lengthen the video.
  */
-export async function sceneEnd(page: Page, n: number, id: string): Promise<void> {
+export async function holdView(
+  page: Page,
+  n: number,
+  view: string,
+  show?: { readonly locator: Locator; readonly block?: 'start' | 'center' },
+): Promise<void> {
   if (recordDir === '') return;
-  if ((RECORDING.heldScenes as readonly number[]).includes(n)) await sleep(RECORDING.dwellMs);
-  await page.screenshot({ path: join(recordDir, screenshotName(n, id)) });
+  const scene = SCENES.find((s) => s.n === n);
+  if (!scene || !viewsOf(n).includes(view)) {
+    throw new Error(`scene ${String(n)} has no view ${view} (RECORDING.views)`);
+  }
+  if (show) {
+    await show.locator.evaluate((element, block) => {
+      element.scrollIntoView({ block });
+    }, show.block ?? 'start');
+  }
+  const wallStart = new Date().toISOString();
+  await sleep(holdMs(n, view));
+  if (screenshotView(n) === view) {
+    await page.screenshot({ path: join(recordDir, screenshotName(n, scene.id)) });
+  }
+  await appendFile(
+    join(recordDir, 'views.jsonl'),
+    `${JSON.stringify({ n, view, wallStart, wallEnd: new Date().toISOString() })}\n`,
+  );
 }
 
 /** The size probe (DEMO_RECORD_PROBE_MS): waits until the video is that long. */

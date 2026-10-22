@@ -164,3 +164,74 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
   - **Gate after the review** on `e57fc72` (main unchanged at `6f345bf`, no rebase; `GATE_STEPS=verify,smoke,reconcile`, `GATE_PROJECT=gate295b`, `GATE_TAG=pr295b`, `TURBO_FORCE=1`, under the heavy lock): `GATE-OK`; free at the start: host 35.6 GiB, Docker 69.3 GiB. verify 581.2 s, smoke 201 s, reconcile 1,663.1 s. Seeds: fc-seed 104417806, alarm-core 1386274467, contracts 672656154, mes-server 335814012, oee-core 632044621, shift-calendar 1071443751, sim-core 1754207500, simulator 463789220, spc-core 881740502, trace-core 53119793. `pnpm demo` not rerun (coordinator: the fixes change only the order page's labels, which the demo doesn't assert). Images removed. The commit after it adds only this record.
   - **Re-review of PR #297** (approved; two more wall times folded in before the single re-record, and a sweep): every web time whose contract field says "Wall time" is now labelled `(wall time)` (`wallTimeOf`, `plantBeside` and `plantOrWall` in `components/quality-ui.tsx`). Newly labelled: the hold transitions' "When" (`t.at`, with the plant clock beside it as on the order history), the hold's opened and decided times (decided with its plant clock), the held units' `joinedAt`, the SPC notice's `at` and a signal acknowledgement's `at` (with its plant clock), the lot page's ERP `importedAt`. The hold list and the terminal's hold banner showed `openedPlantAt ?? openedAt`, a wall time unlabelled when the plant clock is missing; they now show the plant time, else the labelled wall time. **Left as plant time:** `spc.tsx`'s `limit.createdAt` and `limit.endedAt` ("Plant time it was created/ended", quality-api.ts), the trace crew's `from` ("Plant time of the sign-on"). **Already labelled before:** alarm acknowledgements and comments, downtime audit entries, shift reports' `finalAt` and `generatedAt`, alarm `receivedAt`. Tests assert the exact text with a wall time a week after the plant clock (`holds.test.tsx` detail and list, `spc.test.tsx` acknowledgement and notice, `trace.test.tsx` import, `terminal.test.tsx` banner). **Mutants** (10, all killed): each of those nine sites back to plant formatting or raw, the transition's plant clock dropped, and the terminal banner's fallback back to `formatPlantTime`.
   - **Gate after the re-review** on `4d1c365` (main unchanged at `6f345bf`; `GATE_STEPS=verify,smoke,reconcile`, `GATE_PROJECT=gate295c`, `GATE_TAG=pr295c`, `TURBO_FORCE=1`, under the heavy lock): `GATE-OK`; free at the start: host 34.5 GiB, Docker 69.2 GiB. verify 588.1 s, smoke 201.7 s, reconcile 1,662.7 s. Seeds: fc-seed 1626406923, alarm-core 1274226645, contracts 982924146, mes-server 1466890380, oee-core 1791682228, shift-calendar 1655844115, sim-core 625850329, simulator 1925387194, spc-core 1802764485, trace-core 2090526414. Images removed. The commit after it adds only this record.
+
+### Wave B / #282
+
+- #282 (P10-07, branch `docs/282-demo-recording`, wave B): the demo recording.
+  - **Size probe** (the first commit, `5479ff1`): the walkthrough with Playwright's video on its one page at 1280 × 720, scenes 1 to 3, then the run to 60 s (`DEMO_RECORD_PROBE_S=60 pnpm demo:record`). The result was 61.6 s and 7.85 MiB, 7.65 MiB a minute: about 50 MiB for the 6.5-minute walkthrough, four times the 12 MiB limit (`docs/demo.md`, "Size probe").
+  - **`pnpm demo:record`** (`e2e/src/demo.ts --record`, `e2e/src/demo-record.ts`, `e2e/browser/demo/demo.ts`): the same harness and the same test as `pnpm demo`, with video on the one context and page (one continuous file, roles by logout and login). Each scene ends with its last view held for 3 s, then its screenshot. Every scene is asserted as in `pnpm demo`, and the scene log is checked the same way. Only after `DEMO-OK` does it publish the video, the screenshots and the WebVTT captions (from the scene log and the video's start: a cue per scene, a cue per wait) to `docs/demo/`. It refuses a video over 12 MiB or 7 minutes, screenshots over 4 MiB, and captions or a record holding any secret of the run. It writes the SHA-256, size, length, resolution and commit to `e2e/results/demo/recording.json`. The demo's login helper now checks that the password field is `type="password"` before filling it. Tests: `e2e/src/demo-record.test.ts` (captions, names, limits, ffmpeg's report).
+  - **Fallbacks, in the plan's order:** 960 × 540, then the scripted re-encode with Playwright's bundled ffmpeg (`REENCODE_ARGS`: VP9 `-crf 36 -b:v 0 -deadline good -cpu-used 4 -row-mt 1 -an`, chosen on the probe's video). The re-encode runs only when the video is over 12 MiB, and at 960 × 540 it always is (about 26 MiB). The third fallback, a shorter walkthrough, was not needed for size. For length, it would cut waits or asserted scenes; the coordinator decision (Length) replaces it with a 7-minute limit for the owner's review.
+  - **Length, coordinator decision for the owner's review:** the plan's 6 minutes can't be met at 60× without cutting asserted scenes. The run needs plant time 06:00 to 12:25 (scene 7's close), at least 6 min 25 s, and a speed-up within the harness would no longer show a real run at 60×. The limit is therefore **at most 7 minutes**, enforced by `pnpm demo:record`. No scene is cut and the video is not edited. Recorded in `docs/demo.md` ("Length") and STATUS's owner items.
+  - **Also a coordinator decision:** the 3 s hold on each scene's last view. The first recording (`2b80665`) showed scene 6 for 0.5 s and scene 8 for 0.65 s. The hold adds about 8 s. The screenshot moved after the hold because the second recording (`a66eede`) caught scene 6's SPC charts still loading. Neither recording was committed.
+  - **The first committed recording** (superseded before merge by the one below), recorded on `577d8ce` (main `6f345bf` plus this branch's code), `RECORD-OK`:
+    - `shopfloor-twin-v1.webm`: 6 min 36.5 s, 960 × 540, 4,866,985 bytes (4.64 MiB; 26.50 MiB from Playwright), SHA-256 `c365ab9ab3bc20f07c4d64a9a04f9b2747d3af4937ac7a63a4925f2feefed3a4`;
+    - eight screenshots, 969,618 bytes (0.92 MiB) together;
+    - `demo-v1.vtt`, 11 cues.
+
+    The scene facts were those of #281's runs, with the jobs accepted at 06:07.
+
+  - **Secrets:** passwords are typed only into the `type="password"` field, which is now asserted. Frames of the committed video at the logins (operator, supervisor, admin, maintenance, quality) showed the field masked. The control token and other secrets never reach the browser. `pnpm demo:record` searched the captions and its record for the run's 10 secrets and found none. The screenshots show user names and plant data only. No `.env` was read.
+  - **README:** "Screens" has four screenshots (overview, console, SPC, lot trace) and links to the other four, the video and the captions. **Runbook:** the commands table and "Demo" give `pnpm demo:record` and the re-recording rule. **`docs/README.md`:** `demo.md`'s row covers the recording. Rerun row (after the review of PR #296): `e2e/src/demo-record.ts` and the `--record` path of `e2e/src/demo.ts` → `verify`, `pnpm demo` and `DEMO_RECORD_PROBE_S=60 pnpm demo:record`, or a full `pnpm demo:record` when the recording is re-made. The plan names no row for P10-07, and `pnpm demo` alone never runs the recording path.
+  - **Rebase** onto `6f345bf` (#280, PR #293) after the probe; no conflicts.
+  - **Disk:** during the first recording's build the host fell to 24 GiB free, below the 25 GiB floor, as Colima's disk image grew. `colima ssh -- sudo fstrim -av` gave back 24.7 GiB (40 GiB free). The later runs started at 37.4 GiB or more.
+  - **Found, not in scope:** the SPC page's point table shows a leak value as `3.3810000000000002` (an unrounded float; visible in `06-spc.png` and the video).
+  - **Runs** (all under the heavy lock, Node 26.11.1):
+    - the probe;
+    - three recordings (`2b80665` and `a66eede`, neither committed, then the committed `577d8ce`), each `DEMO-OK` and `RECORD-OK`;
+    - **`pnpm demo`** once on `577d8ce` (code; the docs uncommitted): `DEMO-OK` in 440 s, jobs accepted at 06:04, host 37.0 GiB free;
+    - **the gate** on `f7fb86f` (`GATE_STEPS=verify`, `GATE_PROJECT=gate282`, `GATE_TAG=pr282`, `TURBO_FORCE=1`; the rerun rows `e2e/src/demo*` and `e2e/browser/demo/` → `verify` and `pnpm demo`): `GATE-OK`, clean tree, host 36.7 GiB and Docker 72.4 GiB free at the start; verify 591.7 s, 55 turbo tasks, `e2e` unit tests 146 passed. Seeds: alarm-core 1310377009, contracts 1679792963, fc-seed 1286252341, mes-server 747483705, oee-core 236871270, shift-calendar 1988210397, sim-core 925056551, simulator 761826319, spc-core 456184667, trace-core 996604031.
+
+    The commit after the gate adds only these records (`pnpm format:check`), as #278 did. Images, projects and volumes are removed; no `:demo` image or demo container is left.
+
+  - **Review of PR #296** (changes requested; nothing weakened, no leak), fixed in `f0bddd1`:
+    - **M1:** `pnpm demo:record` now stages in `e2e/results/demo/record/publish/`, checks the staged files and only then replaces `docs/demo/`'s files.
+      - The checks: size, length, 960 × 540, the screenshots' total, secrets.
+      - `recordingProblems` and `publishStaged` are in `e2e/src/demo-record.ts`, with unit tests. A refused publish makes no file-system call; an accepted one copies the ten files and removes a screenshot no scene has.
+      - It refuses a tree whose tracked files outside `docs/` and Markdown differ from `HEAD`. Shown by running it with one changed line in `e2e/src/demo-plan.ts`: exit 1, `refuses a changed tree … M e2e/src/demo-plan.ts`, nothing built.
+      - The probe stages and checks scenes 1 to 3 and publishes nothing.
+    - **m1:** the `type="password"` check is in `logIn` and `signOnAtTerminal` (`e2e/browser/login.ts`).
+    - **m2:** `Stack.secretValues()` (every `*_PASSWORD` and `*_TOKEN` of the run's env file) is searched with the users' passwords.
+    - **m3:** the third fallback's wording.
+    - **m4:** the rerun row.
+    - **m5:** no hold after scenes 1 and 2 (`RECORDING.heldScenes`).
+    - **n1:** the README's scene 5 label.
+    - **n3:** the resolution check.
+    - **M2:** the recording is not remade yet. #295 (P10-F2) changes scenes 3 and 6; after it merges, this branch is rebased and `pnpm demo:record` runs once. The committed recording (`577d8ce`) stays until then.
+  - **Runs after the review** on `f0bddd1`, under the heavy lock. Besides the coordinator's `verify`, `pnpm demo` and the probe, the rerun table asks for `verify,reconcile` for `e2e/browser/login.ts` (the `e2e/` Playwright row), plus `pnpm test:resilience` for `e2e/src/stack.ts`:
+    - `DEMO_RECORD_PROBE_S=60 pnpm demo:record`: `PROBE-OK`. 960 × 540, 61.3 s, 4.82 MiB from Playwright, staged with no problem. `docs/demo/` was byte-identical before and after (SHA-256 of every file compared).
+    - `pnpm demo`: `DEMO-OK` in 440 s, jobs accepted at 06:03 and 06:04.
+    - `GATE_STEPS=verify,reconcile GATE_PROJECT=gate282b GATE_TAG=pr282b TURBO_FORCE=1 pnpm gate`: `GATE-OK`, clean tree, host 30.1 GiB and Docker 69.3 GiB free at the start.
+      - verify 591.1 s, with 150 `e2e` unit tests passed;
+      - reconcile 1,697 s (alarms, orders and quality OK);
+      - seeds: alarm-core 1717547745, contracts 2085819225, fc-seed 1408192448, mes-server 330602956, oee-core 478124793, shift-calendar 1403087137, sim-core 1529599771, simulator 1686552074, spc-core 1622596501, trace-core 1823852475.
+    - `RESILIENCE_PROJECT=resilience282 RESILIENCE_TAG=res282 pnpm test:resilience`: `RESILIENCE-OK` in 1,665 s (R1, R2 and R3 passed), host 36.1 GiB free at the start; `fstrim` in Colima's VM before it.
+
+    Images and projects are removed.
+
+  - **The recording after #297** (P10-F2: SPC values at their precision, plant time on the console, wall-clock labels).
+    - **Rebase** onto `29321ea`: one conflict, in this log, where #295's section and this one both appended. Both are kept. Commit hashes before 2026-10-22 are those before the rebase onto `29321ea` (#297). After it they are: `5479ff1` → `b9700df`, `2b80665` → `47111a4`, `a66eede` → `c4eaddf`, `577d8ce` → `7581e00`, `f7fb86f` → `20c2229`, `12bbdc6` → `b22655b`, `f0bddd1` → `d591b1f` and `6086fbe` → `da16fbb`.
+    - **`pnpm demo:record`** once on `da16fbb`, a clean tree, under the heavy lock (host 34.2 GiB free): `DEMO-OK` and `RECORD-OK` in 610 s, jobs accepted at 06:04, the staged files checked before they replaced the earlier ones.
+      - `shopfloor-twin-v1.webm`: 6 min 35.0 s (395.0 s), 960 × 540, 5,020,720 bytes (4.79 MiB; 26.34 MiB from Playwright), SHA-256 `d884a72072e0b972f8218868bc3036fe5a1395e711ed003c8790f120c8024e92`;
+      - eight screenshots, 971,737 bytes (0.93 MiB) together;
+      - `demo-v1.vtt`, 11 cues.
+    - **Checked on the staged files:**
+      - scene 6's point table shows `3.381`;
+      - scene 3's simulation time is plant time (`Mon 12 Oct, 06:17:08`);
+      - scenes 1 and 2 aren't held (1.5 s and 2.8 s in the captions);
+      - all eight screenshots looked at: user names and plant data only (the lot page's import time is labelled "(wall time)");
+      - frames at all nine logins show the password masked;
+      - `pnpm demo:record` found none of the run's secrets (every user's password, every `*_PASSWORD` and `*_TOKEN`) in the captions or the record.
+    - **Superseded before merge:** the first committed recording (`577d8ce`, now `7581e00`; SHA-256 `c365ab9a…`). Only the new one reaches `main`.
+    - **Gate** on `5e7feb2`: `GATE_STEPS=verify`, `GATE_PROJECT=gate282c`, `GATE_TAG=pr282c`, `TURBO_FORCE=1`, under the heavy lock. Only the docs and the recording changed after the recording's run, so `verify` covers the formatting and the architecture check. Result: `GATE-OK`, clean tree, host 33.7 GiB and Docker 69.2 GiB free at the start; verify 583.9 s, `e2e` unit tests 150 passed, `check-architecture: OK`.
+      - Seeds: alarm-core 372951631, contracts 1474648615, fc-seed 316073676, mes-server 958039419, oee-core 1731747750, shift-calendar 1995654612, sim-core 658108226, simulator 2131241905, spc-core 1429618547, trace-core 1171562191.
+      - The commit after it adds only this record (`pnpm format:check`).

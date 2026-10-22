@@ -121,6 +121,17 @@ export class Stack {
     return this.value('MES_BOOTSTRAP_ADMIN_PASSWORD');
   }
 
+  /**
+   * Every secret of this run's env file (after `prepare()`): each `*_PASSWORD` and `*_TOKEN`
+   * value, for the searches that must not find one (the demo's recording, #282).
+   */
+  secretValues(): string[] {
+    if (!this.#values) throw new Error('prepare() first');
+    return Object.entries(this.#values)
+      .filter(([key, value]) => /_(PASSWORD|TOKEN)$/.test(key) && value !== '')
+      .map(([, value]) => value);
+  }
+
   /** A value of this run's env file (after `prepare()`), e.g. the generated ERP_API_TOKEN. */
   value(key: string): string {
     const value = this.#values?.[key];

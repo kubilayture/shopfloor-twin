@@ -75,6 +75,8 @@ export async function logIn(
   }
   await untraced(page, async () => {
     await page.goto('/login');
+    // A password field (shown masked): the demo's recording (#282) shows every login.
+    await expect(page.getByTestId('login-password')).toHaveAttribute('type', 'password');
     await page.getByTestId('login-username').fill(user.username);
     await page.getByTestId('login-password').fill(user.password);
     await page.getByTestId('login-submit').click();
@@ -95,6 +97,7 @@ export async function signOnAtTerminal(
 ): Promise<string> {
   await untraced(page, async () => {
     await page.goto(`/terminal/${workCenter}`);
+    await expect(page.getByTestId('terminal-password')).toHaveAttribute('type', 'password');
     await page.getByTestId('terminal-username').fill(user.username);
     await page.getByTestId('terminal-password').fill(user.password);
     await page.getByTestId('terminal-sign-on').click();

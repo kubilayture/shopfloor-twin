@@ -1,8 +1,9 @@
-import { appendFile } from 'node:fs/promises';
+import { appendFile, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { expect, type Page } from '@playwright/test';
+import { expect, type Browser, type Page } from '@playwright/test';
 import { DEMO, plantClock } from '../../src/demo-plan.ts';
+import { RECORDING, screenshotName } from '../../src/demo-record.ts';
 import { logIn, type Account } from '../login.ts';
 
 /**
@@ -15,6 +16,14 @@ import { logIn, type Account } from '../login.ts';
 const simUrl = process.env.DEMO_SIM_URL ?? '';
 const simToken = process.env.DEMO_SIM_TOKEN ?? '';
 const results = process.env.RECONCILE_RESULTS;
+/**
+ * `pnpm demo:record` (#282): where the video, the screenshots and the video's start go; unset in
+ * `pnpm demo`, which records nothing. DEMO_RECORD_PROBE_MS (the 60 s size probe) ends the
+ * walkthrough after scene 3, once the video is that long.
+ */
+const recordDir = process.env.DEMO_RECORD_DIR ?? '';
+export const probeMs = Number(process.env.DEMO_RECORD_PROBE_MS ?? '0');
+let videoStart = 0;
 
 export const insideDemoRun = (): boolean =>
   (process.env.RECONCILE_WEB_URL ?? '') !== '' && simUrl !== '' && simToken !== '';
@@ -61,7 +70,60 @@ export async function mes<T>(page: Page, path: string): Promise<T> {
   return (await response.json()) as T;
 }
 
-/** Logs the page's user out (if any) and `user` in, on the same page: one page for the demo. */
+/**
+ * The demo's one page in its one context. Under `pnpm demo:record` its context records the video
+ * (RECORDING.video, the whole walkthrough in one file), and the video's start (the wall time the
+ * page opened) goes to `video-start.json` for the captions.
+ */
+export async function openDemoPage(browser: Browser): Promise<Page> {
+  if (recordDir === '') return (await browser.newContext()).newPage();
+  await mkdir(recordDir, { recursive: true });
+  const context = await browser.newContext({
+    viewport: RECORDING.viewport,
+    recordVideo: { dir: recordDir, size: RECORDING.video },
+  });
+  videoStart = Date.now();
+  const page = await context.newPage();
+  await writeFile(
+    join(recordDir, 'video-start.json'),
+    `${JSON.stringify({ videoStart: new Date(videoStart).toISOString() })}\n`,
+  );
+  return page;
+}
+
+/** Closes the demo's context; under `pnpm demo:record` saves its video as `walkthrough.webm`. */
+export async function closeDemoPage(page: Page): Promise<void> {
+  const video = page.video();
+  await page.context().close();
+  if (video && recordDir !== '') await video.saveAs(join(recordDir, 'walkthrough.webm'));
+}
+
+/**
+ * Under `pnpm demo:record`, as the scene ends: from scene 3 on, its last view held for
+ * RECORDING.dwellMs (the page left as the assertions left it; nothing is done on it), so the video
+ * shows what the scene asserted; then its screenshot (`NN-<scene>.png`), with what the page loads
+ * after the assertions (the SPC charts) drawn. Scenes 1 and 2 aren't held: they run before the
+ * timeline's pause at 06:14, and a hold there would take from the dispatch's margin, which must
+ * stay as in `pnpm demo`. A hold before a wait for a plant time (scenes 4, 5 and 6, scene 7's
+ * close) only shortens that wait; the others lengthen the video.
+ */
+export async function sceneEnd(page: Page, n: number, id: string): Promise<void> {
+  if (recordDir === '') return;
+  if ((RECORDING.heldScenes as readonly number[]).includes(n)) await sleep(RECORDING.dwellMs);
+  await page.screenshot({ path: join(recordDir, screenshotName(n, id)) });
+}
+
+/** The size probe (DEMO_RECORD_PROBE_MS): waits until the video is that long. */
+export async function untilProbeEnd(): Promise<void> {
+  const left = videoStart + probeMs - Date.now();
+  if (left > 0) await sleep(left);
+}
+
+/**
+ * Logs the page's user out (if any) and `user` in, on the same page: one page for the demo. The
+ * login checks the password field is one (`type="password"`, shown masked) before filling it
+ * (browser/login.ts): the recording shows every login.
+ */
 export async function switchTo(page: Page, user: Account): Promise<string> {
   const signedIn = page.getByTestId('signed-in-user');
   if ((await signedIn.count()) > 0) {

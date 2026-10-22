@@ -51,7 +51,15 @@ At <https://localhost:8443>, each behind the login and the roles' permissions:
 | Simulation console (admin) | `/console`                                  | The run (pause, speed, step), scenario timelines, failure and fault injection, lots, operators |
 | Account and users          | `/account`, `/admin/users` (admin)          | Own session and password; users, roles, resets                                                 |
 
-Screenshots of these screens come with the demo recording (P10-07). [docs/demo.md](docs/demo.md) walks through them in eight scenes on a scenario of its own (`pnpm demo` plays the same walkthrough as a test). More on each screen: the runbook, "Run the web app", and [apps/web/README.md](apps/web/README.md).
+[docs/demo.md](docs/demo.md) walks through them in eight scenes on a scenario of its own (`pnpm demo` plays the same walkthrough as a test). The screenshots below come from its recording, made by `pnpm demo:record`. The whole walkthrough is in the video [docs/demo/shopfloor-twin-v1.webm](docs/demo/shopfloor-twin-v1.webm), with captions in [demo-v1.vtt](docs/demo/demo-v1.vtt).
+
+| Plant overview (operator, scene 1)                        | Simulation console (admin, scene 3)                |
+| --------------------------------------------------------- | -------------------------------------------------- |
+| ![Plant overview](docs/demo/01-overview.png)              | ![Simulation console](docs/demo/03-console.png)    |
+| **SPC: the leak test's drift episode (quality, scene 6)** | **Traceability: a lot forward (quality, scene 8)** |
+| ![SPC chart](docs/demo/06-spc.png)                        | ![Lot trace](docs/demo/08-trace.png)               |
+
+The other scenes' screenshots: [an order's dispatch](docs/demo/02-orders.png), [downtime coding](docs/demo/04-alarms.png), [a completed order (scene 5)](docs/demo/05-oee.png) and [the close refused under a quality hold](docs/demo/07-hold.png). More on each screen: the runbook, "Run the web app", and [apps/web/README.md](apps/web/README.md).
 
 ## Develop
 
@@ -66,7 +74,7 @@ pnpm gate      # the merge gate: verify, golden, end-to-end, stack smoke, reconc
 - **`pnpm verify`** takes the host-wide heavy lock (one heavy suite at a time on the machine) and refuses to start below 25 GiB free on the host or 15 GiB in Docker, whose Testcontainers suites need Docker running; uncached it takes about ten minutes. It prints one fast-check seed per workspace; `FC_SEED=<seed>` reproduces a run (runbook, "Property seeds").
 - **`pnpm gate`** runs every job of the merge gate locally, one at a time, on disposable Compose projects, and writes its record to `e2e/results/gate.json`. It is the merge gate while GitHub Actions is unavailable (runbook, "Merge gate" and "Continuous integration").
 - **The stack from the workspace:** `pnpm stack:init` is the init above, `pnpm stack:up` the start; `pnpm stack:up:dev` also publishes the MES, the gateway and the database on `127.0.0.1` (4700, 4900, 5442) for development; `pnpm stack:up:observability` adds Prometheus and Grafana on `127.0.0.1` (9090, 3000; set `GRAFANA_ADMIN_PASSWORD` first). `pnpm stack:smoke` checks a running stack.
-- **The other suites**, each in the runbook: `pnpm test:golden`, `pnpm test:e2e`, `pnpm test:reconcile`, `pnpm test:console`, `pnpm test:resilience`, `pnpm test:perf`, `pnpm test:trace-perf`, `pnpm test:fresh-clone`, `pnpm demo` and `pnpm demo:probe`.
+- **The other suites**, each in the runbook: `pnpm test:golden`, `pnpm test:e2e`, `pnpm test:reconcile`, `pnpm test:console`, `pnpm test:resilience`, `pnpm test:perf`, `pnpm test:trace-perf`, `pnpm test:fresh-clone`, `pnpm demo`, `pnpm demo:probe` and `pnpm demo:record`.
 
 ## Documentation
 

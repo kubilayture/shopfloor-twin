@@ -17,14 +17,37 @@
  * the images already built under that tag), DEMO_KEEP_IMAGES=1 (keep them; by default they are
  * removed at the end, #228). Results (the scene log, Playwright traces on failure, compose.log on
  * failure) go to e2e/results/demo/. SIGINT and SIGTERM remove the stack and the env file.
+ *
+ * `pnpm demo:record` (#282, `--record`) is the same run with Playwright's video on the
+ * walkthrough's one page and a screenshot per scene (e2e/results/demo/record/). It refuses a tree
+ * whose sources differ from HEAD. Once the walkthrough has passed with every scene it stages in
+ * e2e/results/demo/record/publish/ (src/demo-record.ts) the video, re-encoded by the scripted
+ * fallback only when over the size limit, the screenshots and the WebVTT captions from the scene
+ * log; checks the staged files (size, length, resolution, the screenshots' total, no secret of the
+ * run in the captions or the record); and only then replaces docs/demo/'s files. A refused
+ * recording leaves docs/demo/ as it was. DEMO_RECORD_PROBE_S (the 60 s size probe) records scenes 1
+ * to 3 and the run until the video is that long, prints the size extrapolated to the walkthrough's
+ * length, stages and checks scenes 1 to 3, and publishes nothing.
  */
-import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { pruneBuildCache } from '@shopfloor/test-kit/heavy-lock';
 import { GatewayClient, MesClient, SimulatorClient, gauge, provisionUsers } from './clients.ts';
-import { DEMO, checkSceneLog } from './demo-plan.ts';
+import { DEMO, SCENES, checkSceneLog } from './demo-plan.ts';
+import {
+  REENCODE_ARGS,
+  RECORDING,
+  bundledFfmpeg,
+  captionsFromSceneLog,
+  probeInfo,
+  publishStaged,
+  recordingProblems,
+  screenshotName,
+} from './demo-record.ts';
 import { REPO, Stack, removeImages } from './stack.ts';
 
 const project = process.env.DEMO_PROJECT ?? 'shopfloor-demo-run';
@@ -32,6 +55,10 @@ const tag = process.env.DEMO_TAG ?? 'demo';
 const skipBuild = process.env.DEMO_SKIP_BUILD === '1';
 const keepImages = process.env.DEMO_KEEP_IMAGES === '1';
 const RESULTS = join(REPO, 'e2e/results/demo');
+const record = process.argv.includes('--record');
+const probeSeconds = Number(process.env.DEMO_RECORD_PROBE_S ?? '0');
+const RECORD_DIR = join(RESULTS, 'record');
+const execFileP = promisify(execFile);
 /** One user per role besides the bootstrap admin, made through the API. */
 const ROLE_USERS = {
   operator: { username: 'demo-operator', roles: ['operator'] },
@@ -74,6 +101,118 @@ async function until(what: string, check: () => Promise<boolean>, timeoutMs: num
     }
     await sleep(500);
   }
+}
+
+/** `ffmpeg -i <video>`'s report: its duration and size (ffmpeg exits 1 without an output). */
+async function videoInfo(file: string) {
+  const result = await execFileP(bundledFfmpeg(), ['-hide_banner', '-i', file]).catch(
+    (error: unknown) => error as { stderr?: string },
+  );
+  return probeInfo(result.stderr ?? '');
+}
+
+const mib = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(2)} MiB`;
+
+/** The size probe's measure: the video's size, extrapolated to the walkthrough's length. */
+async function reportProbe() {
+  const file = join(RECORD_DIR, 'walkthrough.webm');
+  const { size } = await stat(file);
+  const info = await videoInfo(file);
+  const perMinute = (size / info.seconds) * 60;
+  log(
+    `PROBE: ${String(info.width)}×${String(info.height)}, ${info.seconds.toFixed(1)} s, ${mib(size)}; ` +
+      `${mib(perMinute)} per minute; 6.5 min ≈ ${mib(perMinute * 6.5)}, 7 min ≈ ${mib(perMinute * 7)} ` +
+      `(limit ${mib(RECORDING.limits.videoBytes)})`,
+  );
+}
+
+/**
+ * The source files the walkthrough and its images are built from, changed since HEAD (tracked
+ * files outside `docs/` and Markdown): `pnpm demo:record` refuses to record over any, so a
+ * recording's commit is what it shows.
+ */
+async function changedSources(): Promise<string> {
+  const { stdout } = await execFileP(
+    'git',
+    [
+      'status',
+      '--porcelain',
+      '--untracked-files=no',
+      '--',
+      '.',
+      ':(exclude)docs',
+      ':(exclude)*.md',
+    ],
+    { cwd: REPO },
+  );
+  return stdout.trim();
+}
+
+/**
+ * Stages the passed walkthrough's recording in `RECORD_DIR/publish/`: the video (re-encoded with
+ * REENCODE_ARGS only when over the size limit), a screenshot per scene of `scenes` and the
+ * captions from the scene log; measures it, writes the record (`e2e/results/demo/recording.json`)
+ * and returns what must stop it being published (none: it may be). Nothing in docs/demo/ is
+ * touched here.
+ */
+async function stageRecording(
+  scenes: readonly (typeof SCENES)[number][],
+  secrets: readonly string[],
+): Promise<{ staged: string; problems: string[] }> {
+  const staged = join(RECORD_DIR, 'publish');
+  await rm(staged, { recursive: true, force: true });
+  await mkdir(staged, { recursive: true });
+  const recorded = join(RECORD_DIR, 'walkthrough.webm');
+  const recordedSize = (await stat(recorded)).size;
+  const video = join(staged, RECORDING.videoFile);
+  let reencoded = false;
+  if (recordedSize > RECORDING.limits.videoBytes) {
+    log(`video ${mib(recordedSize)}: over the limit, re-encoding (${REENCODE_ARGS.join(' ')})`);
+    await execFileP(
+      bundledFfmpeg(),
+      ['-hide_banner', '-loglevel', 'error', '-y', '-i', recorded, ...REENCODE_ARGS, video],
+      { timeout: 1_800_000 },
+    );
+    reencoded = true;
+  } else {
+    await copyFile(recorded, video);
+  }
+  const bytes = await readFile(video);
+  const info = await videoInfo(video);
+  let screenshotBytes = 0;
+  for (const s of scenes) {
+    const name = screenshotName(s.n, s.id);
+    await copyFile(join(RECORD_DIR, name), join(staged, name));
+    screenshotBytes += (await stat(join(staged, name))).size;
+  }
+  const { videoStart } = JSON.parse(
+    await readFile(join(RECORD_DIR, 'video-start.json'), 'utf8'),
+  ) as { videoStart: string };
+  const captions = captionsFromSceneLog(
+    await readFile(join(RESULTS, 'scenes.jsonl'), 'utf8'),
+    Date.parse(videoStart),
+    scenes.map((s) => s.n),
+  );
+  await writeFile(join(staged, RECORDING.captionsFile), captions);
+  const commit = (await execFileP('git', ['rev-parse', 'HEAD'], { cwd: REPO })).stdout.trim();
+  const summary = {
+    commit,
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+    bytes: bytes.length,
+    seconds: Number(info.seconds.toFixed(1)),
+    resolution: `${String(info.width)}x${String(info.height)}`,
+    recordedBytes: recordedSize,
+    reencoded,
+    screenshotBytes,
+  };
+  const summaryText = `${JSON.stringify(summary, null, 2)}\n`;
+  await writeFile(join(RESULTS, 'recording.json'), summaryText);
+  log(`recording staged: ${JSON.stringify(summary)}`);
+  const problems = recordingProblems(
+    { ...info, bytes: bytes.length, screenshotBytes, texts: [captions, summaryText] },
+    secrets,
+  );
+  return { staged, problems };
 }
 
 let browserChild: ChildProcess | undefined;
@@ -124,6 +263,18 @@ let built = false;
 try {
   await mkdir(RESULTS, { recursive: true });
   await rm(join(RESULTS, 'scenes.jsonl'), { force: true });
+  await rm(RECORD_DIR, { recursive: true, force: true });
+  if (record) {
+    // Playwright's ffmpeg, installed with its Chromium: missing, nothing is built or started.
+    await stat(bundledFfmpeg());
+    // A recording names the commit it shows: nothing it is built from may differ from it.
+    const changed = await changedSources();
+    if (changed !== '') {
+      throw new Error(
+        `pnpm demo:record refuses a changed tree; commit or stash first:\n${changed}`,
+      );
+    }
+  }
   await stack.prepare();
   await stack.compose(['down', '--volumes', '--remove-orphans']);
   if (!skipBuild) {
@@ -208,14 +359,41 @@ try {
     RECONCILE_ACCOUNTS: JSON.stringify(accounts),
     DEMO_SIM_URL: simBase,
     DEMO_SIM_TOKEN: token,
+    ...(record ? { DEMO_RECORD_DIR: RECORD_DIR } : {}),
+    ...(record && probeSeconds > 0 ? { DEMO_RECORD_PROBE_MS: String(probeSeconds * 1000) } : {}),
   });
   if (code !== 0) throw new Error(`the demo walkthrough failed (exit ${String(code)})`);
-  // A skipped walkthrough exits 0 too: DEMO-OK only with every scene recorded, once, in order.
-  const scenes = checkSceneLog(
-    await readFile(join(RESULTS, 'scenes.jsonl'), 'utf8').catch(() => ''),
-  );
-  log(`scene log: scenes ${scenes.join(', ')} recorded`);
-  log('DEMO-OK');
+  // Every secret of the run that a page or the test could ever have held.
+  const secrets = [...Object.values(accounts).map((a) => a.password), ...stack.secretValues()];
+  if (record && probeSeconds > 0) {
+    // Scenes 1 to 3 only: a size measure, never a demo run (no DEMO-OK). It stages and checks
+    // its recording as a full one would, and publishes nothing.
+    await reportProbe();
+    const { staged, problems } = await stageRecording(SCENES.slice(0, 3), secrets);
+    log(
+      `probe staged in ${staged}: ${problems.length === 0 ? 'no problem' : problems.join('; ')}; nothing published`,
+    );
+    log('PROBE-OK');
+  } else {
+    // A skipped walkthrough exits 0 too: DEMO-OK only with every scene recorded, once, in order.
+    const scenes = checkSceneLog(
+      await readFile(join(RESULTS, 'scenes.jsonl'), 'utf8').catch(() => ''),
+    );
+    log(`scene log: scenes ${scenes.join(', ')} recorded`);
+    log('DEMO-OK');
+  }
+  if (record && probeSeconds <= 0) {
+    const { staged, problems } = await stageRecording(SCENES, secrets);
+    // Only a recording without a problem replaces docs/demo/'s files; a refused one leaves them.
+    await publishStaged(staged, join(REPO, RECORDING.dir), problems, {
+      mkdir: (dir) => mkdir(dir, { recursive: true }),
+      readdir: (dir) => readdir(dir),
+      rm: (path) => rm(path),
+      copyFile: (from, to) => copyFile(from, to),
+    });
+    log(`published to ${RECORDING.dir}/`);
+    log('RECORD-OK');
+  }
 } catch (error) {
   failed = true;
   console.error(error);

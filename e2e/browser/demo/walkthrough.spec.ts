@@ -11,14 +11,19 @@ import {
 import { episodeIdentity } from '../../src/trace-shapes.ts';
 import { account } from '../login.ts';
 import {
+  closeDemoPage,
   eventually,
   insideDemoRun,
   mes,
+  openDemoPage,
+  probeMs,
   recordScene,
+  sceneEnd,
   sim,
   simStatus,
   switchTo,
   untilPlantTime,
+  untilProbeEnd,
 } from './demo.ts';
 
 /**
@@ -61,12 +66,13 @@ const learnt: {
 
 test.beforeAll(async ({ browser }) => {
   test.skip(!insideDemoRun(), 'runs inside pnpm demo');
-  page = await (await browser.newContext()).newPage();
+  // One context and one page for the whole walkthrough (under `pnpm demo:record`, one video).
+  page = await openDemoPage(browser);
   opened = true;
 });
 
 test.afterAll(async () => {
-  if (opened) await page.context().close();
+  if (opened) await closeDemoPage(page);
 });
 
 /** Runs one scene: waits for its plant time, runs it, records it in the scene log. */
@@ -78,6 +84,7 @@ async function scene(n: number, body: () => Promise<Record<string, unknown>>): P
   const wallStart = new Date().toISOString();
   const plantStart = (await simStatus()).simTime;
   const facts = await body();
+  await sceneEnd(page, n, meta.id);
   await recordScene({
     n,
     id: meta.id,
@@ -335,6 +342,12 @@ test('the demo walkthrough: eight scenes, each asserting what it shows', async (
       };
     });
   });
+
+  if (probeMs > 0) {
+    // The 60 s size probe of `pnpm demo:record` (#282): scenes 1 to 3, then the run until 60 s.
+    await untilProbeEnd();
+    return;
+  }
 
   await test.step('scene 4, alarms and downtime: the spindle overload active, acknowledged by maintenance, its breakdown coded', async () => {
     await scene(4, async () => {

@@ -174,6 +174,8 @@ It was recorded by `pnpm demo:record` on **`62f5b0a`** (main `a1f3cbd` plus #303
 
 **Superseded by #303:** the recording merged with #282 (`da16fbb`: 6 min 35.0 s, 5,020,720 bytes, SHA-256 `d884a720…`) held only each scene's last view. The P10-11 sign-off review found that scene 5 never showed its OEE content: the dashboard for under 0.5 s at about 181.6 s, its line card still loading, then only the top of PO-2610-301, and `05-oee.png` the order's header. This recording replaces it.
 
+**Deviation:** #303 adds a second recording on `main` for 1.0, a deviation from "at most one recording on `main` per release", because the merged one didn't show scene 5's asserted content (found at the P10-11 sign-off); recorded for the owner's review. The OEE-per-hour chart's provisional 09:00 bar above 1 (1.0294 in `05-oee.png`) is by design: cycles are credited at completion and performance is not clamped (ADR-0021; `docs/oee-reference-cases.md`, case 12).
+
 An earlier recording (`577d8ce`, now `7581e00`: 6 min 36.5 s, 4,866,985 bytes, SHA-256 `c365ab9a…`) was committed on this branch and **superseded before merge**: it predated #297 and the first review's changes (it held scenes 1 and 2, and was published without staging). Only this recording reaches `main`.
 
 **Secrets.** The demo's secrets are generated per run and thrown away with its stack, and none can appear in the recording:

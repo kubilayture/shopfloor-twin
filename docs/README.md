@@ -98,7 +98,7 @@ Every document above was read against the code on `main` at `0fdf488`. What was 
 
 **Fixed since, by P10-09 ([#284](https://github.com/kubilayture/shopfloor-twin/issues/284)):**
 
-- `api/mes.openapi.json` (generated): it had `info.version` `0.0.0`, and its description said "API of the MES (Phases 4 and 5)" and "login sets the session cookie sft_session". `apps/mes-server/src/http.ts` now describes the current scope, the HTTPS front and the `__Host-sft_session` cookie (`sft_session` only with `MES_COOKIE_SECURE=off`), declares the tags `orders`, `execution`, `terminal`, `genealogy` and `quality`, and takes `info.version` from the root `package.json` (`1.0.0`); the file is regenerated (`apps/mes-server/src/version.test.ts` checks the version).
+- `api/mes.openapi.json` (generated): it had `info.version` `0.0.0`, and its description said "API of the MES (Phases 4 and 5)" and "login sets the session cookie sft_session". `apps/mes-server/src/http.ts` now describes the current scope, the HTTPS front and the `__Host-sft_session` cookie (`sft_session` only with `MES_COOKIE_SECURE=off`), declares the tags `orders`, `execution`, `terminal`, `genealogy` and `quality`, and takes `info.version` from the root `package.json` (`1.0.0`). The file is generated as deployed (`MES_COOKIE_SECURE=on`), so the login route (`POST /api/v1/session`) names `__Host-sft_session` with `Secure` too, where it said `sft_session`. The file is regenerated; `apps/mes-server/src/version.test.ts` checks the version and the login's cookie.
 - `runbook.md` gained "Releasing": the candidate, its closing gate, the sign-off's docs-only pull request and check, and the owner's tag and release.
 
 **Known gaps, recorded:**

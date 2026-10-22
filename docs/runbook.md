@@ -796,15 +796,15 @@ Deploy the MES (migrations `0028`, `0029`; ingest accepting `lots` and `operator
 
 How a version is released (#284, P10-09; Phase 10 plan, "Success criterion 6 and the tag" and "Release mechanics"). **Releasing is the owner's act** (ADR-0011): only the owner pushes a version tag and publishes a GitHub release. Claude prepares the candidate, the closing gate, the CHANGELOG and the records, and never pushes a version tag, release-candidate tags included.
 
-**The product version** is the root `package.json`'s `version` (`1.0.0`). It is the one source: the MES reads it at start for its OpenAPI `info.version` (`apps/mes-server/src/version.ts`, also in `docs/api/mes.openapi.json`, regenerated), the gateway for `version` in its `_sys` status (`apps/edge-gateway/src/version.ts`); both images copy the root `package.json` to `/app/package.json`. The tag `v<version>` and the CHANGELOG's section carry the same number. Tests: `apps/mes-server/src/version.test.ts` (the generated and the committed `info.version` equal the root version) and `apps/edge-gateway/src/gateway.test.ts` (the published status's `version` equals it). Workspace `package.json` files stay `0.0.0` (private, never published). Contract versions (UNS, OPC UA address space, control API, `sim-summary`, `sim-trace`, `sim-line-oee`) are independent: they version interfaces, not the product.
+**The product version** is the root `package.json`'s `version` (`1.0.0`). It is the one source: the MES reads it at start for its OpenAPI `info.version` (`apps/mes-server/src/version.ts`, also in `docs/api/mes.openapi.json`, regenerated), the gateway for `version` in its `_sys` status (`apps/edge-gateway/src/version.ts`); both images copy the root `package.json` to `/app/package.json`. The tag `v<version>` and the CHANGELOG's section carry the same number. Tests: `apps/mes-server/src/version.test.ts` (the generated and the committed `info.version` equal the root version) and `apps/edge-gateway/src/version.test.ts` with `gateway.test.ts` (the published status's `version` equals it). Both refuse a root `package.json` without a semantic version, naming the file. Workspace `package.json` files stay `0.0.0` (private, never published). Contract versions (UNS, OPC UA address space, control API, `sim-summary`, `sim-trace`, `sim-line-oee`) are independent: they version interfaces, not the product.
 
 ### The release candidate
 
-The candidate is the last commit on `main` that changes anything outside `docs/`, `*.md` and `CHANGELOG.md`. For 1.0.0 it is the merge commit of P10-09's pull request (#284); after it, only a P10-F fix issue may change non-docs files, and each such merge becomes the new candidate. Find it with:
+The candidate is the last commit on `main` that changes anything outside `docs/` and `CHANGELOG.md`. Other Markdown files count as non-docs here: the README's quick-start block is what the fresh-clone test (SC1) runs, so a README change after the candidate makes a new candidate. For 1.0.0 the candidate is the merge commit of P10-09's pull request (#284). After it, only a P10-F fix issue may change files outside `docs/` and `CHANGELOG.md`, and each such merge becomes the new candidate. Pull requests are squash-merged, so each one is a single commit on `main`'s first-parent line. Find the candidate with:
 
 ```bash
 git fetch origin
-git log -1 --format='%H %s' origin/main -- . ':!docs' ':!*.md'
+git log -1 --first-parent --format='%H %s' origin/main -- . ':!docs' ':!CHANGELOG.md'
 ```
 
 ### The closing gate on the candidate
@@ -824,19 +824,20 @@ A fix issue after the gate moves the candidate; the rerun table ("Merge gate") n
 ### Sign-off, the CHANGELOG date and the docs-only check
 
 1. **The owner signs off** in his own comments on P10-11 (#286): Phases 4 to 10, the golden regenerations #140 and #172, the register of coordinator decisions and the demo recording. Claude never comments on, edits or ticks that issue, and a comment written from an agent session never counts as a sign-off. A rejection is an issue the owner marks release-blocking (fixed, and the affected suites rerun on the new candidate) or not (a known issue of the release, fixed in the next patch version).
-2. **A docs-only pull request records it:** the final report's SC6 row with each sign-off comment's URL and `created_at`, STATUS, and the CHANGELOG's date, which replaces the placeholder `<date set at sign-off>` in `## [1.0.0] - <date set at sign-off>` with the sign-off date (`YYYY-MM-DD`). It is merged only after the owner approves it, in chat or in a review he writes himself.
+2. **A docs-only pull request records it:** the final report's SC6 row with each sign-off comment's URL and `created_at`, STATUS, and the CHANGELOG's date, which replaces the placeholder `<date set at sign-off>` in `## [1.0.0] - <date set at sign-off>` with the sign-off date (`YYYY-MM-DD`). It changes only files under `docs/` and `CHANGELOG.md`. It touches no generated file under `docs/api/` or `docs/demo/`, and it still passes `pnpm verify` (formatting, the OpenAPI drift test, the architecture check). It is merged only after the owner approves it, in chat or in a review he writes himself.
 3. **Its record shows the docs-only check** against the candidate, run on the pull request's head and again on its merge commit (the commit to tag):
 
    ```bash
    CANDIDATE=<candidate sha>
    TARGET=<the commit to tag, e.g. origin/main after the merge>
    git merge-base --is-ancestor "$CANDIDATE" "$TARGET" && echo "candidate contained"
-   git diff --stat "$CANDIDATE" "$TARGET" -- . ':!docs' ':!*.md'   # must print nothing
-   git diff --quiet "$CANDIDATE" "$TARGET" -- . ':!docs' ':!*.md' && echo DOCS-ONLY
-   git diff --name-only "$CANDIDATE" "$TARGET"                       # the documents that changed
+   git diff --stat "$CANDIDATE" "$TARGET" -- . ':!docs' ':!CHANGELOG.md'   # must print nothing
+   git diff --quiet "$CANDIDATE" "$TARGET" -- . ':!docs' ':!CHANGELOG.md' && echo DOCS-ONLY
+   git diff --name-only "$CANDIDATE" "$TARGET"                               # the documents that changed
+   git diff --name-only "$CANDIDATE" "$TARGET" -- docs/api docs/demo         # must print nothing
    ```
 
-   Any output from the second command, or no `DOCS-ONLY`, means the commit is not the tested code plus documentation: do not tag it.
+   Output from the second or the last command, or no `DOCS-ONLY`, means the commit is not the tested code plus documentation: do not tag it.
 
 ### Tagging and publishing (the owner)
 
@@ -875,5 +876,5 @@ The same procedure with the new number:
 The tags `phase-00` to `phase-09` exist; GitHub releases exist only for `phase-00` and `phase-01`. Claude doesn't back-fill the others: publishing is the owner's, and the final report's register lists it as an owner item. To publish one, from its phase report's summary:
 
 ```bash
-gh release create phase-02 --verify-tag --title "Phase 2 – Device layer: OPC UA" --notes-file <notes taken from docs/phases/phase-02-report.md>
+gh release create phase-02 --verify-tag --title "Phase 02 – Device layer: OPC UA" --notes-file <notes taken from docs/phases/phase-02-report.md>
 ```

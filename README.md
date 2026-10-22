@@ -6,7 +6,7 @@ The plant is a fictional automotive-hydraulics supplier making two variants of a
 
 Everything above the simulator is built the way it would be in a real plant: an edge gateway publishes every machine's state, cycles, alarms and telemetry to an ISA-95 Unified Namespace on an MQTT broker, with store-and-forward through broker outages; the MES core stores them in PostgreSQL with TimescaleDB and derives OEE, downtime, alarm KPIs (ISA-18.2), shift reports, production orders from an ERP mock, execution, genealogy and traceability, SPC and quality holds; a web app gives operators, supervisors, quality and admins their screens over HTTPS. Every derived figure is reconciled against the simulator's ground truth by tests.
 
-The [master plan](docs/project-plan.md) sets the goals, the six v1 success criteria and the roadmap; [docs/STATUS.md](docs/STATUS.md) says where the project stands.
+The [master plan](docs/project-plan.md) sets the goals, the six v1 success criteria and the roadmap; [docs/STATUS.md](docs/STATUS.md) says where the project stands. **Release 1.0.0** ([`v1.0.0`](https://github.com/kubilayture/shopfloor-twin/releases/tag/v1.0.0), 2026-10-22) completes the v1 scope; the [final report](docs/final-report.md) gives each success criterion with its proof.
 
 ## Run it
 
@@ -83,5 +83,5 @@ pnpm gate      # the merge gate: verify, golden, end-to-end, stack smoke, reconc
 - [docs/demo.md](docs/demo.md): the demo scenario and its scenes.
 - [docs/architecture.md](docs/architecture.md): the architecture; [docs/data-model.md](docs/data-model.md): the MES database (generated); [docs/contracts/](docs/contracts/) and [docs/api/](docs/api/): the UNS, OPC UA, Modbus, control API, MES and ERP mock interfaces.
 - [docs/adr/](docs/adr/README.md): the architecture decision records.
-- [docs/phases/](docs/phases/): each phase's plan, log and report (the latest report: [Phase 9](docs/phases/phase-09-report.md)); [docs/learning/](docs/learning/): the learning notes per phase.
-- [docs/security-review.md](docs/security-review.md), [docs/glossary.md](docs/glossary.md), [CHANGELOG.md](CHANGELOG.md). The v1.0 final report: [docs/final-report.md](docs/final-report.md) (each success criterion with its proof, known limits and the decisions awaiting the owner; its evidence is filled by the Phase 10 close).
+- [docs/phases/](docs/phases/): each phase's plan, log and report (the latest report: [Phase 10](docs/phases/phase-10-report.md)); [docs/learning/](docs/learning/): the learning notes per phase.
+- [docs/security-review.md](docs/security-review.md), [docs/glossary.md](docs/glossary.md), [CHANGELOG.md](CHANGELOG.md). The v1.0 final report: [docs/final-report.md](docs/final-report.md) (each success criterion with its proof and the closing gate's records, known limits, and the register of decisions with the sign-off).

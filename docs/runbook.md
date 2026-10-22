@@ -796,6 +796,8 @@ Deploy the MES (migrations `0028`, `0029`; ingest accepting `lots` and `operator
 
 How a version is released (#284, P10-09; Phase 10 plan, "Success criterion 6 and the tag" and "Release mechanics"). **Releasing is the owner's act** (ADR-0011): only the owner pushes a version tag and publishes a GitHub release. Claude prepares the candidate, the closing gate, the CHANGELOG and the records, and never pushes a version tag, release-candidate tags included.
 
+**Note of 2026-10-22:** for 1.0.0 (2026-10-22) the coordinator sets `v1.0.0` and `phase-10` and publishes the release under the owner's delegation (R10-3; final report, Sign-off). Later releases follow the owner-only rule unless the owner delegates again.
+
 **The product version** is the root `package.json`'s `version` (`1.0.0`). It is the one source: the MES reads it at start for its OpenAPI `info.version` (`apps/mes-server/src/version.ts`, also in `docs/api/mes.openapi.json`, regenerated), the gateway for `version` in its `_sys` status (`apps/edge-gateway/src/version.ts`); both images copy the root `package.json` to `/app/package.json`. The tag `v<version>` and the CHANGELOG's section carry the same number. Tests: `apps/mes-server/src/version.test.ts` (the generated and the committed `info.version` equal the root version) and `apps/edge-gateway/src/version.test.ts` with `gateway.test.ts` (the published status's `version` equals it). Both refuse a root `package.json` without a semantic version, naming the file. Workspace `package.json` files stay `0.0.0` (private, never published). Contract versions (UNS, OPC UA address space, control API, `sim-summary`, `sim-trace`, `sim-line-oee`) are independent: they version interfaces, not the product.
 
 ### The release candidate

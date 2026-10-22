@@ -30,8 +30,9 @@ export const commandSubscriptions = (areas: readonly string[]): string[] =>
 
 /**
  * The gateway's command session (#173, ADR-0029, plan M2): a second MQTT connection, client id
- * `gw-01-cmd` under the broker user `gw-01`, so it never takes over the publishing connection's
- * session. It is persistent (`clean: false` with a session expiry), so the broker queues commands
+ * `gw-01-cmd`, so it never takes over the publishing connection's session. Since UNS 1.5 (#240,
+ * ADR-0039) it logs in as its own broker user `gw-01-cmd` (`MQTT_CMD_USERNAME`), bound to that
+ * client id. It is persistent (`clean: false` with a session expiry), so the broker queues commands
  * while the gateway is away, and a delivery is acknowledged only after it is committed to the
  * gateway's SQLite inbox: MQTT.js sends the PUBACK when `handleMessage`'s callback runs. A
  * delivery that can't be recorded is never acknowledged: the session is dropped and resumed after

@@ -12,7 +12,9 @@ const text = (value: unknown): string => `${JSON.stringify(value, null, 2)}\n`;
 
 /** The OpenAPI 3.1 description of the MES API, from the route schemas, as committed. */
 export async function generateOpenApi(): Promise<string> {
-  const { app } = await buildMesHttp({ ready: () => Promise.resolve(false) });
+  // As deployed: MES_COOKIE_SECURE=on (the default since #241), so the routes describe the
+  // `__Host-sft_session` cookie with its Secure attribute.
+  const { app } = await buildMesHttp({ ready: () => Promise.resolve(false), cookieSecure: true });
   await app.ready();
   const document = app.swagger();
   await app.close();

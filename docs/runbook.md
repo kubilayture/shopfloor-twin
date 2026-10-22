@@ -2,7 +2,7 @@
 
 How to start, stop and reset the system, run its suites and gate a merge. Updated whenever operations change.
 
-The current procedure comes first: "Prerequisites", "Commands" and "Full stack (Compose)". Then the workspace checks, running the components outside Compose and the golden scenarios, the merge gate and CI, the reconciliation run and the other suites. Steps for a stack or an `.env` made before 1.0 are in one section at the end, "Upgrading a stack from before 1.0".
+The current procedure comes first: "Prerequisites", "Commands" and "Full stack (Compose)". Then the workspace checks, running the components outside Compose and the golden scenarios, the merge gate and CI, the reconciliation run and the other suites, the upgrade notes, and "Releasing" (the candidate, its closing gate, the owner's tag). Steps for a stack or an `.env` made before 1.0 are in one section at the end, "Upgrading a stack from before 1.0".
 
 ## Prerequisites
 
@@ -791,3 +791,90 @@ Deploy the MES (migrations `0028`, `0029`; ingest accepting `lots` and `operator
 
 - **`http://localhost:8080` no longer answers:** the web moved to `https://localhost:8443` in #241; update bookmarks and scripts. **400 "plain HTTP request was sent to HTTPS port":** use `https://`.
 - **Scripts and tools that used the MES on 4700, the gateway on 4900 or the database on 5442:** run the stack with `pnpm stack:up:dev` (the same stack, those three ports published on `127.0.0.1` again), go through the web front (`https://localhost:8443/api/v1/…` with the dev CA and a session), or use `docker compose exec` (`docker compose exec db psql -U shopfloor -d shopfloor`, `docker compose exec mes wget -qO- http://127.0.0.1:4700/metrics`).
+
+## Releasing
+
+How a version is released (#284, P10-09; Phase 10 plan, "Success criterion 6 and the tag" and "Release mechanics"). **Releasing is the owner's act** (ADR-0011): only the owner pushes a version tag and publishes a GitHub release. Claude prepares the candidate, the closing gate, the CHANGELOG and the records, and never pushes a version tag, release-candidate tags included.
+
+**The product version** is the root `package.json`'s `version` (`1.0.0`). It is the one source: the MES reads it at start for its OpenAPI `info.version` (`apps/mes-server/src/version.ts`, also in `docs/api/mes.openapi.json`, regenerated), the gateway for `version` in its `_sys` status (`apps/edge-gateway/src/version.ts`); both images copy the root `package.json` to `/app/package.json`. The tag `v<version>` and the CHANGELOG's section carry the same number. Tests: `apps/mes-server/src/version.test.ts` (the generated and the committed `info.version` equal the root version) and `apps/edge-gateway/src/version.test.ts` with `gateway.test.ts` (the published status's `version` equals it). Both refuse a root `package.json` without a semantic version, naming the file. Workspace `package.json` files stay `0.0.0` (private, never published). Contract versions (UNS, OPC UA address space, control API, `sim-summary`, `sim-trace`, `sim-line-oee`) are independent: they version interfaces, not the product.
+
+### The release candidate
+
+The candidate is the last commit on `main` that changes anything outside `docs/` and `CHANGELOG.md`. Other Markdown files count as non-docs here: the README's quick-start block is what the fresh-clone test (SC1) runs, so a README change after the candidate makes a new candidate. For 1.0.0 the candidate is the merge commit of P10-09's pull request (#284). After it, only a P10-F fix issue may change files outside `docs/` and `CHANGELOG.md`, and each such merge becomes the new candidate. Pull requests are squash-merged, so each one is a single commit on `main`'s first-parent line. Find the candidate with:
+
+```bash
+git fetch origin
+git log -1 --first-parent --format='%H %s' origin/main -- . ':!docs' ':!CHANGELOG.md'
+```
+
+### The closing gate on the candidate
+
+P10-10 (#285) runs on the candidate, one suite after the other, each record kept in the final report (`docs/final-report.md`), nothing rerun silently: a failure is a finding, a flake that recurs is a fix issue. The owner's dev stack is stopped first (the VM has 4 GiB), and the host (25 GiB) and Docker (15 GiB) disk floors apply ("Merge gate").
+
+1. `pnpm gate` (all five steps);
+2. `pnpm test:resilience` twice in a row;
+3. `pnpm test:perf`, `pnpm test:trace-perf`, `pnpm test:console`, `pnpm demo`;
+4. `FRESH_CLONE_NO_CACHE=1 pnpm test:fresh-clone`;
+5. `TURBO_FORCE=1 pnpm verify --concurrency=1` three times in a row, the nine fast-check seeds of each run recorded;
+6. `pnpm audit --prod`;
+7. the falsifiability probes, in a throwaway worktree, never committed.
+
+A fix issue after the gate moves the candidate; the rerun table ("Merge gate") names the suites to run again on the new one. Phase 10 then closes "complete, pending the owner's sign-off", with the candidate named by its commit and the final report's SC6 row "not met".
+
+### Sign-off, the CHANGELOG date and the docs-only check
+
+1. **The owner signs off** in his own comments on P10-11 (#286): Phases 4 to 10, the golden regenerations #140 and #172, the register of coordinator decisions and the demo recording. Claude never comments on, edits or ticks that issue, and a comment written from an agent session never counts as a sign-off. A rejection is an issue the owner marks release-blocking (fixed, and the affected suites rerun on the new candidate) or not (a known issue of the release, fixed in the next patch version).
+2. **A docs-only pull request records it:** the final report's SC6 row with each sign-off comment's URL and `created_at`, STATUS, and the CHANGELOG's date, which replaces the placeholder `<date set at sign-off>` in `## [1.0.0] - <date set at sign-off>` with the sign-off date (`YYYY-MM-DD`). It changes only files under `docs/` and `CHANGELOG.md`. It touches no generated file under `docs/api/` or `docs/demo/`, and it still passes `pnpm verify` (formatting, the OpenAPI drift test, the architecture check). It is merged only after the owner approves it, in chat or in a review he writes himself.
+3. **Its record shows the docs-only check** against the candidate, run on the pull request's head and again on its merge commit (the commit to tag):
+
+   ```bash
+   CANDIDATE=<candidate sha>
+   TARGET=<the commit to tag, e.g. origin/main after the merge>
+   git merge-base --is-ancestor "$CANDIDATE" "$TARGET" && echo "candidate contained"
+   git diff --stat "$CANDIDATE" "$TARGET" -- . ':!docs' ':!CHANGELOG.md'   # must print nothing
+   git diff --quiet "$CANDIDATE" "$TARGET" -- . ':!docs' ':!CHANGELOG.md' && echo DOCS-ONLY
+   git diff --name-only "$CANDIDATE" "$TARGET"                               # the documents that changed
+   git diff --name-only "$CANDIDATE" "$TARGET" -- docs/api docs/demo         # must print nothing
+   ```
+
+   Output from the second or the last command, or no `DOCS-ONLY`, means the commit is not the tested code plus documentation: do not tag it.
+
+### Tagging and publishing (the owner)
+
+On the sign-off pull request's merge commit, after the docs-only check above passes on it:
+
+```bash
+git fetch origin --tags
+TARGET=$(git rev-parse origin/main)   # must be the sign-off pull request's merge commit
+git log -1 --oneline "$TARGET"         # check that it is, and that the docs-only check passed on it
+git tag -a v1.0.0 "$TARGET" -m "ShopFloor Twin 1.0.0"
+git tag -a phase-10 "$TARGET" -m "Phase 10: Release 1.0"
+git push origin v1.0.0 phase-10
+```
+
+Then publish the GitHub release from the CHANGELOG's 1.0.0 section. The whole section (about 200 KB) is over GitHub's release-body limit (125,000 characters), so the notes are the section's summary, everything above its first `###`, with a link to the full entries:
+
+```bash
+NOTES=$(mktemp)
+awk '/^## \[1\.0\.0\]/{f=1;next} f&&/^### /{exit} f' CHANGELOG.md > "$NOTES"
+printf '\nFull list of changes: [CHANGELOG.md](https://github.com/kubilayture/shopfloor-twin/blob/v1.0.0/CHANGELOG.md).\n' >> "$NOTES"
+gh release create v1.0.0 --verify-tag --title "ShopFloor Twin 1.0.0" --notes-file "$NOTES"
+rm "$NOTES"
+```
+
+Check the result with `git cat-file -t v1.0.0` (`tag`: annotated), `git rev-list -n 1 v1.0.0` (the checked commit) and `gh release view v1.0.0`.
+
+### A later 1.0.x
+
+The same procedure with the new number:
+
+1. A pull request sets the root `package.json` `version` (the MES and the gateway follow), regenerates the OpenAPI file (`pnpm --filter @shopfloor/mes-server openapi`), turns `[Unreleased]` into `## [1.0.x] - <date set at sign-off>` with an empty `[Unreleased]` above it, and updates the compare links at the end of the CHANGELOG (`[Unreleased]: …/compare/v1.0.x...HEAD`, `[1.0.x]: …/compare/v1.0.(x-1)...v1.0.x`). It changes both apps' reported version, so its gate is `verify,e2e,smoke,reconcile` (rerun table). Its merge commit is the candidate unless a later fix moves it.
+2. The closing suites the release's changes call for (rerun table), the owner's sign-off, the docs-only pull request with the date and the docs-only check, then the owner's `v1.0.x` tag and release as above.
+
+### Earlier phase releases
+
+The tags `phase-00` to `phase-09` exist; GitHub releases exist only for `phase-00` and `phase-01`. Claude doesn't back-fill the others: publishing is the owner's, and the final report's register lists it as an owner item. To publish one, from its phase report's summary:
+
+```bash
+gh release create phase-02 --verify-tag --title "Phase 02 – Device layer: OPC UA" --notes-file <notes taken from docs/phases/phase-02-report.md>
+```

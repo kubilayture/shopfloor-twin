@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "ShopFloor Twin MES API",
-    "version": "0.0.0",
-    "description": "API of the MES (Phases 4 and 5): equipment with current state, state intervals, telemetry series, shift totals, the plant clock, OEE per hour and shift, shift instances, reason codes, downtime records and the loss Pareto; alarm occurrences and alarm KPIs per hour and shift (Phase 6); operator writes (downtime coding, alarm acknowledgement, shelving and comments, handover notes) with their audits. Identity (Phase 7, ADR-0026): login sets the session cookie sft_session (POST /session); with MES_AUTH=on every route but the login needs it (401) and the permission each route names (403); MES_AUTH=off (diagnosis only) serves reads and the WebSocket without one, never a write. Writes are guarded (ADR-0023: Origin of this host, Sec-Fetch-Site, application/json, 16 KiB, a global and a per-user rate limit, MES_WRITES=off answers 405); bound to loopback by default. Errors are RFC 9457 problem details. Push: WebSocket at /api/v1/ws (see docs/api/realtime.md)."
+    "version": "1.0.0",
+    "description": "API of the MES: equipment with current state, state intervals and telemetry series; the plant clock, shift instances, totals, reports and handover notes; OEE per equipment, work center, hour and shift, line OEE with the bottleneck and OEE per order; reason codes, downtime records and the loss Pareto; alarm occurrences, alarm KPIs, floods and bad actors, acknowledgement, shelving and comments; production orders from the ERP with release, dispatch and close, order execution, the operator terminal, scrap records and their coding; genealogy and traceability by serial, lot and carton; SPC characteristics, control limits, charts and signals; quality holds. Clients reach it through the HTTPS front of the stack, nginx (port 8443 by default, ADR-0039), which proxies /api/; the MES itself is not published (except on loopback with pnpm stack:up:dev). Identity (ADR-0026): login (POST /api/v1/session) sets the session cookie __Host-sft_session (Secure, HttpOnly, SameSite=Strict; sft_session only with MES_COOKIE_SECURE=off); with MES_AUTH=on, the default, every /api/v1 route but login and logout needs it (401) and the permission it names (403), while /health and /metrics are open; MES_AUTH=off (diagnosis only) serves reads and the WebSocket without one, never a write. Logins are throttled (429 with Retry-After, ADR-0039). Writes are guarded (ADR-0023: Origin of this host, Sec-Fetch-Site, application/json, 16 KiB, a global and a per-user rate limit, MES_WRITES=off answers 405). Errors are RFC 9457 problem details. Push: WebSocket at /api/v1/ws (see docs/api/realtime.md)."
   },
   "components": {
     "schemas": {
@@ -37568,7 +37568,7 @@
         "tags": [
           "identity"
         ],
-        "description": "Sets `sft_session` (HttpOnly, SameSite=Strict, Path=/) to a new random token; a session the request carried ends. Every failure (unknown or disabled user, wrong password, a user locked for this address) is the same 401. Five failures in a row from one client address lock the user for that address for 15 minutes (the address is X-Real-IP from nginx over the edge network, else the connection's). Once a user has 10 or more failed attempts in 15 minutes from all addresses together (n), an attempt within min(2^(n-10) s, 30 s) of the last failure is answered 429 with Retry-After, the remaining wait rounded up, without checking the password, except from an address that logged in to that user within those 15 minutes; a 429 is not counted. An admin is never locked: from its fifth failure an attempt within its delay (1 s doubling, at most 5 min) is 429 with Retry-After too. Login buckets per client address and per (user name, address) answer 429 as well. Passes the write guards (login CSRF). Access: anyone (no session needed).",
+        "description": "Sets `__Host-sft_session` (Path=/, HttpOnly, SameSite=Strict, Secure) to a new random token (`sft_session`, without Secure, only with MES_COOKIE_SECURE=off); a session the request carried ends. Every failure (unknown or disabled user, wrong password, a user locked for this address) is the same 401. Five failures in a row from one client address lock the user for that address for 15 minutes (the address is X-Real-IP from nginx over the edge network, else the connection's). Once a user has 10 or more failed attempts in 15 minutes from all addresses together (n), an attempt within min(2^(n-10) s, 30 s) of the last failure is answered 429 with Retry-After, the remaining wait rounded up, without checking the password, except from an address that logged in to that user within those 15 minutes; a 429 is not counted. An admin is never locked: from its fifth failure an attempt within its delay (1 s doubling, at most 5 min) is 429 with Retry-After too. Login buckets per client address and per (user name, address) answer 429 as well. Passes the write guards (login CSRF). Access: anyone (no session needed).",
         "requestBody": {
           "required": true,
           "content": {
@@ -39088,6 +39088,26 @@
     {
       "name": "alarms",
       "description": "Alarm occurrences with their history, alarm KPIs, floods and bad actors"
+    },
+    {
+      "name": "orders",
+      "description": "Production orders from the ERP, their commands and incidents; order OEE"
+    },
+    {
+      "name": "execution",
+      "description": "Order execution: units, incidents, scrap records and their coding"
+    },
+    {
+      "name": "terminal",
+      "description": "The operator terminal of a work center"
+    },
+    {
+      "name": "genealogy",
+      "description": "Traceability by serial, lot and carton; incidents"
+    },
+    {
+      "name": "quality",
+      "description": "SPC characteristics, control limits, charts and signals; quality holds"
     },
     {
       "name": "plant",

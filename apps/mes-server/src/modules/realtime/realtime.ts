@@ -2464,7 +2464,10 @@ export async function registerRealtime(
           access: 'public',
           summary: 'Logs in: sets the session cookie',
           description:
-            `Sets \`${cookieName}\` (HttpOnly, SameSite=Strict, Path=/) to a new random token; ` +
+            `Sets \`${cookieName}\` (${cookieAttributes.replaceAll('; ', ', ')}) to a new random ` +
+            (options.cookieSecure === true
+              ? `token (\`${SESSION_COOKIE}\`, without Secure, only with MES_COOKIE_SECURE=off); `
+              : `token (\`${SECURE_SESSION_COOKIE}\`, with Secure, under MES_COOKIE_SECURE=on); `) +
             'a session the request carried ends. Every failure (unknown or disabled user, wrong ' +
             'password, a user locked for this address) is the same 401. Five failures in a row ' +
             'from one client address lock the user for that address for 15 minutes (the address ' +

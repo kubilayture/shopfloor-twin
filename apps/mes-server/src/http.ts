@@ -15,6 +15,7 @@ import {
   type PushOptions,
   type Realtime,
 } from './modules/realtime/index.ts';
+import { PRODUCT_VERSION } from './version.ts';
 
 export interface MesHttpOptions {
   /** Ready once the database answers and migrations are applied. */
@@ -22,6 +23,7 @@ export interface MesHttpOptions {
   readonly logger?:
     boolean | { level: string; stream?: { write(line: string): void } } | FastifyBaseLogger;
   readonly push?: Omit<PushOptions, 'registry'>;
+  /** The OpenAPI `info.version`; default the product version (root `package.json`). */
   readonly version?: string;
   /** See `RealtimeOptions`: Host names answered, extra WebSocket origins allowed. */
   readonly allowedHosts?: readonly string[];
@@ -62,7 +64,7 @@ export async function buildMesHttp({
   ready,
   logger = false,
   push,
-  version = '0.0.0',
+  version = PRODUCT_VERSION,
   allowedHosts,
   allowedOrigins,
   writes,
@@ -133,18 +135,25 @@ export async function buildMesHttp({
         title: 'ShopFloor Twin MES API',
         version,
         description:
-          'API of the MES (Phases 4 and 5): equipment with current state, state ' +
-          'intervals, telemetry series, shift totals, the plant clock, OEE per hour and shift, ' +
-          'shift instances, reason codes, downtime records and the loss Pareto; alarm ' +
-          'occurrences and alarm KPIs per hour and shift (Phase 6); operator writes (downtime ' +
-          'coding, alarm acknowledgement, shelving and comments, handover notes) with their ' +
-          'audits. Identity (Phase 7, ADR-0026): login sets the session cookie sft_session ' +
-          '(POST /session); with MES_AUTH=on every route but the login needs it (401) and the ' +
-          'permission each route names (403); MES_AUTH=off (diagnosis only) serves reads and the ' +
-          'WebSocket without one, never a write. Writes are guarded (ADR-0023: Origin of this host, ' +
+          'API of the MES: equipment with current state, state intervals and telemetry ' +
+          'series; the plant clock, shift instances, totals, reports and handover notes; OEE ' +
+          'per equipment, work center, hour and shift, line OEE with the bottleneck and OEE per ' +
+          'order; reason codes, downtime records and the loss Pareto; alarm occurrences, alarm ' +
+          'KPIs, floods and bad actors, acknowledgement, shelving and comments; production ' +
+          'orders from the ERP with release, dispatch and close, order execution, the operator ' +
+          'terminal, scrap records and their coding; genealogy and traceability by serial, lot and carton; SPC ' +
+          'characteristics, control limits, charts and signals; quality holds. ' +
+          'Clients reach it through the HTTPS front of the stack, nginx (port 8443 by default, ' +
+          'ADR-0039), which proxies /api/; the MES itself is not published (except on loopback ' +
+          'with pnpm stack:up:dev). Identity (ADR-0026): ' +
+          'login (POST /api/v1/session) sets the session cookie __Host-sft_session (Secure, ' +
+          'HttpOnly, SameSite=Strict; sft_session only with MES_COOKIE_SECURE=off); with ' +
+          'MES_AUTH=on, the default, every /api/v1 route but login and logout needs it (401) and ' +
+          'the permission it names (403), while /health and /metrics are open; MES_AUTH=off (diagnosis only) ' +
+          'serves reads and the WebSocket without one, never a write. Logins are throttled ' +
+          '(429 with Retry-After, ADR-0039). Writes are guarded (ADR-0023: Origin of this host, ' +
           'Sec-Fetch-Site, application/json, 16 KiB, a global and a per-user rate limit, ' +
-          'MES_WRITES=off answers 405); bound to loopback by default. Errors are RFC 9457 ' +
-          'problem details. ' +
+          'MES_WRITES=off answers 405). Errors are RFC 9457 problem details. ' +
           `Push: WebSocket at ${WS_PATH} (see docs/api/realtime.md).`,
       },
       tags: [
@@ -156,6 +165,20 @@ export async function buildMesHttp({
         {
           name: 'alarms',
           description: 'Alarm occurrences with their history, alarm KPIs, floods and bad actors',
+        },
+        {
+          name: 'orders',
+          description: 'Production orders from the ERP, their commands and incidents; order OEE',
+        },
+        {
+          name: 'execution',
+          description: 'Order execution: units, incidents, scrap records and their coding',
+        },
+        { name: 'terminal', description: 'The operator terminal of a work center' },
+        { name: 'genealogy', description: 'Traceability by serial, lot and carton; incidents' },
+        {
+          name: 'quality',
+          description: 'SPC characteristics, control limits, charts and signals; quality holds',
         },
         { name: 'plant', description: 'Site and plant clock' },
         { name: 'identity', description: 'Login, sessions, password changes and users' },

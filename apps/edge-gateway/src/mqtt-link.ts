@@ -3,13 +3,15 @@ import mqtt, { type IClientOptions, type MqttClient } from 'mqtt';
 import type { TopicSequences } from './identity.ts';
 import type { Transport } from './buffer/outbox.ts';
 import type { AnyPublication } from './publisher.ts';
+import { PRODUCT_VERSION } from './version.ts';
 
 export interface MqttLinkOptions {
   readonly url: string;
   readonly username: string;
   readonly password: string;
   readonly gatewayId: string;
-  readonly version: string;
+  /** Reported in the `_sys` status; default the product version (root `package.json`, P10-09). */
+  readonly version?: string;
   readonly sequences: TopicSequences;
   readonly startedAt: number;
   readonly now?: () => number;
@@ -131,7 +133,7 @@ export class MqttLink implements Transport {
       value: {
         status,
         startedAt: new Date(this.#options.startedAt).toISOString(),
-        version: this.#options.version,
+        version: this.#options.version ?? PRODUCT_VERSION,
       },
     };
   }

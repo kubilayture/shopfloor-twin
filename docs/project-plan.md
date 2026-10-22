@@ -501,7 +501,7 @@ Every document has one owner-facing purpose and a fixed update trigger, so nothi
 | `docs/glossary.md` | Industrial and project terms | A new term appears in code or docs |
 | `docs/README.md` | Documentation index: every document, its purpose, its update trigger and whether a test checks it | A document is added, removed or renamed |
 | `docs/demo.md` | The demo scenario's scene script, runnable by hand, and the recording's record | The demo's scenes or recording change |
-| `docs/final-report.md` | The v1.0 final report: each success criterion with its proof on the release commit (to come in P10-08) | Release |
+| `docs/final-report.md` | The v1.0 final report: each success criterion with its proof on the release commit, known limits, the register of decisions awaiting the owner (P10-08; evidence filled by P10-10) | Release |
 | `CHANGELOG.md` | Keep a Changelog format, grouped by release | Every pull request ("Unreleased" section) |
 
 **GitHub tracking**
@@ -593,7 +593,7 @@ The biggest risk is not technical: it is the scope outgrowing the owner's review
 - [x] Genealogy identity and cartons (decided in the Phase 8 plan; ADR-0034; Phase 8)
 - [x] Quality holds and ERP quality notifications (decided in the Phase 8 plan; ADR-0035; Phase 8)
 - [x] Load-testing tool and performance targets (decided in the Phase 9 plan; ADR-0040; Phase 9, rev. 9)
-- [ ] Whether to add Sparkplug B after v1.0 (to be decided by ADR-0041, P10-08; rev. 10)
+- [ ] Whether to add Sparkplug B after v1.0: not in v1.x; an egress bridge beside the UNS if a named consumer ever needs one ([ADR-0041](adr/0041-no-sparkplug-b-in-v1x.md), P10-08; rev. 10). Left unticked until the owner reviews ADR-0041 (final report, register)
 
 ## 13. Glossary and references
 

@@ -84,4 +84,4 @@ pnpm gate      # the merge gate: verify, golden, end-to-end, stack smoke, reconc
 - [docs/architecture.md](docs/architecture.md): the architecture; [docs/data-model.md](docs/data-model.md): the MES database (generated); [docs/contracts/](docs/contracts/) and [docs/api/](docs/api/): the UNS, OPC UA, Modbus, control API, MES and ERP mock interfaces.
 - [docs/adr/](docs/adr/README.md): the architecture decision records.
 - [docs/phases/](docs/phases/): each phase's plan, log and report (the latest report: [Phase 9](docs/phases/phase-09-report.md)); [docs/learning/](docs/learning/): the learning notes per phase.
-- [docs/security-review.md](docs/security-review.md), [docs/glossary.md](docs/glossary.md), [CHANGELOG.md](CHANGELOG.md). The v1.0 final report, `docs/final-report.md`, comes with P10-08.
+- [docs/security-review.md](docs/security-review.md), [docs/glossary.md](docs/glossary.md), [CHANGELOG.md](CHANGELOG.md). The v1.0 final report: [docs/final-report.md](docs/final-report.md) (each success criterion with its proof, known limits and the decisions awaiting the owner; its evidence is filled by the Phase 10 close).

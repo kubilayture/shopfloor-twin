@@ -1,4 +1,4 @@
-# Status — updated 2026-10-21
+# Status — updated 2026-10-22
 
 ## Current phase: 10 – Release 1.0 (started 2026-10-21)
 
@@ -8,11 +8,11 @@ Phase 10's eight exit criteria (`docs/phases/phase-10-plan.md`, "Exit criteria")
 
 - **1, fresh clone:** `pnpm test:fresh-clone` and the README's quick-start block in place (#277); `FRESH-CLONE-OK` on the PR's commits, cached and with `FRESH_CLONE_NO_CACHE=1`, not yet of record (the closing run must be on a commit in `origin/main`).
 - **2, SC2 to SC5:** the suites exist and passed at the Phase 9 close; their records on the candidate and the falsifiability probes come with P10-10.
-- **3, SC6:** not met, and not claimable by Claude: the owner's sign-off of Phases 4–10 (P10-11, #286).
+- **3, SC6:** not met, and not claimable by Claude: the owner's sign-off of Phases 4–10 (and Phases 2–3 to confirm, O-3) (P10-11, #286).
 - **4, seeds:** every `pnpm verify` prints one seed per fast-check workspace (#276); the three uncached runs of record come with P10-10.
-- **5, documentation:** the API references, glossary and documentation index (#279), README, runbook and STATUS (#278) done; the architecture views and `scripts/check-architecture.ts` (#280) in progress.
+- **5, documentation:** the API references, glossary and documentation index (#279), README, runbook and STATUS (#278), the architecture views and `scripts/check-architecture.ts` (#280) done.
 - **6, demo:** `pnpm demo` passed twice in a row (#281); the recording, screenshots and captions in `docs/demo/` within the size limits, the video 6 min 35.0 s against the plan's 6 minutes (#282, a coordinator decision below); the closing gate's `pnpm demo` and the owner's approval of the recording to come.
-- **7, release:** P10-08 and P10-09 (#283, #284) not started.
+- **7, release:** the final report `docs/final-report.md` and ADR-0041 (#283) on its branch, the evidence fields named for P10-10; P10-09 (#284) next.
 - **8, no regression:** the closing gate; no golden regenerated in Phase 10 so far.
 
 ## Done since last update
@@ -25,16 +25,17 @@ Since the Phase 9 close (#246, PR #274, `d589ef7`, tag `phase-09`). Each entry i
 - #279 (P10-04, PR #291, `80d670f`): `docs/api/realtime.md` fixed, `docs/api/erp-mock.md` with its drift test, the glossary (63 terms), the documentation index `docs/README.md` with its audit, ADR-0011's note, master plan sections 5, 10 and 13. Gate `verify,smoke,reconcile` `GATE-OK`.
 - #277 (P10-02, PR #289, `464b75b`): the fresh-clone start: probe F1 (the old quick start failed), `scripts/stack-init.sh` and `pnpm stack:init`, the OPC UA and Modbus host ports as variables, `pnpm test:fresh-clone`, the README's quick-start block. Gate `verify,smoke,reconcile` and `verify,smoke` `GATE-OK`; `FRESH-CLONE-OK` cached and uncached.
 - #288 (P10-F1, PR #292, `af9e7a4`): explicit timeouts for the tests slow under the default `verify` concurrency (`spc-core`'s incremental property 30 s, `shift-calendar`'s buckets property and the `pki` step's tests 15 s, `requireOwnMaterial` 10 s); `pnpm verify` passes at the default concurrency; the timeout rule in the runbook. Full gate `GATE-OK` and `RESILIENCE-OK`.
-- #278 (P10-03, branch `docs/278-docs-pass-1`): README (run, screens, develop, documentation), the runbook restructured (a commands table, the current procedure first, the upgrade notes in one section, the CI section, the CA export without Node), this STATUS trimmed to the fixed layout.
+- #278 (P10-03, PR #294, `081d7c8`): README (run, screens, develop, documentation), the runbook restructured (a commands table, the current procedure first, the upgrade notes in one section, the CI section, the CA export without Node), this STATUS trimmed to the fixed layout.
+- #280 (P10-05, PR #293, `6f345bf`): `docs/architecture.md` as C4-style Mermaid views, `scripts/check-architecture.ts` in `pnpm verify`.
+- #295 (P10-F2, PR #297, `29321ea`): measured values at the characteristic's precision, plant time on the console, wall times labelled.
+- #282 (P10-07, PR #296, `f8768d9`): `pnpm demo:record`; `docs/demo/` (video 4.79 MiB, 6 min 35.0 s, 960 × 540, recorded on `da16fbb`; screenshots 0.93 MiB); the README's screenshots.
 
 ## In progress
 
-- #282 (P10-07, branch `docs/282-demo-recording`): `pnpm demo:record` (the walkthrough with video, a screenshot per scene, WebVTT captions, the scripted re-encode); `docs/demo/` (video 4.79 MiB, 6 min 35.0 s, 960 × 540, recorded on `da16fbb` after #297; screenshots 0.93 MiB); the README's screenshots.
-- #280 (P10-05) architecture views and `scripts/check-architecture.ts`.
+- #283 (P10-08, branch `docs/283-final-report`): `docs/final-report.md` (summary and goals, phase history, SC1–SC6 with their evidence fields for P10-10, the closing gate's table, architecture, metrics, deviations, known limits, after v1.0, the register of 69 items awaiting the owner, lessons, the sign-off table) and ADR-0041 (no Sparkplug B in v1.x; a bridge beside the UNS if a consumer needs one; awaiting the owner's review).
 
 ## Next up
 
-- #283 (P10-08) the final report `docs/final-report.md` and ADR-0041 (Sparkplug B).
 - #284 (P10-09) release mechanics: version 1.0.0, CHANGELOG, the runbook's "Releasing". Its merge commit is the release candidate.
 - #285 (P10-10) Phase 10 close: the closing gate on the candidate, the final report's evidence; Phase 10 then "complete, pending the owner's sign-off".
 - #286 (P10-11) the owner's sign-off and the `v1.0.0` tag: the owner acts, Claude only records.
@@ -55,8 +56,8 @@ None of these is claimed as met. `v1.0.0` is tagged only after the owner's sign-
   - the login-ceiling accepted risk: two attacker addresses at their 5/s caps fill the shared ceiling and a fresh-address login then gets through about 15–37 % of the time (ADR-0039 "Login throttling", #264 round 3);
   - every MQTT user bound to its client id, reversing round 1 finding 20 (ADR-0039 MQTT); `/scenario/recorded` kept off the console (ADR-0037); `notBefore` in the head time (ADR-0036 amendment); each golden's open order asserted open, not compared, in criterion 1 (PR #252);
   - the residual security risks listed apart in `docs/security-review.md`.
-- **Review the coordinator decisions of Phase 10 so far** (they go into the final report's register, P10-08):
-  - the plan's decisions marked † (`docs/phases/phase-10-plan.md`, "Open decisions, decided here"): SC1's "one command" as a one-time init and `docker compose up -d --wait` in one command line, a deviation from the letter of section 1 ("`docker compose up` on a fresh clone"); SC2 proved by the local gate, not CI; SC6 and the tag only after the owner's sign-off, no version tag by Claude; Phase 10 started before Phase 9's sign-off; Sparkplug B not in v1.x (ADR-0041, P10-08); ADR-0011 amended by a dated note rather than left silent;
+- **Answer the register of decisions awaiting the owner** in `docs/final-report.md` ("Register of decisions awaiting the owner": 69 items, Phases 2–10, each with a link and a column for the answer); P10-11 asks for it. It also asks the owner to confirm Phases 2 and 3 (O-3): the Phase 10 plan counts them as signed off, their reports say Claude closed them without the owner's review; to confirm or move the tags `phase-02` to `phase-09`, which the coordinator set (O-2); and to approve the plans the coordinator approved under the standing instruction (O-4). The Phase 10 decisions in it:
+  - the plan's decisions marked † (`docs/phases/phase-10-plan.md`, "Open decisions, decided here"): SC1's "one command" as a one-time init and `docker compose up -d --wait` in one command line, a deviation from the letter of section 1 ("`docker compose up` on a fresh clone"); SC2 proved by the local gate, not CI; SC6 and the tag only after the owner's sign-off, no version tag by Claude; Phase 10 started before Phase 9's sign-off; Sparkplug B not in v1.x ([ADR-0041](adr/0041-no-sparkplug-b-in-v1x.md), accepted by the coordinator, awaiting the owner's review); ADR-0011 amended by a dated note rather than left silent;
   - ADR-0011's note of 2026-10-21 (#279): the local gate in place of green CI since PR #149, as practised;
   - #276: `pnpm verify` prints ten seed lines, the nine fast-check workspaces plus `@shopfloor/fc-seed`'s own suite (P10-10 records the nine); and the rerun after PR #287's review was `GATE_STEPS=verify` instead of a second full gate (the review's changes touched only `fc-seed`'s own tests, config and parsing);
   - #281's demo deviations: (1) the demo's own ERP dataset `config/erp/demo-v1.yaml` through `compose.demo.yml` (the default feed has exactly the SPC baseline's 100 units before shift B, so no drift could show an episode); (2) the planned start 06:15 and a timeline pause at 06:14 make production independent of when the walkthrough dispatches (inside the envelope), where the plan expected it to vary; (3) "by about 09:30" holds for the alarm, the first completed order and scene 8's carton, not for the SPC episode (11:51, after the baseline's 100 readings), so the walkthrough runs to about 12:30, 6.5 minutes of wall time;

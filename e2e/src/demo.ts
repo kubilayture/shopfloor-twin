@@ -24,7 +24,8 @@
  * e2e/results/demo/record/publish/ (src/demo-record.ts) the video, re-encoded by the scripted
  * fallback only when over the size limit, the screenshots and the WebVTT captions from the scene
  * log; checks the staged files (size, length, resolution, the screenshots' total, no secret of the
- * run in the captions or the record); and only then replaces docs/demo/'s files. A refused
+ * run in the captions or the record, every view a scene asserts held at least 1 s by the view log,
+ * #303); and only then replaces docs/demo/'s files. A refused
  * recording leaves docs/demo/ as it was. DEMO_RECORD_PROBE_S (the 60 s size probe) records scenes 1
  * to 3 and the run until the video is that long, prints the size extrapolated to the walkthrough's
  * length, stages and checks scenes 1 to 3, and publishes nothing.
@@ -43,6 +44,7 @@ import {
   RECORDING,
   bundledFfmpeg,
   captionsFromSceneLog,
+  heldViewsFromLog,
   probeInfo,
   publishStaged,
   recordingProblems,
@@ -151,7 +153,8 @@ async function changedSources(): Promise<string> {
 /**
  * Stages the passed walkthrough's recording in `RECORD_DIR/publish/`: the video (re-encoded with
  * REENCODE_ARGS only when over the size limit), a screenshot per scene of `scenes` and the
- * captions from the scene log; measures it, writes the record (`e2e/results/demo/recording.json`)
+ * captions from the scene log; measures it, writes the record (`e2e/results/demo/recording.json`,
+ * with each held view's place in the video and dwell)
  * and returns what must stop it being published (none: it may be). Nothing in docs/demo/ is
  * touched here.
  */
@@ -194,6 +197,11 @@ async function stageRecording(
     scenes.map((s) => s.n),
   );
   await writeFile(join(staged, RECORDING.captionsFile), captions);
+  // Each asserted view's hold (#303): where it is in the video and how long it was held.
+  const views = heldViewsFromLog(
+    await readFile(join(RECORD_DIR, 'views.jsonl'), 'utf8').catch(() => ''),
+    Date.parse(videoStart),
+  );
   const commit = (await execFileP('git', ['rev-parse', 'HEAD'], { cwd: REPO })).stdout.trim();
   const summary = {
     commit,
@@ -204,12 +212,20 @@ async function stageRecording(
     recordedBytes: recordedSize,
     reencoded,
     screenshotBytes,
+    views,
   };
   const summaryText = `${JSON.stringify(summary, null, 2)}\n`;
   await writeFile(join(RESULTS, 'recording.json'), summaryText);
   log(`recording staged: ${JSON.stringify(summary)}`);
   const problems = recordingProblems(
-    { ...info, bytes: bytes.length, screenshotBytes, texts: [captions, summaryText] },
+    {
+      ...info,
+      bytes: bytes.length,
+      screenshotBytes,
+      texts: [captions, summaryText],
+      scenes: scenes.map((s) => s.n),
+      views,
+    },
     secrets,
   );
   return { staged, problems };

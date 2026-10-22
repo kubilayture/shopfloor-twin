@@ -15,8 +15,8 @@ import { UnsIncidentReporter } from './incidents.ts';
 import { MqttLink } from './mqtt-link.ts';
 import { ModbusPoller, connectModbus } from './modbus/poller.ts';
 import { OpcuaCollector, type ClientSecurity } from './opcua/collector.ts';
+import { PRODUCT_VERSION } from './version.ts';
 
-const VERSION = '0.1.0';
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
 const parsed = parseEnv(process.env);
@@ -43,7 +43,7 @@ const link = new MqttLink({
   username: env.MQTT_USERNAME,
   password: env.MQTT_PASSWORD,
   gatewayId: env.GATEWAY_ID,
-  version: VERSION,
+  // The `_sys` status reports the product version (root `package.json`, P10-09) by default.
   sequences,
   startedAt,
   onError: (error) => {
@@ -301,6 +301,6 @@ void (async () => {
   process.exit(1);
 });
 log.info(
-  { gatewayId: env.GATEWAY_ID, epoch: sequences.epoch, version: VERSION },
+  { gatewayId: env.GATEWAY_ID, epoch: sequences.epoch, version: PRODUCT_VERSION },
   'gateway started',
 );

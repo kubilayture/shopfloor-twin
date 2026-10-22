@@ -36,13 +36,14 @@ async function client(user: BrokerUser): Promise<MqttClient> {
   return c;
 }
 
-function link(clientIdSuffix = ''): MqttLink {
+/** `version: null` leaves the option out (the product version). */
+function link(clientIdSuffix = '', version: string | null = 'test'): MqttLink {
   const l = new MqttLink({
     url: broker.url,
     username: 'gw-01',
     password: TEST_PASSWORDS['gw-01'],
     gatewayId: 'gw-01',
-    version: 'test',
+    ...(version === null ? {} : { version }),
     sequences: new TopicSequences(1_791_774_000 + clientIdSuffix.length),
     startedAt: Date.UTC(2026, 9, 15, 12),
     reconnectPeriodMs: 200,
@@ -147,6 +148,29 @@ describe('broker session and _sys status (#75)', () => {
     expect(l.statusTopic).toBe('orbis/gebze/_sys/edge-gateway/gw-01/status');
     expect(received[0]?.value).toMatchObject({ status: 'online', version: 'test' });
     expect(received[0]?.source).toEqual({ id: 'gw-01', protocol: 'internal' });
+  });
+
+  it('reports the product version, the root package.json version, by default (P10-09)', async () => {
+    const root: unknown = JSON.parse(
+      await readFile(resolve(import.meta.dirname, '../../../package.json'), 'utf8'),
+    );
+    const rootVersion = (root as { version?: unknown }).version;
+    expect(rootVersion).toMatch(/^\d+\.\d+\.\d+/);
+    // Its own epoch, so a status retained by an earlier test's link can't be taken for its own.
+    const l = link('version', null);
+    const epoch = 1_791_774_000 + 'version'.length;
+    l.start();
+    await until(() => l.connected);
+    const dev = await client('dev');
+    const received: Status[] = [];
+    dev.on('message', (_topic, payload) => {
+      const parsed = parseUnsMessage(JSON.parse(payload.toString()));
+      if (parsed.ok && parsed.message.schema === 'uns.sys.status/1') received.push(parsed.message);
+    });
+    await dev.subscribeAsync(l.statusTopic, { qos: 1 });
+    const own = () => received.find((m) => m.epoch === epoch && m.value.status === 'online');
+    await until(() => own() !== undefined);
+    expect(own()?.value.version).toBe(rootVersion);
   });
 
   it('publishes machine data with QoS 1 and resolves on the broker acknowledgement', async () => {

@@ -13,7 +13,7 @@
     "lint": "eslint .",
     "test": "vitest run"
   },
-  "dependencies": {
+  "peerDependencies": {
     "fast-check": "catalog:",
     "vitest": "catalog:"
   },
@@ -22,6 +22,8 @@
     "@shopfloor/tsconfig": "workspace:*",
     "@types/node": "catalog:",
     "eslint": "catalog:",
-    "typescript": "catalog:"
+    "fast-check": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

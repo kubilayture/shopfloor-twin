@@ -38,7 +38,7 @@ Evidence references: test files and test names as they run in `pnpm verify` (V),
 | S6  | Database grants equal `DECLARED_GRANTS`; append-only tables                                                  | P9-15, #242  | met                                            |
 | S7  | No secret in the repository, images or logs; `.env.example`; the ERP token in constant time                  | P9-15, #242  | met; accepted: the ERP mock's one shared token |
 | S8  | Non-root, limits, no Docker socket, every port with its decision                                             | P9-01, P9-14 | met; accepted: Modbus 5020                     |
-| S9  | `pnpm audit --prod`; node-opcua at or above the CVE-fixed version                                            | P9-15, #242  | met (no finding)                               |
+| S9  | `pnpm audit --prod`; node-opcua at or above the CVE-fixed version                                            | P9-15, #242  | met (no finding; P10-F3 fixed, #300)           |
 | S10 | Route matrix for anonymous and the five roles equals the OpenAPI document                                    | P9-10, #237  | met                                            |
 
 ### S1 – OPC UA
@@ -142,6 +142,11 @@ Evidence references: test files and test names as they run in `pnpm verify` (V),
 - Evidence (command, on #242's branch, again at the first close on 2026-10-20 at 23:39:32 UTC with `86a1757`'s lockfile, and at the final close on 2026-10-21 at 07:19:20 UTC on `1cecd17`): `pnpm audit --prod` → `No known vulnerabilities found` (JSON: info 0, low 0, moderate 0, high 0, critical 0; 551 dependencies). pnpm 12.11.2.
 - Evidence (file): `pnpm-workspace.yaml` catalog `node-opcua: 2.187.3`, at or above 2.170.0, the version master plan section 6 names for CVE-2026-68904 (client reconnection resource leak).
 - No finding to answer; the named sub-finding "a finding with no fix released" is unused.
+- **Phase 10, the release candidate (#300, P10-F3).** The P10-10 closing gate on `dd78dcd` found `pnpm audit --prod` exiting 1: two moderate advisories (0 high, 0 critical; 568 dependencies), both in `@vitest/mocker` < 4.1.12, published by GitHub on 2026-10-21: GHSA-qxg6-89mg-rqv8 (code injection through unauthenticated manual mock registration) and GHSA-xp26-3454-mjgp (a Windows backslash traversal past the mocker's redirect allowlist). Path `packages__fc-seed>vitest>@vitest/mocker`: P10-01 had put `vitest` and `fast-check` under `@shopfloor/fc-seed`'s `dependencies`, so the production audit counted a test runner. Dev-only in fact: every workspace takes `fc-seed` as a development dependency, the four Node images install `--prod`, and web's runtime stage is nginx; no image ships Vitest.
+  - **Fix 1:** `fc-seed` declares `vitest` and `fast-check` as `peerDependencies`, and as `devDependencies` for its own tests. The nine workspaces that register it already list both as their own development dependencies, so the peers are met.
+  - **Fix 2, the upgrade:** the catalog's `vitest` and `@vitest/coverage-v8` go from 4.1.11 to 4.1.12 (the patched release; `@vitest/mocker` 4.1.12 with it). The dependency policy is Renovate's `"minimumReleaseAge": "3 days"` (`renovate.json`); `npm view vitest time` gives 4.1.12 on 2026-10-15T14:51:24Z (`@vitest/coverage-v8` 4.1.12 at 14:39:54Z), 6.7 days before the check on 2026-10-22 at 06:32 UTC, so the policy allows it.
+  - **Evidence (command, on #300's branch, 2026-10-22 at 06:33 UTC, pnpm 12.11.2):** `pnpm audit --prod` → `No known vulnerabilities found`, exit 0 (JSON: info 0, low 0, moderate 0, high 0, critical 0; 551 dependencies). `pnpm audit` (all dependencies) → `No known vulnerabilities found`, exit 0 (0 at every level; 722 dependencies: 532 production, 171 development, 85 optional). Rerun on the branch's final commit: see the Phase 10 log, #300.
+  - No dev-only advisory is left as a known item.
 
 ### S10 – Route matrix
 

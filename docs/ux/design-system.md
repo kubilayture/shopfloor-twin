@@ -51,7 +51,7 @@ Slate, as today, so the change of palette is small and the existing contrast res
 | `neutral-400` | `#94a3b8` | Decorative only (disabled borders); never text                  |
 | `neutral-500` | `#64748b` | Input borders, icons, the non-text 3:1 minimum; never body text |
 | `neutral-600` | `#475569` | Secondary text (labels, captions, hints)                        |
-| `neutral-700` | `#334155` | Strong secondary text; Running fill; chart axis text            |
+| `neutral-700` | `#334155` | Strong secondary text; Running badge border; chart axis text    |
 | `neutral-800` | `#1e293b` | Navigation surface; hover on dark                               |
 | `neutral-900` | `#0f172a` | Primary text; top bar                                           |
 
@@ -92,22 +92,22 @@ Borders are given on white; on the canvas (`#f1f5f9`) the lowest is `info` at 4.
 
 ISA-101 restraint: grey for the states a plant spends its normal time in, colour for the ones that cost output. The badge always shows the word; abnormal states add a glyph so they survive greyscale and colour blindness. The timeline bands use the same fills.
 
-| State        | Tone        | Badge                                                                                      | Glyph               | Contrast |
-| ------------ | ----------- | ------------------------------------------------------------------------------------------ | ------------------- | -------- |
-| Running      | neutral     | fill `#f1f5f9`, text `#0f172a`, border `#334155`                                           | ▶                   | 16.30    |
-| Idle         | neutral     | fill `#e2e8f0`, text `#0f172a`                                                             | none                | 14.48    |
-| Setup        | neutral     | fill `#e2e8f0`, text `#0f172a`, dashed border `#64748b`                                    | ⟳                   | 14.48    |
-| Planned stop | neutral     | fill `#f8fafc`, text `#334155`, border `#64748b`                                           | ‖                   | 9.90     |
-| Maintenance  | info        | solid `#1d4ed8`, text `#ffffff`                                                            | wrench (SVG)        | 6.70     |
-| Off          | neutral     | fill `#f1f5f9`, text `#475569`, border `#cbd5e1`                                           | ○                   | 6.92     |
-| Starved      | warn        | solid `#fcd34d`, text `#451a03`, border `#b45309`                                          | ◀ (input missing)   | 10.39    |
-| Blocked      | caution     | solid `#fdba74`, text `#431407`, border `#c2410c`                                          | ▶▮ (output blocked) | 9.28     |
-| Stopped      | alarm, soft | fill `#fee2e2`, text `#7f1d1d`, border `#b91c1c`                                           | ■                   | 8.20     |
-| Down         | alarm       | solid `#b91c1c`, text `#ffffff`                                                            | ✕                   | 6.47     |
-| No data      | neutral     | white, dashed border `#64748b`, text `#475569`                                             | ?                   | 7.58     |
-| Stale        | neutral     | the state's own badge, dashed border `#64748b`, plus a "Stale" tag (white, text `#475569`) | clock (SVG)         | 7.58     |
+| State        | Tone          | Badge                                                                                                                                     | Glyph               | Contrast |
+| ------------ | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | -------- |
+| Running      | neutral       | fill `#f1f5f9`, text `#0f172a`, border `#334155`                                                                                          | ▶                   | 16.30    |
+| Idle         | neutral       | fill `#e2e8f0`, text `#0f172a`                                                                                                            | none                | 14.48    |
+| Setup        | neutral       | fill `#e2e8f0`, text `#0f172a`, dashed border `#64748b`                                                                                   | ⟳                   | 14.48    |
+| Planned stop | neutral       | fill `#f8fafc`, text `#334155`, border `#64748b`                                                                                          | ‖                   | 9.90     |
+| Maintenance  | info          | solid `#1d4ed8`, text `#ffffff`                                                                                                           | wrench (SVG)        | 6.70     |
+| Off          | neutral       | fill `#f1f5f9`, text `#475569`, border `#cbd5e1`                                                                                          | ○                   | 6.92     |
+| Starved      | warn          | solid `#fcd34d`, text `#451a03`, border `#b45309`                                                                                         | ◀ (input missing)   | 10.39    |
+| Blocked      | caution       | solid `#fdba74`, text `#431407`, border `#c2410c`                                                                                         | ▶▮ (output blocked) | 9.28     |
+| Stopped      | alarm, soft   | fill `#fee2e2`, text `#7f1d1d`, border `#b91c1c`                                                                                          | ■                   | 8.20     |
+| Down         | alarm         | solid `#b91c1c`, text `#ffffff`                                                                                                           | ✕                   | 6.47     |
+| No data      | neutral       | white, dashed border `#64748b`, text `#475569`                                                                                            | ?                   | 7.58     |
+| Stale        | warn, outline | the state's own badge unchanged, beside it a tag: fill `#fffbeb`, text `#78350f`, solid border `#b45309`, the full reason as visible text | clock (SVG)         | 8.75     |
 
-**Stale** is not a machine state but a qualifier: the shown state may be out of date (`STALE_TEXT`: live connection lost, or from an earlier run). The badge keeps its state and word and adds the dashed border and a "Stale" tag with the reason in its tooltip, so a stale Running never reads as a fresh one.
+**Stale** is not a machine state but a qualifier: the shown state may be out of date. The state badge keeps its own look and word; beside it a `warn` outline tag shows the **full reason as visible text**, exactly today's `STALE_TEXT` ("Stale: live connection lost", "Stale: from an earlier run"), with its test id `stale-<equipment id>` (`overview.test.tsx` lines 102 and 113 assert that text). The reason is never only in a tooltip (4.12: a tooltip is never the only place a fact lives, and touch has no hover). The tag's solid `warn` border keeps it apart from the dashed neutral borders of Setup and No data, so a stale Running never reads as a fresh one.
 
 The light solid fills (Starved, Blocked, and the medium alarm priority) carry a 1 px border in their tone's border colour (5.02 and 5.18:1 on white), so their edge shows on white and on the canvas, where the fills alone are under 1.6:1. Glyphs are inline SVG icons from `src/components/ui/icons.tsx`, `aria-hidden`, 12 px in a badge. A machine card in an abnormal state also gets a 4 px left border in the state's border colour, so the overview shows the problem from across the room (G-13, O-01).
 
@@ -354,7 +354,7 @@ interface BadgeProps {
 
 Domain wrappers keep today's names and test attributes, and map values to tones by the tables in section 2:
 
-- `StateBadge({ state, size, stale, testId })` → `data-state`, the machine-state table (2.4); `stale` (`'disconnected' | 'older-run'`) adds the Stale qualifier with `STALE_TEXT` as its tooltip.
+- `StateBadge({ state, size, stale, testId })` → `data-state`, the machine-state table (2.4); `stale` (`'disconnected' | 'older-run'`) adds the Stale tag beside it, `StaleTag({ reason, testId })`, whose visible text is the full `STALE_TEXT` and whose test id stays `stale-<equipment id>`.
 - `PriorityBadge({ priority, testId })` → `data-priority`, 2.5.
 - `OrderStatusBadge`, `OrderFlags`, `CommandStateBadge` → `data-testid="order-status"` / `order-flags` / `command-state`, `data-status`, `data-state` (2.6).
 - `HoldStateBadge`, `SignalStatusBadge` → `hold-state`, `signal-status` (2.6).

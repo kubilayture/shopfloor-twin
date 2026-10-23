@@ -115,10 +115,10 @@ UX-1b and UX-1e can be reviewed in parallel once UX-1c is in; so can UX-1d1, UX-
 ### UX-1c Primitives: actions and status
 
 - **Closes:** foundation for G-09, G-10, G-11, G-12, G-13, G-15, G-16, G-17; prepares E-02.
-- **Scope:** `components/ui/`: `Button`, `IconButton`, `Badge`, `Card`, `Stat`, `KpiTile`, `Callout`, `Code`, `DescriptionList`; the domain badges re-based on `Badge` with today's names and attributes (`state-badge.tsx` with the Stale qualifier, `priority-badge.tsx`, `order-badges.tsx`, the `quality-ui.tsx` badges, new `FinalityBadge` and `LossBadge`); `domain/states.ts` palette on the tokens (design system 2.4); the formatting components `Duration`, `PlantTime`, `WallTime`, `Percent`, `Ratio`, `Quantity`, `Missing`. **`data-decimal`**: a raw four-decimal attribute added to every ratio element (`RatioValue`, `RatioHeadline` in `oee-ui.tsx`, the order OEE, FPY and line OEE values in `order-oee.tsx` and `line-oee.tsx`), additive only: no visible text changes here.
+- **Scope:** `components/ui/`: `Button`, `IconButton`, `Badge`, `Card`, `Stat`, `KpiTile`, `Callout`, `Code`, `DescriptionList`; the domain badges re-based on `Badge` with today's names and attributes (`state-badge.tsx` with the `StaleTag` beside it, its full reason visible, `priority-badge.tsx`, `order-badges.tsx`, the `quality-ui.tsx` badges, new `FinalityBadge` and `LossBadge`); `domain/states.ts` palette on the tokens (design system 2.4); the formatting components `Duration`, `PlantTime`, `WallTime`, `Percent`, `Ratio`, `Quantity`, `Missing`. **`data-decimal`**: a raw four-decimal attribute added to every ratio element (`RatioValue`, `RatioHeadline` in `oee-ui.tsx`, the order OEE, FPY and line OEE values in `order-oee.tsx` and `line-oee.tsx`), additive only: no visible text changes here.
 - **Acceptance:** each component's variants, sizes and states (disabled never by opacity, loading with `aria-busy`), accessible name and focus are unit-tested; badges keep `data-state`, `data-priority`, `data-status` raw and their visible words; the state and priority badges change look on every screen at once (screenshots of overview, alarms, orders, holds); `data-decimal` equals today's visible decimal on every ratio element (unit tests); `Missing` renders "—" with a visually hidden reason; durations follow design system 6.1.
 - **Keep green:** `order-status`, `order-flags`, `command-state`, `hold-state`, `signal-status`, `flag-explanations`, `state-*`, `data-fraction`; unit tests `domain/states.test.ts`, `domain/orders.test.ts`, `domain/time.test.ts`, `domain/numbers.test.ts`, `overview.test.tsx`, `orders.test.tsx`, `order-oee.test.tsx`, `oee-dashboard.test.tsx`, `holds.test.tsx`, `spc.test.tsx`, `alarm-list.test.tsx`; the browser specs reading `order-status` (`demo/walkthrough`, `orders/dispatch/1-roles`, `orders/dispatch/2-release-dispatch`, `orders/final/1-terminal-close`, `quality/final/1-trace-holds-close`) and `data-state` / `data-status`.
-- **Structural selectors and asserted texts:** the badge words read by specs (`order-status` text is not asserted, its `data-status` is); the ratio texts stay as today (walkthrough 483–485, `1-order-line-oee.spec.ts` `ratio()`).
+- **Structural selectors and asserted texts:** the badge words read by specs (`order-status` text is not asserted, its `data-status` is); `stale-<id>` keeps its test id and its whole visible text, exactly "Stale: live connection lost" or "Stale: from an earlier run" (`overview.test.tsx` 102 and 113), never shortened to "Stale" with the reason in a tooltip; the ratio texts stay as today (walkthrough 483–485, `1-order-line-oee.spec.ts` `ratio()`).
 - **Gate:** `verify,smoke,reconcile`; `pnpm demo`; `pnpm test:resilience` (the state badges change).
 - **Depends on:** UX-1a.
 
@@ -182,7 +182,7 @@ UX-1b and UX-1e can be reviewed in parallel once UX-1c is in; so can UX-1d1, UX-
 ### UX-1g Visual and accessibility harness (report-only)
 
 - **Closes:** makes G-05, G-33 and the a11y rules measurable from here on.
-- **Scope:** `e2e/browser/a11y/` (a Playwright project run by the reconciliation harness after its passes, so the stack has data and one user per role): every route in its data-rich, empty and not-found state, as each role, at 1440, 1280, 1024, 768 and 390; axe with the WCAG 2.2 A and AA rules on each; a screenshot of each; a check that each route's `document.title` is distinct; Tab-order and focus-visibility sampling (as the UX-0 keyboard pass did); for each overlay the first screens use (nav drawer, dialogs, sheets, menus, tooltips) a containment, `inert`, Escape and outside-click check. Writes `e2e/results/a11y/report.json` and the screenshots; **does not fail** on findings (it fails only if it cannot run). `@axe-core/playwright` as an e2e dev dependency (entry in `docs/dependencies.md`; the pnpm `minimumReleaseAge` policy applies; test-only like Playwright, so no ADR); `docs/runbook.md` (the project in the reconciliation's description, where the report lands).
+- **Scope:** `e2e/browser/a11y/` (its own Playwright project, `a11y`, run by the reconciliation harness after its passes, so the stack has data and one user per role, and **only when opted in** with `RECONCILE_A11Y=1`; off by default so the reconciliation gate of unrelated pull requests stays as fast as today; a UX pull request sets it and records the run; time budget 15 minutes, past which the project stops and reports what it covered): every route in its data-rich, empty and not-found state, as each role, at 1440, 1280, 1024, 768 and 390; axe with the WCAG 2.2 A and AA rules on each; a screenshot of each; a check that each route's `document.title` is distinct; Tab-order and focus-visibility sampling (as the UX-0 keyboard pass did); for each overlay the first screens use (nav drawer, dialogs, sheets, menus, tooltips) a containment, `inert`, Escape and outside-click check. Writes `e2e/results/a11y/report.json` and the screenshots; **does not fail** on findings (it fails only if it cannot run). `@axe-core/playwright` as an e2e dev dependency (entry in `docs/dependencies.md`; the pnpm `minimumReleaseAge` policy applies; test-only like Playwright, so no ADR); `docs/runbook.md` (the project in the reconciliation's description, where the report lands).
 - **Acceptance:** the report lists every route × width × role with its axe findings by impact and a screenshot path; the baseline report (before the screens migrate) is attached to the pull request; later UX pull requests attach their diff of it.
 - **Keep green:** the reconciliation's existing passes unchanged (the new project runs after them and reads only).
 - **Structural selectors and asserted texts:** none (it reads pages, asserts nothing of theirs).
@@ -199,11 +199,11 @@ Each moves its screens onto the shell, `PageHeader`, the primitives and the cont
 
 - **Closes:** O-01 … O-05, M-01 … M-06, G-13 (on these screens).
 - **Scope:** `screens/overview.tsx`, `screens/machine-detail.tsx`, `domain/timeline.ts` (axis ticks with dates), metric display names from the plant model already in the API (no API change).
-- **Acceptance:** a summary strip (machines per state; abnormal first) and machine cards with an abnormal left bar and the Stale qualifier; names before codes, causes as words; the range switch as `SegmentedLinks`; the timeline axis has hourly ticks and dates when the range spans days; telemetry names readable, a stale latest value says how old it is; empty charts as empty states; an unknown machine is a `NotFound`; all states and widths.
+- **Acceptance:** a summary strip (machines per state; abnormal first) and machine cards with an abnormal left bar and, when stale, the `warn` outline Stale tag with its full reason visible; names before codes, causes as words; the range switch as `SegmentedLinks`; the timeline axis has hourly ticks and dates when the range spans days; telemetry names readable, a stale latest value says how old it is; empty charts as empty states; an unknown machine is a `NotFound`; all states and widths.
 - **Keep green:** `machine-*`, `state-*`, `connection-status`; `overview.test.tsx`, `machine-detail.test.tsx` (the range links by role link with `aria-current`), `domain/timeline.test.ts`, `domain/plant.test.ts`; browser `3-overview.spec.ts`, `demo/walkthrough.spec.ts`, `resilience/recovery.spec.ts`, `final/downtime-coding.spec.ts`.
-- **Structural selectors and asserted texts:** the walkthrough counts `article[data-testid^="machine-"]` (196): machine cards stay `article` elements, and the summary strip must not use an id starting with `machine-` (use `overview-summary`, `summary-state-*`); `state-*` `data-state="no-data"` before the first report.
+- **Structural selectors and asserted texts:** the walkthrough counts `article[data-testid^="machine-"]` (196): machine cards stay `article` elements, and the summary strip must not use an id starting with `machine-` (use `overview-summary`, `summary-state-*`); `state-*` `data-state="no-data"` before the first report; `stale-<id>` present only when stale, with the exact visible text "Stale: live connection lost" or "Stale: from an earlier run" (`overview.test.tsx` 102 and 113); machine detail's tables (time per state, intervals, metrics) on `DataTable`.
 - **Gate:** `verify,smoke,reconcile`; `pnpm demo`; `pnpm test:resilience`.
-- **Depends on:** UX-1b, UX-1c, UX-1e, UX-1f.
+- **Depends on:** UX-1b, UX-1c, UX-1d1, UX-1e, UX-1f.
 
 ### UX-3 OEE dashboard and line OEE
 
@@ -213,7 +213,7 @@ Each moves its screens onto the shell, `PageHeader`, the primitives and the cont
 - **Keep green:** `oee-card-*`, `bottleneck-*`, `oee-machine-*`, `pareto`, `pareto-*`, `line-oee-card`, `line-oee-value`, `line-bottlenecks`, `line-bottleneck-*`, `data-fraction`, `data-decimal`, `data-final`; `oee-dashboard.test.tsx`, `live/live-oee.test.ts`, `live/live-line-oee.test.ts`; browser `1-oee-live.spec.ts`, `final/downtime-coding.spec.ts`, `orders/oee/1-order-line-oee.spec.ts`, `demo/walkthrough.spec.ts`.
 - **Structural selectors and asserted texts:** walkthrough 482–485: within `oee-machine-*` / `pareto-*` rows, `td.nth(1)` (the ratio, now via `data-decimal`) and `td.nth(2)` (`'30.0 min'`): the column order and real `td` cells stay; 495 `[data-testid^="line-bottleneck-"]`; 508–509 the sections keep the element ids `line-title` and `machines-title` on their headings; `1-order-line-oee.spec.ts` 94 and 101 `[data-testid^="line-bottleneck-"]`, `[data-testid^="bottleneck-"]`.
 - **Gate:** `verify,smoke,reconcile`; `pnpm demo` (and the `e2e/` row, inside it).
-- **Depends on:** UX-1b … UX-1f.
+- **Depends on:** UX-1b, UX-1c, UX-1d1, UX-1e, UX-1f.
 
 ### UX-4a Alarm list
 
@@ -223,7 +223,7 @@ Each moves its screens onto the shell, `PageHeader`, the primitives and the cont
 - **Keep green:** `alarm-list`, `alarm-list-empty`, `alarm-row-*`, `ack-*`, `details-*`, `select-all`, `ack-selected`, `alarm-panel`, `close-alarm`, `alarm-state`, `alarm-history`, `history-entry`, `comment`, `comment-text`, `add-comment`, `shelve`, `shelve-reason`, `shelve-duration`, `shelf-state`, `unshelve`, `tab-*`, `flood-banner-*`; `alarm-list.test.tsx`, `live/live-alarms.test.ts`; browser `2-alarms-live.spec.ts`, `final/alarm-actions.spec.ts`, `demo/walkthrough.spec.ts`, `console/effects.ts`.
 - **Structural selectors and asserted texts:** `ack-selected` contains `(N)` (`final/alarm-actions.spec.ts` 184: the label stays "Acknowledge selected (N)"); `alarm-history` contains `by <actor>` (254); `comment` contains the comment text (152); `alarm-list` `data-view`, `data-count`; rows' `data-state`, `data-shelved`; `alarm-row-*` absent after acknowledgement.
 - **Gate:** `verify,smoke,reconcile`; `pnpm demo`; `pnpm test:console` (`console/effects.ts` reads the alarm list).
-- **Depends on:** UX-1b … UX-1e, UX-1d1, UX-1d2, UX-B2.
+- **Depends on:** UX-1b, UX-1c, UX-1d1, UX-1d2, UX-1e, UX-B2.
 
 ### UX-4b Alarm KPIs
 
@@ -233,7 +233,7 @@ Each moves its screens onto the shell, `PageHeader`, the primitives and the cont
 - **Keep green:** `kpi-card-*`, `kpi-operator`; `alarm-kpi.test.tsx`; browser `2-alarms-live.spec.ts`, `final/alarm-actions.spec.ts`.
 - **Structural selectors and asserted texts:** inside `kpi-operator`, the element `[data-measure="acknowledged"]` whose text is exactly the count (`final/alarm-actions.spec.ts` 315): keep the attribute on the value element and no unit or label inside it.
 - **Gate:** `verify,smoke,reconcile`.
-- **Depends on:** UX-1b … UX-1f, UX-B5.
+- **Depends on:** UX-1b, UX-1c, UX-1d1, UX-1e, UX-1f, UX-B5.
 
 ### UX-5a Downtime coding
 
@@ -243,7 +243,7 @@ Each moves its screens onto the shell, `PageHeader`, the primitives and the cont
 - **Keep green:** `machine-filter`, `downtime-row-*`, `code-*`, `coding-panel`, `reason-picker`, `segment-comment`, `split-at`, `split`, `save-coding`, `coding-message`, `draft-conflict`, `audit`, `audit-entry`; `downtime-coding.test.tsx`, `domain/downtime.test.ts`; browser `final/downtime-coding.spec.ts`, `final/alarm-actions.spec.ts`, `demo/walkthrough.spec.ts`.
 - **Structural selectors and asserted texts:** `split-at` accepts `fill('hh:mm:ss')` (112); two `reason-picker` native selects after a split, read by `nth(0)`/`nth(1)`; `coded-by` and `draft-conflict` stay absent (119, 122); `audit-entry` contains `coded by <user>` (127); `coding-message` `data-kind="saved"`.
 - **Gate:** `verify,smoke,reconcile`; `pnpm demo`.
-- **Depends on:** UX-1b … UX-1e, UX-1d1, UX-1d2.
+- **Depends on:** UX-1b, UX-1c, UX-1d1, UX-1d2, UX-1e.
 
 ### UX-5b Shift reports and handover notes
 
@@ -253,7 +253,7 @@ Each moves its screens onto the shell, `PageHeader`, the primitives and the cont
 - **Keep green:** `shift-report`, `report-revised`, `shift-select`, `handover-notes`, `new-note`, `note-category`, `note-text-input`, `add-note`, `cancel-note`, `new-note-message`, `note-*`, `note-text-*`, `edit-note-*`, `note-editor-*`, `save-note`, `reload-note`, `note-history-*`, `note-history-toggle-*`, `note-history-entry`, `note-limit`, `note-retracted`, `note-stale`, `notes-empty`, `notes-read-only`; `shift-report.test.tsx`, `handover-notes.test.tsx`, `live/live-shifts.test.ts`, `domain/shifts.test.ts`; `e2e/src/reconcile.ts` (reads `shift-report`); browser `final/shift-report.spec.ts`.
 - **Structural selectors and asserted texts:** `shift-report` `data-final`, `data-revision-inputs`, `data-inputs`; notes' `data-version`; `note-text-*` text is exactly the note (110); `note-author` stays absent.
 - **Gate:** `verify,smoke,reconcile`.
-- **Depends on:** UX-1b … UX-1f.
+- **Depends on:** UX-1b, UX-1c, UX-1d1, UX-1d2, UX-1e, UX-1f.
 
 ### UX-6a Order list and order detail
 
@@ -263,7 +263,7 @@ Each moves its screens onto the shell, `PageHeader`, the primitives and the cont
 - **Keep green:** `order-row-*`, `order-link-*`, `order-status`, `order-flags`, `order-read-only`, `action-*`, `action-done`, `command-*`, `command-confirmed`, `command-state`; `orders.test.tsx`, `live/live-orders.test.ts`, `domain/orders.test.ts`; browser `orders/dispatch/1-roles.spec.ts`, `orders/dispatch/2-release-dispatch.spec.ts`, `orders/final/1-terminal-close.spec.ts`, `quality/final/1-trace-holds-close.spec.ts`, `demo/walkthrough.spec.ts`, `console/2-actions.spec.ts`.
 - **Structural selectors and asserted texts:** `order-status` `data-status` values; `order-read-only` present for operators and absent for supervisors, `action-*` absent where the role cannot act (`orders/dispatch/1-roles.spec.ts`); every `action-*` a spec clicks stays a visible button.
 - **Gate:** `verify,smoke,reconcile`; `pnpm demo`; `pnpm test:console` (its actions spec opens an order).
-- **Depends on:** UX-1b … UX-1e, UX-1d1.
+- **Depends on:** UX-1b, UX-1c, UX-1d1, UX-1e.
 
 ### UX-6b Order actions and order OEE
 
@@ -273,7 +273,7 @@ Each moves its screens onto the shell, `PageHeader`, the primitives and the cont
 - **Keep green:** `action-form-*`, `action-submit`, `action-message`, `action-cnc`, `action-hold-*`, `action-close`, `action-release`, `action-dispatch`, `order-oee`, `order-oee-section`, `order-oee-oee`, `order-oee-availability`, `order-oee-performance`, `order-oee-quality`, `order-oee-job-*`, `order-fpy`, `order-fpy-yield`, `order-fpy-good`, `order-fpy-started`, `order-line-oee`, `order-line-oee-value`, their `data-fraction`, `data-decimal`, `data-final`; `orders.test.tsx`, `order-oee.test.tsx`; `e2e/src/orders-pass.ts`, `e2e/src/demo-record.ts`; browser `orders/oee/1-order-line-oee.spec.ts`, `orders/dispatch/2-release-dispatch.spec.ts`, `orders/final/1-terminal-close.spec.ts`, `quality/final/1-trace-holds-close.spec.ts`, `demo/walkthrough.spec.ts`.
 - **Structural selectors and asserted texts:** `1-order-line-oee.spec.ts` 55–56 also read `textContent()` of the FPY values (moved to `data-decimal` or kept textual: decided and stated in the PR); 63 `[data-testid^="order-oee-job-"]`; `action-message` `data-kind`/`data-type` on a refused close (`quality/final/1-trace-holds-close.spec.ts` 236–237).
 - **Gate:** `verify,smoke,reconcile`; `pnpm demo` (the `e2e/` row inside).
-- **Depends on:** UX-6a.
+- **Depends on:** UX-6a, UX-1d2.
 
 ### UX-7 Operator terminal (tablet first)
 
@@ -283,7 +283,7 @@ Each moves its screens onto the shell, `PageHeader`, the primitives and the cont
 - **Keep green:** every `terminal-*` id (`terminal-screen`, `terminal-clock`, `terminal-username`, `terminal-password`, `terminal-sign-on`, `terminal-user`, `terminal-sign-off`, `terminal-sign-off-*`, `terminal-crew`, `terminal-order-*`, `terminal-order-status-*`, `terminal-op-*`, `terminal-op-state-*`, `terminal-counts-*`, `terminal-start-*`, `terminal-pause-*`, `terminal-pause-confirm-*`, `terminal-resume-*`, `terminal-reason-*`, `terminal-hold-*`, `terminal-signals`, `terminal-signal-*`, `terminal-scrap-*`, `terminal-scrap-reason-*`, `terminal-scrap-comment-*`, `terminal-scrap-code-*`), `nav-terminal`; `terminal.test.tsx`, `domain/terminal.test.ts`; browser `login.ts`, `orders/live/terminal-live.spec.ts`, `orders/final/1-terminal-close.spec.ts`, `quality/live/spc-terminal-live.spec.ts`, `quality/final/1-trace-holds-close.spec.ts`.
 - **Structural selectors and asserted texts:** raw texts: `terminal-order-status-*` reads `'in-progress'` (`terminal-live.spec.ts` 75); the operation state reads `'You: working'` and `'You: paused ('` (188–194); operations contain `'Complete'` (`1-terminal-close.spec.ts` 47, 117; `1-trace-holds-close.spec.ts` 48) and `'Signed off by'` (52); `terminal-user` text is exactly the username and `terminal-crew` contains it (`login.ts` 104–106); scrap reasons are buttons with `aria-pressed` and ids `terminal-scrap-reason-<scrap>-<reason>` (65–83); `[data-testid^="terminal-signal-"]`, `[data-testid^="terminal-hold-"]`; `terminal-signals` `aria-live="polite"`; `operator-name` stays absent; password inputs keep `type="password"` (`login.ts` 100).
 - **Gate:** `verify,smoke,reconcile`.
-- **Depends on:** UX-1a … UX-1e, UX-1d2, UX-B3.
+- **Depends on:** UX-1b, UX-1c, UX-1d2, UX-1e, UX-B3.
 
 ### UX-8 Traceability: search, serial, lot and carton
 
@@ -293,7 +293,7 @@ Each moves its screens onto the shell, `PageHeader`, the primitives and the cont
 - **Keep green:** `trace-serial`, `trace-lot`, `trace-carton`, `trace-carton-*`, `trace-finality`, `trace-records`, `trace-records-section`, `record-*`, `record-machine`, `record-operator`, `record-crew`, `record-reading`, `lot-link-*`, `serial-link-*`, `carton-unit-*`, `lot-cartons`, `trace-hold-open`, `hold-*`, `hold-link-*`; `trace.test.tsx`, `domain/trace.test.ts`; `e2e/src/demo-record.ts`; browser `demo/walkthrough.spec.ts`, `quality/final/1-trace-holds-close.spec.ts`.
 - **Structural selectors and asserted texts:** `record-operator` text is exactly the operator (walkthrough 766; `1-trace-holds-close.spec.ts` 103) and stays a raw user name, not "—"; `record-machine` contains the machine id (90); `record-crew` holds `[data-user="<name>"]` elements (108); `[data-testid^="carton-unit-"][data-status="packed"]` count (walkthrough 734), `[data-testid^="serial-link-"]`, `[data-testid^="lot-link-"]`, `[data-testid^="trace-carton-"]` counts (739–812): paging must keep every link a spec counts on the page (page size above the demo's counts, or the spec's count read from `data-count`, decided in the PR); `trace-finality` `data-final`.
 - **Gate:** `verify,smoke,reconcile`; `pnpm demo`.
-- **Depends on:** UX-1b … UX-1e, UX-1d1.
+- **Depends on:** UX-1b, UX-1c, UX-1d1, UX-1e.
 
 ### UX-9a SPC
 
@@ -303,7 +303,7 @@ Each moves its screens onto the shell, `PageHeader`, the primitives and the cont
 - **Keep green:** `spc-chart-page`, `spc-baseline`, `signal-row-*`, `signal-status`, `ack-*`, `hold-from-*`, `hold-unit-*` and the other `spc.tsx` ids the unit tests read; `spc.test.tsx`, `live/live-quality.test.ts`, `domain/quality.test.ts`; browser `demo/walkthrough.spec.ts`, `quality/live/spc-terminal-live.spec.ts`, `quality/final/1-trace-holds-close.spec.ts`, `final/alarm-actions.spec.ts`.
 - **Structural selectors and asserted texts:** `spc-chart-page` `data-limits`, `spc-baseline` `data-baseline`, episodes' `data-final`, `signal-status` text "Final" kept.
 - **Gate:** `verify,smoke,reconcile`; `pnpm demo`.
-- **Depends on:** UX-1b … UX-1f, UX-1d1, UX-1d2, UX-B1.
+- **Depends on:** UX-1b, UX-1c, UX-1d1, UX-1d2, UX-1e, UX-1f, UX-B1.
 
 ### UX-9b Quality holds
 
@@ -313,7 +313,7 @@ Each moves its screens onto the shell, `PageHeader`, the primitives and the cont
 - **Keep green:** `hold-row-*`, `hold-link-*`, `hold-state`, `hold-open-form`, `open-id`, `open-reason`, `open-submit`, `open-result-*`, `hold-suggestion`, `suggest-*`, `hold-reason`, `hold-submit`, `hold-detail`, `hold-summary`, `hold-orders`, `hold-unit-*`, `hold-opened`, `hold-scope-counts`, `hold-form-release`, `hold-action-release`; `holds.test.tsx`; browser `demo/walkthrough.spec.ts`, `quality/final/1-trace-holds-close.spec.ts`; `e2e/src/demo-record.ts`.
 - **Structural selectors and asserted texts:** `hold-detail` `data-subject`, `data-state`; `hold-scope-counts` `data-orders`; `hold-orders` text is exactly the order id (walkthrough 684); `hold-reason` options listed by `locator('option')`.
 - **Gate:** `verify,smoke,reconcile`; `pnpm demo`.
-- **Depends on:** UX-1b … UX-1e, UX-1d1, UX-1d2.
+- **Depends on:** UX-1b, UX-1c, UX-1d1, UX-1d2, UX-1e.
 
 ### UX-10 Simulation console and users
 
@@ -323,7 +323,7 @@ Each moves its screens onto the shell, `PageHeader`, the primitives and the cont
 - **Keep green:** the console ids the specs read (`sim-state`, `sim-speed`, `sim-pause`, `sim-resume`, `sim-step`, `sim-speed-input`, `sim-speed-apply`, `run-outcome`, `failure-machine`, `failure-code`, `failure-at`, `failure-repair`, `failure-inject`, `failure-outcome`, `drift-shift`, `drift-until`, `drift-inject`, `drift-outcome`, `modbus-state`, `modbus-toggle`, `opcua-state-*`, `opcua-toggle-*`, `tool-break-*`, `tool-outcome`, `lot-*`, `lot-block-*`, `lot-release-*`, `lot-outcome`, `absent-date`, `absent-shift`, `absent-submit`, `absent-*`, `absent-outcome`, `scenario-load-*`, `scenario-outcome`, `scenario-name`, `scenario-progress`, `action-list`, `action-*`, `events-connection`, `event-list`, `console-forbidden`), the heading "Simulation console" by role and name; the user ids (`user-list`, `user-*`, `user-roles-*`, `toggle-enabled-*`, `new-username`, `new-role-*`, `create-user`, `temporary-password`, `temporary-password-value`, `hide-temporary-password`, `users-forbidden`); `console.test.tsx`, `login.test.tsx` (`nav-users`); browser `console/1-refusals.spec.ts`, `console/2-actions.spec.ts`, `console/3-stream-lifetime.spec.ts`, `console/4-effects.spec.ts`, `console/effects.ts`, `console-shift/absence.spec.ts`, `orders/dispatch/1-roles.spec.ts`, `demo/walkthrough.spec.ts`.
 - **Structural selectors and asserted texts:** `scenario-progress tbody tr` and a row with the cell `'pause'` (walkthrough 308–321; `2-actions.spec.ts` 68); `action-list li` count (172); `event-list li` (182); `sim-speed` reads `"N×"` (walkthrough 323); `opcua-state-*` reads `'OPC UA offline'` / `'OPC UA online'`, `modbus-state` `'Modbus silent'` / `'Modbus answering'` (127–133); `*-outcome` lines match the specs' regexes and carry `data-kind` (`done`, `failed`); `sim-state` `data-state`, `events-connection` `data-connected`; `console-forbidden` contains `sim:control`; `toggle-enabled-*` reads `'Enable'` for a disabled user and `user-*` contains its roles as words (`1-roles.spec.ts` 81–83); time fields accept the ISO strings and the `yyyy-mm-dd` date the specs fill (`failure-at`, `drift-until`, `absent-date`).
 - **Gate:** `verify,smoke,reconcile`; `pnpm test:console`; `pnpm demo`.
-- **Depends on:** UX-1b … UX-1e, UX-1d1, UX-1d2.
+- **Depends on:** UX-1b, UX-1c, UX-1d1, UX-1d2, UX-1e.
 
 ### UX-11 Login and account
 
@@ -333,7 +333,7 @@ Each moves its screens onto the shell, `PageHeader`, the primitives and the cont
 - **Keep green:** `login-username`, `login-password`, `login-submit`, `login-reason`, `login-message`, `must-change`, `current-password`, `new-password`, `confirm-password`, `change-password`, `password-problems`; `login.test.tsx`, `auth/auth.test.tsx`; browser `login.ts` (every spec logs in through it), `tls/tls.spec.ts`.
 - **Structural selectors and asserted texts:** password fields keep `type="password"` (`login.ts` 79, 100); `signed-in-user` text exactly the user name after login.
 - **Gate:** `verify,smoke,reconcile`; `pnpm demo`.
-- **Depends on:** UX-1b … UX-1e, UX-1d2.
+- **Depends on:** UX-1b, UX-1c, UX-1d2, UX-1e.
 
 ---
 
@@ -345,14 +345,14 @@ Each moves its screens onto the shell, `PageHeader`, the primitives and the cont
 - **Keep green:** all web unit tests; browser specs unaffected (they run in light).
 - **Structural selectors and asserted texts:** none touched.
 - **Gate:** `verify,smoke,reconcile`; `pnpm demo`.
-- **Depends on:** UX-2 … UX-11.
+- **Depends on:** UX-2, UX-3, UX-4a, UX-4b, UX-5a, UX-5b, UX-6a, UX-6b, UX-7, UX-8, UX-9a, UX-9b, UX-10, UX-11.
 
 ## UX-final
 
 ### UX-F1 Accessibility gate
 
 - **Closes:** any remaining a11y findings; makes the AA bar a test.
-- **Scope:** the UX-1g project turned failing: zero serious or critical axe violations on every route, state, role, width and both themes; distinct page titles; the overlay checks; fixes for what it finds, each small; `docs/runbook.md`.
+- **Scope:** the UX-1g project turned failing (still opt-in with `RECONCILE_A11Y=1`; the runbook's rerun table gets a row asking for it on pull requests that touch `apps/web/src`): zero serious or critical axe violations on every route, state, role, width and both themes; distinct page titles; the overlay checks; fixes for what it finds, each small; `docs/runbook.md`.
 - **Acceptance:** the spec fails on a new serious or critical violation; moderate ones listed in the pull request with a decision each.
 - **Keep green:** everything; the reconciliation's existing passes unchanged.
 - **Structural selectors and asserted texts:** per fix, as in the screen issues.
@@ -381,36 +381,36 @@ Each moves its screens onto the shell, `PageHeader`, the primitives and the cont
 
 ## Issue list
 
-| Id     | Title                                           | Scope (one line)                                                                                                | Depends on                           | Gate                                                             |
-| ------ | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------ | ---------------------------------------------------------------- |
-| UX-B1  | SPC chart: every point drawn, rule labels apart | reproduce, then fix `echarts-view.tsx` / `spc-options.ts`; SSR symbol-count test                                | –                                    | verify,smoke,reconcile; demo                                     |
-| UX-B2  | Alarm raise times with their date               | `alarm-list.tsx`, `time.ts`: date unless today, full time in the tooltip                                        | –                                    | verify,smoke,reconcile; demo                                     |
-| UX-B3  | Terminal: no "Offline" before sign-on           | `terminal.tsx` header shows the status only when signed on                                                      | –                                    | verify,smoke,reconcile                                           |
-| UX-B4  | Show offline instead of loading forever         | `networkMode`, offline events, offline bar; writes fail at once, drafts kept                                    | –                                    | verify,smoke,reconcile; test:resilience                          |
-| UX-B5  | Alarm KPI hours missing from a running shift    | investigate `/alarms/kpi?bucket=hour`; finding to the coordinator                                               | –                                    | none (no code)                                                   |
-| UX-1a  | Design tokens and icons                         | `index.css` `@theme` light and dark, G-22 rule, `icons.tsx`, raw-colour report                                  | –                                    | verify,smoke,reconcile                                           |
-| UX-1c  | Primitives: actions and status                  | Button, Badge and domain badges, Card, Stat, KpiTile, Callout, formatters, `data-decimal`                       | UX-1a                                | verify,smoke,reconcile; demo; test:resilience                    |
-| UX-1b  | App shell, grouped navigation and page header   | `root-layout.tsx`, `shell.tsx`, PageHeader, page titles, nav drawer, print                                      | UX-1a, UX-1c                         | verify,smoke,reconcile; demo; test:console; test:resilience      |
-| UX-1e  | Primitives: feedback and overlays               | Dialog, Confirm, Toast, Empty, Skeleton, Error, NotFound, Forbidden, Tooltip, Menu, SegmentedLinks, jsdom stubs | UX-1c                                | verify,smoke,reconcile; demo                                     |
-| UX-1d1 | Primitives: DataTable and Tabs                  | DataTable (sticky modes, selection, focus, paging, narrow), Tabs                                                | UX-1e                                | verify,smoke,reconcile; demo                                     |
-| UX-1d2 | Primitives: fields and PlantTimeInput           | Field and controls, FilterBar, PlantTimeInput                                                                   | UX-1e                                | verify,smoke,reconcile; demo                                     |
-| UX-1f  | Chart theme                                     | `chart/theme.ts` for ECharts and uPlot, rich-text tooltips, empty charts                                        | UX-1a, UX-1e, UX-B1                  | verify,smoke,reconcile; demo                                     |
-| UX-1g  | Visual and accessibility harness (report-only)  | `e2e/browser/a11y/` in the reconciliation: axe, titles, overlays, 5-width shots                                 | UX-1b                                | verify,smoke,reconcile                                           |
-| UX-2   | Overview and machine detail                     | `overview.tsx`, `machine-detail.tsx`, timeline axis                                                             | UX-1b, UX-1c, UX-1e, UX-1f           | verify,smoke,reconcile; demo; test:resilience                    |
-| UX-3   | OEE dashboard and line OEE                      | `oee-dashboard.tsx`, `line-oee.tsx`, `oee-ui.tsx`; walkthrough 483–485 to `data-decimal`                        | UX-1b … UX-1f                        | verify,smoke,reconcile; demo                                     |
-| UX-4a  | Alarm list                                      | `alarm-list.tsx`: tabs, table, panel from 1440 or sheet                                                         | UX-1b … UX-1e, UX-1d1, UX-1d2, UX-B2 | verify,smoke,reconcile; demo; test:console                       |
-| UX-4b  | Alarm KPIs                                      | `alarm-kpi.tsx`: KPI tiles, hourly table, empty states                                                          | UX-1b … UX-1f, UX-B5                 | verify,smoke,reconcile                                           |
-| UX-5a  | Downtime coding                                 | `downtime-coding.tsx`: table, coding panel or sheet, split time                                                 | UX-1b … UX-1e, UX-1d1, UX-1d2        | verify,smoke,reconcile; demo                                     |
-| UX-5b  | Shift reports and handover notes                | `shift-list.tsx`, `shift-report.tsx`, `handover-notes.tsx`, print                                               | UX-1b … UX-1f                        | verify,smoke,reconcile                                           |
-| UX-6a  | Order list and order detail                     | `order-list.tsx`, `order-detail.tsx`: header, facts, section nav, tables                                        | UX-1b … UX-1e, UX-1d1                | verify,smoke,reconcile; demo; test:console                       |
-| UX-6b  | Order actions and order OEE                     | `order-actions.tsx`, `order-oee.tsx`; `1-order-line-oee.spec.ts` `ratio()` to `data-decimal`                    | UX-6a                                | verify,smoke,reconcile; demo                                     |
-| UX-7   | Operator terminal (tablet first)                | `terminal.tsx`: picker tiles, touch flow                                                                        | UX-1a … UX-1e, UX-1d2, UX-B3         | verify,smoke,reconcile                                           |
-| UX-8   | Traceability: search, serial, lot and carton    | `trace-*.tsx`: results table, status badges, lot paging                                                         | UX-1b … UX-1e, UX-1d1                | verify,smoke,reconcile; demo                                     |
-| UX-9a  | SPC                                             | `spc.tsx`: list, chart page, episodes, limit versions                                                           | UX-1b … UX-1f, UX-1d1, UX-1d2, UX-B1 | verify,smoke,reconcile; demo                                     |
-| UX-9b  | Quality holds                                   | `holds.tsx`: list, new hold, detail                                                                             | UX-1b … UX-1e, UX-1d1, UX-1d2        | verify,smoke,reconcile; demo                                     |
-| UX-10  | Simulation console and users                    | `console.tsx`, `users.tsx`                                                                                      | UX-1b … UX-1e, UX-1d1, UX-1d2        | verify,smoke,reconcile; test:console; demo                       |
-| UX-11  | Login and account                               | `login.tsx`, `account.tsx`                                                                                      | UX-1b … UX-1e, UX-1d2                | verify,smoke,reconcile; demo                                     |
-| UX-12  | Dark theme                                      | theme switch, `color-scheme`, chart repaint, light print via `beforeprint`                                      | UX-2 … UX-11                         | verify,smoke,reconcile; demo                                     |
-| UX-F1  | Accessibility gate                              | UX-1g turned failing; fixes                                                                                     | UX-1g, UX-12                         | verify,smoke,reconcile                                           |
-| UX-F2  | Console CSP "eval" issue                        | `src/zod-config.ts` as `main.tsx`'s first import; no CSP violation events                                       | – (browser check after UX-1g)        | verify,smoke,reconcile                                           |
-| UX-F3  | Consistency review and the demo re-recording    | review table, raw-colour check failing, `pnpm demo:record`                                                      | UX-F1, UX-F2                         | verify,smoke,reconcile; demo ×2 (PR #290 precedent); demo:record |
+| Id     | Title                                           | Scope (one line)                                                                                                | Depends on                                                                                   | Gate                                                             |
+| ------ | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| UX-B1  | SPC chart: every point drawn, rule labels apart | reproduce, then fix `echarts-view.tsx` / `spc-options.ts`; SSR symbol-count test                                | –                                                                                            | verify,smoke,reconcile; demo                                     |
+| UX-B2  | Alarm raise times with their date               | `alarm-list.tsx`, `time.ts`: date unless today, full time in the tooltip                                        | –                                                                                            | verify,smoke,reconcile; demo                                     |
+| UX-B3  | Terminal: no "Offline" before sign-on           | `terminal.tsx` header shows the status only when signed on                                                      | –                                                                                            | verify,smoke,reconcile                                           |
+| UX-B4  | Show offline instead of loading forever         | `networkMode`, offline events, offline bar; writes fail at once, drafts kept                                    | –                                                                                            | verify,smoke,reconcile; test:resilience                          |
+| UX-B5  | Alarm KPI hours missing from a running shift    | investigate `/alarms/kpi?bucket=hour`; finding to the coordinator                                               | –                                                                                            | none (no code)                                                   |
+| UX-1a  | Design tokens and icons                         | `index.css` `@theme` light and dark, G-22 rule, `icons.tsx`, raw-colour report                                  | –                                                                                            | verify,smoke,reconcile                                           |
+| UX-1c  | Primitives: actions and status                  | Button, Badge and domain badges, Card, Stat, KpiTile, Callout, formatters, `data-decimal`                       | UX-1a                                                                                        | verify,smoke,reconcile; demo; test:resilience                    |
+| UX-1b  | App shell, grouped navigation and page header   | `root-layout.tsx`, `shell.tsx`, PageHeader, page titles, nav drawer, print                                      | UX-1a, UX-1c                                                                                 | verify,smoke,reconcile; demo; test:console; test:resilience      |
+| UX-1e  | Primitives: feedback and overlays               | Dialog, Confirm, Toast, Empty, Skeleton, Error, NotFound, Forbidden, Tooltip, Menu, SegmentedLinks, jsdom stubs | UX-1c                                                                                        | verify,smoke,reconcile; demo                                     |
+| UX-1d1 | Primitives: DataTable and Tabs                  | DataTable (sticky modes, selection, focus, paging, narrow), Tabs                                                | UX-1e                                                                                        | verify,smoke,reconcile; demo                                     |
+| UX-1d2 | Primitives: fields and PlantTimeInput           | Field and controls, FilterBar, PlantTimeInput                                                                   | UX-1e                                                                                        | verify,smoke,reconcile; demo                                     |
+| UX-1f  | Chart theme                                     | `chart/theme.ts` for ECharts and uPlot, rich-text tooltips, empty charts                                        | UX-1a, UX-1e, UX-B1                                                                          | verify,smoke,reconcile; demo                                     |
+| UX-1g  | Visual and accessibility harness (report-only)  | `e2e/browser/a11y/` in the reconciliation: axe, titles, overlays, 5-width shots                                 | UX-1b                                                                                        | verify,smoke,reconcile                                           |
+| UX-2   | Overview and machine detail                     | `overview.tsx`, `machine-detail.tsx`, timeline axis                                                             | UX-1b, UX-1c, UX-1d1, UX-1e, UX-1f                                                           | verify,smoke,reconcile; demo; test:resilience                    |
+| UX-3   | OEE dashboard and line OEE                      | `oee-dashboard.tsx`, `line-oee.tsx`, `oee-ui.tsx`; walkthrough 483–485 to `data-decimal`                        | UX-1b, UX-1c, UX-1d1, UX-1e, UX-1f                                                           | verify,smoke,reconcile; demo                                     |
+| UX-4a  | Alarm list                                      | `alarm-list.tsx`: tabs, table, panel from 1440 or sheet                                                         | UX-1b, UX-1c, UX-1d1, UX-1d2, UX-1e, UX-B2                                                   | verify,smoke,reconcile; demo; test:console                       |
+| UX-4b  | Alarm KPIs                                      | `alarm-kpi.tsx`: KPI tiles, hourly table, empty states                                                          | UX-1b, UX-1c, UX-1d1, UX-1e, UX-1f, UX-B5                                                    | verify,smoke,reconcile                                           |
+| UX-5a  | Downtime coding                                 | `downtime-coding.tsx`: table, coding panel or sheet, split time                                                 | UX-1b, UX-1c, UX-1d1, UX-1d2, UX-1e                                                          | verify,smoke,reconcile; demo                                     |
+| UX-5b  | Shift reports and handover notes                | `shift-list.tsx`, `shift-report.tsx`, `handover-notes.tsx`, print                                               | UX-1b, UX-1c, UX-1d1, UX-1d2, UX-1e, UX-1f                                                   | verify,smoke,reconcile                                           |
+| UX-6a  | Order list and order detail                     | `order-list.tsx`, `order-detail.tsx`: header, facts, section nav, tables                                        | UX-1b, UX-1c, UX-1d1, UX-1e                                                                  | verify,smoke,reconcile; demo; test:console                       |
+| UX-6b  | Order actions and order OEE                     | `order-actions.tsx`, `order-oee.tsx`; `1-order-line-oee.spec.ts` `ratio()` to `data-decimal`                    | UX-6a, UX-1d2                                                                                | verify,smoke,reconcile; demo                                     |
+| UX-7   | Operator terminal (tablet first)                | `terminal.tsx`: picker tiles, touch flow                                                                        | UX-1b, UX-1c, UX-1d2, UX-1e, UX-B3                                                           | verify,smoke,reconcile                                           |
+| UX-8   | Traceability: search, serial, lot and carton    | `trace-*.tsx`: results table, status badges, lot paging                                                         | UX-1b, UX-1c, UX-1d1, UX-1e                                                                  | verify,smoke,reconcile; demo                                     |
+| UX-9a  | SPC                                             | `spc.tsx`: list, chart page, episodes, limit versions                                                           | UX-1b, UX-1c, UX-1d1, UX-1d2, UX-1e, UX-1f, UX-B1                                            | verify,smoke,reconcile; demo                                     |
+| UX-9b  | Quality holds                                   | `holds.tsx`: list, new hold, detail                                                                             | UX-1b, UX-1c, UX-1d1, UX-1d2, UX-1e                                                          | verify,smoke,reconcile; demo                                     |
+| UX-10  | Simulation console and users                    | `console.tsx`, `users.tsx`                                                                                      | UX-1b, UX-1c, UX-1d1, UX-1d2, UX-1e                                                          | verify,smoke,reconcile; test:console; demo                       |
+| UX-11  | Login and account                               | `login.tsx`, `account.tsx`                                                                                      | UX-1b, UX-1c, UX-1d2, UX-1e                                                                  | verify,smoke,reconcile; demo                                     |
+| UX-12  | Dark theme                                      | theme switch, `color-scheme`, chart repaint, light print via `beforeprint`                                      | UX-2, UX-3, UX-4a, UX-4b, UX-5a, UX-5b, UX-6a, UX-6b, UX-7, UX-8, UX-9a, UX-9b, UX-10, UX-11 | verify,smoke,reconcile; demo                                     |
+| UX-F1  | Accessibility gate                              | UX-1g turned failing; fixes                                                                                     | UX-1g, UX-12                                                                                 | verify,smoke,reconcile                                           |
+| UX-F2  | Console CSP "eval" issue                        | `src/zod-config.ts` as `main.tsx`'s first import; no CSP violation events                                       | – (browser check after UX-1g)                                                                | verify,smoke,reconcile                                           |
+| UX-F3  | Consistency review and the demo re-recording    | review table, raw-colour check failing, `pnpm demo:record`                                                      | UX-F1, UX-F2                                                                                 | verify,smoke,reconcile; demo ×2 (PR #290 precedent); demo:record |

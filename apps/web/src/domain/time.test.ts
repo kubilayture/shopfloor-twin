@@ -77,12 +77,22 @@ describe('time formatting', () => {
 
   it('keeps the plant zone at UTC+3 all year: no DST shift in the day boundary', () => {
     // Istanbul has had no DST since 2016: midnight is 21:00 UTC in winter and summer alike,
-    // including around the EU change-over weekends (28/29 March, 24/25 October 2026).
-    for (const date of ['2026-01-14', '2026-03-28', '2026-07-14', '2026-10-24', '2026-12-30']) {
+    // The EU switches at 01:00 UTC on 29 March and 25 October 2026: the 28th and 24th are the
+    // evenings before a switch, the 29th and 25th the evenings after it.
+    const days: readonly (readonly [string, string])[] = [
+      ['2026-01-14', '2026-01-15'],
+      ['2026-03-28', '2026-03-29'],
+      ['2026-03-29', '2026-03-30'],
+      ['2026-07-14', '2026-07-15'],
+      ['2026-10-24', '2026-10-25'],
+      ['2026-10-25', '2026-10-26'],
+      ['2026-12-30', '2026-12-31'],
+    ];
+    for (const [date, next] of days) {
       const before = Date.parse(`${date}T20:59:59.000Z`);
       const after = Date.parse(`${date}T21:00:00.000Z`);
       expect(plantDayOf(before)).toBe(date);
-      expect(plantDayOf(after)).not.toBe(date);
+      expect(plantDayOf(after)).toBe(next);
       expect(formatClockSeconds(after)).toBe('00:00:00');
     }
   });

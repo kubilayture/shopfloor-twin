@@ -704,7 +704,7 @@ Waterfall (E-06): every step is drawn as a positive bar from its base, losses la
 ### 6.2 Time
 
 - **Plant time** is the default and needs no label inside the app; the shell's clock names the zone ("Gebze plant time"). Format `Mon 12 Oct, 07:15:00` (en-GB, plant zone).
-- **The date goes with every time** unless the time is on the plant clock's current day and the column or the context says so; a list of events spanning days always shows dates (A-01). Seconds are shown for event times (facts, alarms, cycles), not for planning times (due, planned start: `Mon 12 Oct, 22:00`).
+- **The date goes with every time** unless the time falls on the plant clock's current day in the plant zone: then the time alone (`07:15:00`). One rule for every row, with no "(today)" heading variant; before the plant clock is known, every time is dated. Every such element carries the full plant date-time in its `title` and the raw instant in `<time dateTime>` (`formatPlantTimeRelative` in `domain/time.ts`; A-01, #309). Seconds are shown for event times (facts, alarms, cycles), not for planning times (due, planned start: `Mon 12 Oct, 22:00`).
 - **Wall time** (when the MES or a person did something) always ends with "(wall time)" and never uses the browser's locale or zone settings (Y-01); the formatting functions live in `domain/time.ts` only, and no screen calls `toLocaleString`.
 - **Ranges:** "Mon 12 Oct, 06:15 – 12:17" on one day, "Wed 21 Oct, 22:00 – Thu 22 Oct, 06:00" across midnight.
 - **Inputs** are plant time with the UTC instant shown (4.8).

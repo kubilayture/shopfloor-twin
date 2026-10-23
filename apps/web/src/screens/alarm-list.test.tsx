@@ -268,7 +268,20 @@ describe('alarm list', () => {
       active: false,
       acknowledged: ACK,
     });
-    const server = mes({ ...empty(), active: [today, old], history: [closed] });
+    // Half past plant midnight: still the 14th in UTC, already the clock's day (the 15th) in plant.
+    const afterMidnight = occurrence(4, {
+      state: 'closed',
+      raisedAt: '2026-10-14T21:30:00.000Z',
+      endedAt: '2026-10-14T21:40:00.000Z',
+      endReason: 'cleared',
+      active: false,
+      acknowledged: ACK,
+    });
+    const server = mes({
+      ...empty(),
+      active: [today, old],
+      history: [afterMidnight, closed],
+    });
     vi.stubGlobal('fetch', server.fetch);
     await renderApp('/alarms');
     const raised = (id: string) => {
@@ -296,10 +309,16 @@ describe('alarm list', () => {
     });
     expect(screen.getByRole('columnheader', { name: 'Raised' })).toBeTruthy();
 
-    // A second before plant midnight is yesterday, though it is the 14th in UTC as well.
+    // In the history: a second before plant midnight is the day before; half an hour after it is
+    // the plant clock's day, although its UTC date is still the 14th.
     fireEvent.click(screen.getByTestId('tab-history'));
     await screen.findByTestId(`alarm-row-${closed.id}`);
     expect(raised(closed.id).text).toBe('Wed 14 Oct, 23:59:59');
+    expect(raised(afterMidnight.id)).toEqual({
+      text: '00:30:00',
+      dateTime: '2026-10-14T21:30:00.000Z',
+      title: 'Thu 15 Oct, 00:30:00',
+    });
   });
 
   it('acknowledges the selected alarms in one bulk request', async () => {

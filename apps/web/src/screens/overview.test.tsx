@@ -19,6 +19,8 @@ describe('plant overview', () => {
     await app.open();
 
     await screen.findByTestId('state-cnc-01');
+    // The top bar is a dark surface: its focus ring is focus-on-dark (UX-1a, design system 7).
+    expect(screen.getByRole('banner').dataset.surface).toBe('dark');
     expect(screen.getByRole('heading', { name: 'Machining', level: 2 })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Line A1', level: 3 })).toBeTruthy();
     const cnc = screen.getByTestId('state-cnc-01');

@@ -167,7 +167,7 @@ function TerminalHeader({
 }) {
   const { clock } = usePlantClock();
   return (
-    <header className="bg-slate-900 text-white">
+    <header className="bg-slate-900 text-white" data-surface="dark">
       <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-x-4 gap-y-1 px-3 py-2">
         <p className="text-lg font-bold">
           Terminal <span className="font-mono font-normal text-slate-300">{workCenter}</span>

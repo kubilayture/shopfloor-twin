@@ -112,7 +112,11 @@ export function RootLayout() {
       >
         Skip to content
       </a>
-      <header className="bg-slate-900 text-white print:hidden" data-print="hidden">
+      <header
+        className="bg-slate-900 text-white print:hidden"
+        data-print="hidden"
+        data-surface="dark"
+      >
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-x-6 gap-y-2 px-4 py-3">
           <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
             <Link to="/" className="text-lg font-bold hover:underline">

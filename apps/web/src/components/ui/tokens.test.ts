@@ -146,6 +146,9 @@ describe('the token map and src/index.css', () => {
       /:focus-visible \{\s*outline: 2px solid var\(--color-focus\);\s*outline-offset: 2px;\s*\}/,
     );
     expect(css).toMatch(
+      /\[data-surface='dark'\] :focus-visible \{\s*outline-color: var\(--color-focus-on-dark\);\s*\}/,
+    );
+    expect(css).toMatch(
       /h1\[tabindex='-1'\]:focus-visible,\s*main\[tabindex='-1'\]:focus \{\s*outline: none;\s*\}/,
     );
   });

@@ -33,11 +33,11 @@ describe('time formatting', () => {
   describe('an event time relative to the plant clock (A-01)', () => {
     const clock = '2026-10-15T06:10:00.000Z'; // Thu 15 Oct, 09:10 plant time
 
-    it("shows the time only, marked today, on the plant clock's current day", () => {
-      expect(formatPlantTimeRelative('2026-10-15T04:15:00.000Z', clock)).toBe('Today, 07:15:00');
+    it("shows the time only on the plant clock's current day", () => {
+      expect(formatPlantTimeRelative('2026-10-15T04:15:00.000Z', clock)).toBe('07:15:00');
       expect(
         formatPlantTimeRelative(Date.parse('2026-10-15T04:15:00.000Z'), Date.parse(clock)),
-      ).toBe('Today, 07:15:00');
+      ).toBe('07:15:00');
     });
 
     it('shows the date for another plant day, past or future', () => {
@@ -56,15 +56,13 @@ describe('time formatting', () => {
 
     it('turns the day at midnight in the plant zone, not in UTC', () => {
       // 21:00 UTC is 00:00 the next day in Istanbul.
-      expect(formatPlantTimeRelative('2026-10-14T21:00:00.000Z', clock)).toBe('Today, 00:00:00');
+      expect(formatPlantTimeRelative('2026-10-14T21:00:00.000Z', clock)).toBe('00:00:00');
       expect(formatPlantTimeRelative('2026-10-14T20:59:59.000Z', clock)).toBe(
         'Wed 14 Oct, 23:59:59',
       );
       // The plant clock just after midnight: still the 14th in UTC, already the 15th in the plant.
       const justAfter = '2026-10-14T21:00:01.000Z';
-      expect(formatPlantTimeRelative('2026-10-14T21:00:00.000Z', justAfter)).toBe(
-        'Today, 00:00:00',
-      );
+      expect(formatPlantTimeRelative('2026-10-14T21:00:00.000Z', justAfter)).toBe('00:00:00');
       expect(formatPlantTimeRelative('2026-10-14T20:00:00.000Z', justAfter)).toBe(
         'Wed 14 Oct, 23:00:00',
       );

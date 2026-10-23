@@ -273,16 +273,26 @@ describe('alarm list', () => {
     await renderApp('/alarms');
     const raised = (id: string) => {
       const time = screen.getByTestId(`alarm-row-${id}`).querySelector('time');
-      return { text: time?.textContent, dateTime: time?.getAttribute('dateTime') };
+      return {
+        text: time?.textContent,
+        dateTime: time?.getAttribute('dateTime'),
+        title: time?.getAttribute('title'),
+      };
     };
     await screen.findByTestId(`alarm-row-${old.id}`);
     await waitFor(() => {
-      expect(raised(today.id).text).toBe('Today, 08:00:01');
+      expect(raised(today.id).text).toBe('08:00:01');
     });
-    expect(raised(today.id).dateTime).toBe(today.raisedAt);
+    // Same plant day: the time only, the full plant date-time in the tooltip.
+    expect(raised(today.id)).toEqual({
+      text: '08:00:01',
+      dateTime: today.raisedAt,
+      title: 'Thu 15 Oct, 08:00:01',
+    });
     expect(raised(old.id)).toEqual({
       text: 'Mon 12 Oct, 07:15:00',
       dateTime: '2026-10-12T04:15:00.000Z',
+      title: 'Mon 12 Oct, 07:15:00',
     });
     expect(screen.getByRole('columnheader', { name: 'Raised' })).toBeTruthy();
 

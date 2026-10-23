@@ -49,16 +49,17 @@ export function plantDayOf(time: string | number): string {
 }
 
 /**
- * An event time relative to the plant clock (design system 6.2, A-01): `Today, 07:15:00` when it
- * falls on the plant clock's current day in the plant zone, `Mon 12 Oct, 07:15:00` on any other day
- * or while there is no plant clock yet, so a days-old standing alarm never reads as this morning's.
+ * An event time relative to the plant clock (design system 6.2, A-01): the time only (`07:15:00`)
+ * when it falls on the plant clock's current day in the plant zone, `Mon 12 Oct, 07:15:00` on any
+ * other day or while there is no plant clock yet, so a days-old standing alarm never reads as this
+ * morning's. Callers put the full `formatPlantTime` in the element's `title`.
  */
 export function formatPlantTimeRelative(
   at: string | number,
   clock: string | number | undefined,
 ): string {
   if (clock !== undefined && plantDayOf(at) === plantDayOf(clock)) {
-    return `Today, ${formatClockSeconds(at)}`;
+    return formatClockSeconds(at);
   }
   return formatPlantTime(at);
 }

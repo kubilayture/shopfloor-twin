@@ -1107,7 +1107,10 @@ export function AlarmList() {
                         ) : null}
                       </td>
                       <td className="whitespace-nowrap px-2 py-1 tabular-nums">
-                        <time dateTime={occurrence.raisedAt}>
+                        <time
+                          dateTime={occurrence.raisedAt}
+                          title={formatPlantTime(occurrence.raisedAt)}
+                        >
                           {formatPlantTimeRelative(occurrence.raisedAt, clock?.watermark)}
                         </time>
                       </td>

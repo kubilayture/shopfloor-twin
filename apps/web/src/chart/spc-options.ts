@@ -167,6 +167,8 @@ export function ruleLane(
       formatter: '{b}',
       ...axisText,
     },
+    // "Newest kept" relies on every lane marker having the same size: hideOverlap ranks labels by
+    // their marker's area, and equal areas keep the data order (newest first).
     labelLayout: { hideOverlap: true },
     data,
   };

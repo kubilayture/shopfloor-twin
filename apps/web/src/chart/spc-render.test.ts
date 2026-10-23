@@ -46,7 +46,10 @@ interface EChartsModel {
   getSeriesByName(name: string): {
     getData(): {
       count(): number;
-      getItemGraphicEl(i: number): { scaleX: number; scaleY: number } | undefined;
+      get(dimension: string, i: number): number;
+      getItemGraphicEl(
+        i: number,
+      ): { scaleX: number; scaleY: number; getSymbolType(): string } | undefined;
     };
   }[];
 }
@@ -68,7 +71,7 @@ function laneLabels(instance: EChartsType) {
   const lane = model.getSeriesByName(RULE_LANE)[0];
   if (!lane) throw new Error('no label lane');
   const data = lane.getData();
-  const labels: { hidden: boolean; rect: Rect }[] = [];
+  const labels: { hidden: boolean; rect: Rect; at: number }[] = [];
   for (let i = 0; i < data.count(); i++) {
     const el = data.getItemGraphicEl(i) as unknown as
       { childAt(i: number): { getTextContent(): TextEl | undefined } } | undefined;
@@ -76,7 +79,7 @@ function laneLabels(instance: EChartsType) {
     if (!text) continue;
     const rect = text.getBoundingRect().clone();
     rect.applyTransform(text.getComputedTransform());
-    labels.push({ hidden: text.ignore, rect });
+    labels.push({ hidden: text.ignore, rect, at: data.get('x', i) });
   }
   return labels;
 }
@@ -144,8 +147,30 @@ describe('SPC chart rendering (#308)', () => {
       for (const [i, a] of shown.entries()) {
         for (const b of shown.slice(i + 1)) expect(a.rect.intersect(b.rect)).toBe(false);
       }
+      // The newest episode's label is the one kept (all twelve sit in the left half, so each
+      // label's place is its episode's start).
+      const newest = laneLabels(chart).reduce((a, b) => (b.at > a.at ? b : a));
+      expect(newest.at).toBe(Date.parse(signals[11]?.first.at ?? ''));
+      expect(newest.hidden).toBe(false);
     },
   );
+
+  it('draws provisional points hollow and signalling points as diamonds', () => {
+    const element = document.createElement('div');
+    chart = init(element, undefined, { renderer: 'svg', width: 1200, height: 240 });
+    const drawn = input('I', 100);
+    chart.setOption(asSet(drawn), { notMerge: true });
+    const model = (chart as unknown as { getModel(): EChartsModel }).getModel();
+    const data = model.getSeriesByName('Points')[0]?.getData();
+    const symbols = drawn.points.map((_, i) => data?.getItemGraphicEl(i)?.getSymbolType());
+    drawn.points.forEach((p, i) => {
+      const expected = p.rules.length > 0 ? 'diamond' : p.final ? 'circle' : 'emptyCircle';
+      expect(symbols[i], `point ${String(i)}`).toBe(expected);
+    });
+    // The fixture has both kinds: points 25 and 75 fire a rule, the last five are provisional.
+    expect(symbols.filter((s) => s === 'diamond')).toHaveLength(2);
+    expect(symbols.filter((s) => s === 'emptyCircle')).toHaveLength(5);
+  });
 
   it('registers the label layout itself: the bundle drops the one echarts/core installs', () => {
     expect(ECHARTS_MODULES).toContain(LabelLayout);

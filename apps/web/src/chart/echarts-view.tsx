@@ -34,6 +34,9 @@ export function EChartsView({
   const container = useRef<HTMLDivElement>(null);
   const snapshot = useRef<HTMLImageElement>(null);
   const chart = useRef<EChartsType | null>(null);
+  // The animation the chart is drawn with: the option's own (SPC charts: off, #308), else on
+  // unless the user prefers reduced motion. The print snapshot restores it afterwards.
+  const animation = useRef(true);
 
   useEffect(() => {
     const element = container.current;
@@ -60,7 +63,7 @@ export function EChartsView({
         pixelRatio: PRINT_PIXEL_RATIO,
         backgroundColor: '#ffffff',
       });
-      instance.setOption({ animation: !reducedMotion() });
+      instance.setOption({ animation: animation.current });
     };
     window.addEventListener('beforeprint', takeSnapshot);
     return () => {
@@ -72,10 +75,11 @@ export function EChartsView({
   }, [height]);
 
   useEffect(() => {
+    animation.current = typeof option.animation === 'boolean' ? option.animation : !reducedMotion();
     chart.current?.setOption(
       {
-        animation: !reducedMotion(),
         ...option,
+        animation: animation.current,
         tooltip: { renderMode: 'richText', ...(option.tooltip as object | undefined) },
       },
       { notMerge: true },

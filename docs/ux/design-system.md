@@ -91,7 +91,7 @@ ISA-101 restraint: grey for the states a plant spends its normal time in, colour
 | State        | Tone        | Badge                                                   | Glyph               | Contrast |
 | ------------ | ----------- | ------------------------------------------------------- | ------------------- | -------- |
 | Running      | neutral     | solid `#334155`, text `#ffffff`                         | ▶                   | 10.35    |
-| Idle         | neutral     | fill `#e2e8f0`, text `#0f172a`                          | –                   | 14.48    |
+| Idle         | neutral     | fill `#e2e8f0`, text `#0f172a`                          | none                | 14.48    |
 | Setup        | neutral     | fill `#e2e8f0`, text `#0f172a`, dashed border `#64748b` | ⟳                   | 14.48    |
 | Planned stop | neutral     | fill `#f8fafc`, text `#334155`, border `#64748b`        | ‖                   | 9.90     |
 | Maintenance  | info        | solid `#1d4ed8`, text `#ffffff`                         | wrench (SVG)        | 6.70     |

@@ -6,7 +6,7 @@ import {
   type TerminalOperationDto,
   type TerminalViewDto,
 } from '@shopfloor/contracts/mes-api';
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { timed } from '../test/timing.ts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EQUIPMENT, json, problem, sessionOf } from '../test/fixtures.ts';
@@ -42,6 +42,8 @@ function terminalMes(
     roles?: Role[];
     /** Sessions the MES issues end this soon after the login (the idle timeout), if given. */
     idleMs?: number;
+    /** The plant clock's watermark, if the plant has one. */
+    watermark?: string;
   } = {},
 ) {
   let nextActivity = 500;
@@ -111,8 +113,8 @@ function terminalMes(
     if (path === '/api/v1/plant')
       return json({
         site: { id: 'gebze', name: 'Gebze', enterprise: { id: 'o', name: 'O' } },
-        clock: null,
-        epochs: [],
+        clock: options.watermark ? { epoch: 1, watermark: options.watermark } : null,
+        epochs: options.watermark ? [{ epoch: 1, watermark: options.watermark }] : [],
       });
     if (path === '/api/v1/terminal/line-a1') return json(view);
     if (path === '/api/v1/scrap-reasons') {
@@ -482,6 +484,39 @@ describe('the operator terminal (#177)', () => {
     expect((await screen.findByTestId('terminal-desk-session')).textContent).toMatch(
       /ayse is logged in at a desk/,
     );
+  });
+
+  it('shows the plant clock and no connection state before sign-on, also with a desk session (#311)', async () => {
+    const desk = sessionOf(['operator'], { username: 'ayse' });
+    const mes = terminalMes({ session: desk, watermark: '2026-10-15T06:20:00.000Z' });
+    vi.stubGlobal('fetch', mes.fetch);
+    const app = await renderApp('/terminal/line-a1', { session: desk });
+    await screen.findByTestId('terminal-desk-session');
+    await waitFor(() => {
+      expect(screen.getByTestId('terminal-clock').textContent).toMatch(/^Plant time /);
+    });
+    // As in the browser, where this route never starts the live client for a desk session: the
+    // client stays stopped, and the header must not call that "Offline".
+    act(() => {
+      app.live.stop();
+    });
+    expect(screen.queryByTestId('connection-status')).toBeNull();
+    expect(screen.queryByText('Offline')).toBeNull();
+    expect(screen.queryByText('Live')).toBeNull();
+  });
+
+  it('shows no connection state on the sign-on page without a session, and "Live" once signed on (#311)', async () => {
+    const mes = terminalMes();
+    vi.stubGlobal('fetch', mes.fetch);
+    const app = await renderApp('/terminal/line-a1', { session: 'fetch' });
+    await screen.findByRole('heading', { name: 'Sign on' });
+    expect(screen.getByTestId('terminal-clock').textContent).toBe('No plant time yet');
+    expect(screen.queryByTestId('connection-status')).toBeNull();
+    await signOnAs('olga');
+    await app.open();
+    const status = screen.getByTestId('connection-status');
+    expect(status.dataset.status).toBe('open');
+    expect(status.textContent).toBe('Live');
   });
 
   it('says why a sign-on was refused when no shift is running', async () => {

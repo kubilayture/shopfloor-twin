@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### Fixed
+
+- The terminal's sign-on page no longer says "Offline" (#311, UX-B3, audit X-03): the header shows the live connection's state only for a signed-on terminal session. Before sign-on this route never starts the live client, so a desk session in the same browser read as a red "Offline"; the page now shows the work center and the plant clock only, and "Live" once signed on as before (`apps/web/src/screens/terminal.tsx`). Tests: with a desk session and a stopped client the sign-on page shows the plant clock and no `connection-status`; without a session none either, and after sign-on `connection-status` reads "Live" with `data-status="open"`.
+
 ### Changed
 
 - README: points to release 1.0.0 and the final report, and names the Phase 10 report as the latest (it still said Phase 9; R10-14 (12)). The quick-start block is unchanged.

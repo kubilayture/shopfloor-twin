@@ -124,7 +124,7 @@ export function TerminalScreen() {
   }, [queryClient, user?.id]);
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900" data-testid="terminal-screen">
-      <TerminalHeader workCenter={workCenter} session={session ?? null} />
+      <TerminalHeader workCenter={workCenter} signedOn={user !== undefined} />
       <main id="main" tabIndex={-1} className="mx-auto max-w-5xl px-3 py-4 focus:outline-none">
         {session === undefined ? (
           <p role="status">Checking your session…</p>
@@ -145,12 +145,17 @@ export function TerminalScreen() {
   );
 }
 
+/**
+ * The work center and the plant clock; the live connection's state only for a signed-on terminal
+ * session (#311). Before sign-on this route never starts the live client, so a desk session in the
+ * same browser would read a stopped client as "Offline" on a screen that is not meant to be live.
+ */
 function TerminalHeader({
   workCenter,
-  session,
+  signedOn,
 }: {
   readonly workCenter: string;
-  readonly session: SessionDto | null;
+  readonly signedOn: boolean;
 }) {
   const { clock } = usePlantClock();
   return (
@@ -163,7 +168,7 @@ function TerminalHeader({
           <span data-testid="terminal-clock">
             {clock ? `Plant time ${formatPlantTime(clock.watermark)}` : 'No plant time yet'}
           </span>
-          {session ? <ConnectionStatus /> : null}
+          {signedOn ? <ConnectionStatus /> : null}
         </div>
       </div>
     </header>

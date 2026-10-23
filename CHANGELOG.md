@@ -8,6 +8,10 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 - README: points to release 1.0.0 and the final report, and names the Phase 10 report as the latest (it still said Phase 9; R10-14 (12)). The quick-start block is unchanged.
 
+### Fixed
+
+- SPC charts draw every point's marker at once (#308, UX-B1, audit C-03): the points line's intro animation drew the markers from scale 0, each delayed by its place on the time axis, for about 1.5 s after every load, window switch or new view, so a look, print or screenshot in that time saw the later points, signal diamonds included, as a bare line. The SPC option sets `animation: false` (design system: no chart animation). Rule labels no longer run into each other (C-02): the episode spans keep their shading without labels, and a label lane on the plot's top edge names each episode, hiding labels that would overlap (`labelLayout.hideOverlap`, newest kept). The web app now registers ECharts' label layout itself (`apps/web/src/chart/echarts-modules.ts`): the one `echarts/core` installs is dropped by the bundle. Tests: `spc-render.test.ts` renders the four charts with ECharts on SVG (500 and 2000 readings, a live update, a resize, labels at 1440, 1024 and 390 px).
+
 ## [1.0.0] - 2026-10-22
 
 The first release: everything from Phase 0 to Phase 10, the v1 scope of the master plan (`docs/project-plan.md`). The date is the sign-off date: the sign-off was decided by the coordinator under the owner's delegation of 2026-10-22, not by the owner's own review (P10-11, #286; `docs/final-report.md`, "Sign-off"); `v1.0.0` goes on the sign-off pull request's merge commit (runbook "Releasing"). By capability:

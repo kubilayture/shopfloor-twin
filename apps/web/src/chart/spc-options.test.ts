@@ -1,13 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import { formatPlantTime } from '../domain/time.ts';
 import { chart, limitVersion, point, signal } from '../test/quality-fixtures.ts';
-import { SPC_COLORS, episodeAreas, spcChartOption, spcTooltip } from './spc-options.ts';
+import {
+  RULE_LANE,
+  SPC_COLORS,
+  episodeAreas,
+  ruleLane,
+  spcChartOption,
+  spcTooltip,
+} from './spc-options.ts';
 
 interface Series {
   name: string;
   type: string;
   data: unknown[];
-  markArea?: { data: unknown[] };
+  markArea?: { data: unknown[]; label?: { show: boolean } };
+  yAxisIndex?: number;
+  labelLayout?: { hideOverlap?: boolean };
+  label?: { show: boolean; position: string };
 }
 
 const seriesOf = (option: ReturnType<typeof spcChartOption>) => option.series as Series[];
@@ -67,7 +77,7 @@ describe('SPC chart options (#203)', () => {
       'Retests',
     ]);
     expect(named(option, 'Retests')?.type).toBe('scatter');
-    expect((option.yAxis as { scale: boolean }).scale).toBe(true);
+    expect((option.yAxis as { scale: boolean }[])[0]?.scale).toBe(true);
   });
 
   it('draws ranges from zero without zones or retests', () => {
@@ -82,7 +92,7 @@ describe('SPC chart options (#203)', () => {
     });
     expect(named(option, '+1σ')).toBeUndefined();
     expect(named(option, 'Retests')).toBeUndefined();
-    expect((option.yAxis as { min: number }).min).toBe(0);
+    expect((option.yAxis as { min: number }[])[0]?.min).toBe(0);
     const provisional = (named(option, 'Points')?.data as { symbol: string }[])[0];
     expect(provisional?.symbol).toBe('emptyCircle');
   });
@@ -113,6 +123,75 @@ describe('SPC chart options (#203)', () => {
     const one = areas[1];
     expect((one?.[1].xAxis ?? 0) - (one?.[0].xAxis ?? 0)).toBe(40_000);
     expect(areas[0]?.[0].xAxis).toBe(Date.parse(signal(1).first.at));
+  });
+
+  it('draws without an intro animation, so every marker is there at once (#308, C-03)', () => {
+    const option = spcChartOption({
+      chart: 'I',
+      points: view.points.I,
+      limits: view.limits,
+      signals: view.signals,
+      unit: 'Pa/min',
+      resolution: 0.001,
+    });
+    // EChartsView spreads the option over its own `animation`, so this value wins.
+    expect(option.animation).toBe(false);
+  });
+
+  it('names the episodes in a label lane that hides overlapping labels (#308, C-02)', () => {
+    const signals = [
+      signal(1, { status: 'final', extentFinal: true }),
+      signal(2),
+      signal(3, { status: 'withdrawn' }),
+      signal(4, { chart: 'R' }),
+      signal(9, {
+        status: 'final',
+        extentFinal: true,
+        first: { ...signal(9).first, at: '2026-10-15T07:00:00.000Z' },
+        last: { ...signal(9).last, at: '2026-10-15T07:05:00.000Z' },
+      }),
+    ];
+    const points = [point(100, 2), point(140, 2), point(190, 2)];
+    const option = spcChartOption({
+      chart: 'I',
+      points,
+      limits: view.limits,
+      signals,
+      unit: 'Pa/min',
+      resolution: 0.001,
+    });
+    // The spans keep their shading but no label of their own (they ran into each other).
+    expect(named(option, 'Points')?.markArea?.label).toEqual({ show: false });
+    const lane = named(option, RULE_LANE);
+    expect(lane?.labelLayout).toEqual({ hideOverlap: true });
+    expect(lane?.label).toMatchObject({ show: true, position: 'top' });
+    // On its own hidden 0–1 axis, on the plot's top edge; out of the legend.
+    expect(lane?.yAxisIndex).toBe(1);
+    expect((option.yAxis as { show?: boolean; min?: number; max?: number }[])[1]).toEqual({
+      type: 'value',
+      show: false,
+      min: 0,
+      max: 1,
+    });
+    expect((option.legend as { data: string[] }).data).not.toContain(RULE_LANE);
+    // Newest first (kept when two overlap); withdrawn and other charts' episodes left out; in the
+    // left half a label starts at its span, in the right half it ends there.
+    const data = lane?.data as {
+      name: string;
+      value: [number, number];
+      label: { align: string };
+    }[];
+    expect(data.map((d) => d.name)).toEqual(['Rule 1', 'Rule 1 (provisional)', 'Rule 1']);
+    expect(data[0]?.value).toEqual([Date.parse('2026-10-15T07:05:00.000Z'), 1]);
+    expect(data[0]?.label.align).toBe('right');
+    expect(data[2]?.value).toEqual([Date.parse(signal(1).first.at), 1]);
+    expect(data[2]?.label.align).toBe('left');
+  });
+
+  it('gives an empty lane when no episode is shown, and aligns left without points', () => {
+    expect(ruleLane([], 'I', undefined).data).toEqual([]);
+    const [only] = ruleLane([signal(1, { status: 'final' })], 'I', undefined).data;
+    expect(only?.label.align).toBe('left');
   });
 
   it('writes the tooltip as text', () => {

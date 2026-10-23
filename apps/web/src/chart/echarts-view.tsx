@@ -1,11 +1,3 @@
-import { BarChart, LineChart, ScatterChart } from 'echarts/charts';
-import {
-  GridComponent,
-  LegendComponent,
-  MarkAreaComponent,
-  MarkLineComponent,
-  TooltipComponent,
-} from 'echarts/components';
 import {
   init,
   use as registerModules,
@@ -14,21 +6,10 @@ import {
 } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
 import { useEffect, useRef } from 'react';
+import { ECHARTS_MODULES } from './echarts-modules.ts';
 
-// Tree-shaken (plan "API, push and web"): bar charts on a canvas with a grid, a legend, a mark
-// line (the alarm flood threshold, #145) and a canvas-drawn tooltip; since #203 line and scatter
-// charts with mark areas (the SPC charts: points, limits, zones, episodes, retests).
-registerModules([
-  BarChart,
-  LineChart,
-  ScatterChart,
-  GridComponent,
-  LegendComponent,
-  MarkAreaComponent,
-  MarkLineComponent,
-  TooltipComponent,
-  CanvasRenderer,
-]);
+// The charts' modules (echarts-modules.ts) on a canvas, with a canvas-drawn tooltip.
+registerModules([...ECHARTS_MODULES, CanvasRenderer]);
 
 /** The print image's pixels per CSS pixel of the chart on screen. */
 const PRINT_PIXEL_RATIO = 3;

@@ -37,7 +37,9 @@ export async function renderApp(
 ) {
   const factory = socketFactory();
   const queryClient = createQueryClient();
-  queryClient.setDefaultOptions({ queries: { retry: false, staleTime: 5_000 } });
+  // No retries in tests; the app's other defaults (`networkMode`, #312) stay as they ship.
+  const defaults = queryClient.getDefaultOptions();
+  queryClient.setDefaultOptions({ ...defaults, queries: { ...defaults.queries, retry: false } });
   if (session !== 'fetch') queryClient.setQueryData(sessionKey, session);
   const live = new LiveClient({ url: 'ws://test/api/v1/ws', createSocket: factory.create });
   connectLiveToCache(live, queryClient);

@@ -51,6 +51,14 @@ Every document of the repository, what it is for, when it changes and whether a 
 | [`demo.md`](demo.md)                 | The demo scenario's scene script, runnable by hand, probe D1's margins; the recording in [`demo/`](demo/) (video, captions, a screenshot per scene; P10-07), its SHA-256, commit and length, and how to re-record | The demo's scenes change; a scene's visible behaviour changes (re-record, at most once per release) | `pnpm demo` plays the same scenes (`e2e/src/demo.ts`); `pnpm demo:record` refuses a recording over its limits |
 | [`../CHANGELOG.md`](../CHANGELOG.md) | Keep a Changelog, grouped by release                                                                                                                                                                              | Every pull request                                                                                  | –                                                                                                             |
 
+## User interface
+
+| Document                                     | Purpose                                                                                                                                                  | Updated when                                                           | Checked by |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | ---------- |
+| [`ux/audit.md`](ux/audit.md)                 | The web app's UX audit at v1.0.0 (UX-0): every defect per screen with severity, category and screenshot                                                  | A record of its time; the plan's issues mark the ids they close        | –          |
+| [`ux/design-system.md`](ux/design-system.md) | Tokens (colour, type, spacing, radius, elevation, z-index, motion), the shell and navigation, components, chart theme, content and a11y rules, dark mode | A visual or interaction rule changes (before the code that follows it) | –          |
+| [`ux/ux-plan.md`](ux/ux-plan.md)             | The UX overhaul's issues (UX-B1 … UX-F3): scope, acceptance, tests to keep green, gate, dependencies                                                     | An issue is added, split or re-scoped                                  | –          |
+
 ## Phases and learning
 
 Records of their time: a plan, log or report is written for its phase and not rewritten later (a later change is an amendment or a new entry), so a statement that was true then is not stale.

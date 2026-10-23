@@ -23,17 +23,25 @@ export interface RenderOptions {
    * `GET /api/v1/session` from the stubbed fetch.
    */
   readonly session?: SessionDto | null | 'fetch';
+  /**
+   * `'stopped'` leaves the live client stopped, as a route without the desk shell finds it after a
+   * reload (#311); by default it is started before the app renders.
+   */
+  readonly live?: 'started' | 'stopped';
 }
 
 /** The whole app at a path, with a fake socket the test drives and the stubbed fetch. */
-export async function renderApp(path: string, { session = SESSION }: RenderOptions = {}) {
+export async function renderApp(
+  path: string,
+  { session = SESSION, live: liveState = 'started' }: RenderOptions = {},
+) {
   const factory = socketFactory();
   const queryClient = createQueryClient();
   queryClient.setDefaultOptions({ queries: { retry: false, staleTime: 5_000 } });
   if (session !== 'fetch') queryClient.setQueryData(sessionKey, session);
   const live = new LiveClient({ url: 'ws://test/api/v1/ws', createSocket: factory.create });
   connectLiveToCache(live, queryClient);
-  live.start();
+  if (liveState === 'started') live.start();
   const history = createMemoryHistory({ initialEntries: [path] });
   const view = render(<App queryClient={queryClient} live={live} history={history} />);
   await act(async () => {

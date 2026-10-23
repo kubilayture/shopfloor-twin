@@ -122,9 +122,17 @@ export function TerminalScreen() {
     if (holder.current !== undefined && holder.current !== user?.id) forgetTerminal(queryClient);
     holder.current = user?.id;
   }, [queryClient, user?.id]);
+  // This route has no desk shell, which starts the live client for a desk session: a signed-on
+  // terminal opened or reloaded starts it here (#311). Starting is a no-op while it runs; sign-off
+  // and a session's end stop it (`logOut`, `sessionLost`).
+  const { startLive } = auth;
+  const signedOn = user !== undefined;
+  useEffect(() => {
+    if (signedOn) startLive();
+  }, [startLive, signedOn]);
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900" data-testid="terminal-screen">
-      <TerminalHeader workCenter={workCenter} signedOn={user !== undefined} />
+      <TerminalHeader workCenter={workCenter} signedOn={signedOn} />
       <main id="main" tabIndex={-1} className="mx-auto max-w-5xl px-3 py-4 focus:outline-none">
         {session === undefined ? (
           <p role="status">Checking your session…</p>

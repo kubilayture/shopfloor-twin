@@ -174,6 +174,8 @@ describe('SPC chart options (#203)', () => {
       max: 1,
     });
     expect((option.legend as { data: string[] }).data).not.toContain(RULE_LANE);
+    // One legend row (scrolling when narrow), so it never wraps into the lane.
+    expect((option.legend as { type: string }).type).toBe('scroll');
     // Newest first (kept when two overlap); withdrawn and other charts' episodes left out; in the
     // left half a label starts at its span, in the right half it ends there.
     const data = lane?.data as {

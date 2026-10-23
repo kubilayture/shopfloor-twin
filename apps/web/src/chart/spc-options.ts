@@ -323,8 +323,10 @@ export function spcChartOption(input: SpcChartInput): EChartsCoreOption {
     // every load, window switch or new view; a look, print or screenshot then saw the later
     // points (signals included) as a bare line. EChartsView lets the option's own value win.
     animation: false,
-    grid: { left: 56, right: 16, top: 44, bottom: 32 },
+    grid: { left: 56, right: 16, top: 48, bottom: 32 },
+    // One row (scrolling when narrow): a wrapped second row ran into the label lane and the unit.
     legend: {
+      type: 'scroll',
       top: 0,
       textStyle: axisText,
       data: series.map((s) => s.name as string).filter((n) => !n.endsWith('σ') && n !== RULE_LANE),
@@ -339,7 +341,9 @@ export function spcChartOption(input: SpcChartInput): EChartsCoreOption {
       {
         type: 'value',
         name: unit,
-        // Ends at the axis line, left of the label lane (which starts at the plot's left edge).
+        // Ends at the axis line, left of the label lane (which starts at the plot's left edge), and
+        // low enough to clear the legend.
+        nameGap: 8,
         nameTextStyle: { ...axisText, align: 'right' },
         scale: zones,
         ...(zones ? {} : { min: 0 }),

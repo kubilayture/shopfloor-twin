@@ -8,6 +8,10 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 - README: points to release 1.0.0 and the final report, and names the Phase 10 report as the latest (it still said Phase 9; R10-14 (12)). The quick-start block is unchanged.
 
+### Fixed
+
+- Alarm raise times carry their date (#309, UX-B2, audit A-01): the alarm list's "Raised" column, in every tab including the history, showed only the clock time, so a standing alarm raised days earlier read like one from this morning. One rule now: every row shows the plant date-time (`Mon 12 Oct, 07:15:00`) unless the alarm was raised on the plant clock's current day in the plant zone (Europe/Istanbul), where it shows the time only (`07:15:00`); before the plant clock is known every row is dated (`formatPlantTimeRelative` and `plantDayOf` in `apps/web/src/domain/time.ts`; design system 6.2). Every row carries the full plant date-time in its tooltip (`title`), and the `<time dateTime>` stays the raw instant; the column heading stays "Raised"; every `data-testid` and accessible name is unchanged. Tests: today, another day, plant midnight (21:00 UTC), no clock, a DST-free day boundary all year, and the list and history cells.
+
 ## [1.0.0] - 2026-10-22
 
 The first release: everything from Phase 0 to Phase 10, the v1 scope of the master plan (`docs/project-plan.md`). The date is the sign-off date: the sign-off was decided by the coordinator under the owner's delegation of 2026-10-22, not by the owner's own review (P10-11, #286; `docs/final-report.md`, "Sign-off"); `v1.0.0` goes on the sign-off pull request's merge commit (runbook "Releasing"). By capability:

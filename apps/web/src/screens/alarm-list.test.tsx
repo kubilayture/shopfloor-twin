@@ -253,6 +253,45 @@ describe('alarm list', () => {
     });
   });
 
+  it("dates a raise that is not on the plant clock's day, in the list and the history (A-01)", async () => {
+    // The plant clock reads Thu 15 Oct, 09:10 (fixtures PLANT).
+    const today = occurrence(1);
+    const old = occurrence(2, {
+      code: 'SPINDLE-OVERLOAD',
+      raisedAt: '2026-10-12T04:15:00.000Z',
+    });
+    const closed = occurrence(3, {
+      state: 'closed',
+      raisedAt: '2026-10-14T20:59:59.000Z',
+      endedAt: '2026-10-14T21:30:00.000Z',
+      endReason: 'cleared',
+      active: false,
+      acknowledged: ACK,
+    });
+    const server = mes({ ...empty(), active: [today, old], history: [closed] });
+    vi.stubGlobal('fetch', server.fetch);
+    await renderApp('/alarms');
+    const raised = (id: string) => {
+      const time = screen.getByTestId(`alarm-row-${id}`).querySelector('time');
+      return { text: time?.textContent, dateTime: time?.getAttribute('dateTime') };
+    };
+    await screen.findByTestId(`alarm-row-${old.id}`);
+    await waitFor(() => {
+      expect(raised(today.id).text).toBe('Today, 08:00:01');
+    });
+    expect(raised(today.id).dateTime).toBe(today.raisedAt);
+    expect(raised(old.id)).toEqual({
+      text: 'Mon 12 Oct, 07:15:00',
+      dateTime: '2026-10-12T04:15:00.000Z',
+    });
+    expect(screen.getByRole('columnheader', { name: 'Raised' })).toBeTruthy();
+
+    // A second before plant midnight is yesterday, though it is the 14th in UTC as well.
+    fireEvent.click(screen.getByTestId('tab-history'));
+    await screen.findByTestId(`alarm-row-${closed.id}`);
+    expect(raised(closed.id).text).toBe('Wed 14 Oct, 23:59:59');
+  });
+
   it('acknowledges the selected alarms in one bulk request', async () => {
     const a = occurrence(1);
     const b = occurrence(2);

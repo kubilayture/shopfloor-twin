@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  formatClockSeconds,
   formatClockTime,
   formatDuration,
   formatPlantTime,
+  formatPlantTimeRelative,
   isRangeKey,
+  plantDayOf,
   plantTimeText,
   wallTimeText,
 } from './time.ts';
@@ -25,6 +28,65 @@ describe('time formatting', () => {
   it('labels a wall-clock time so it is never read as plant time (#295)', () => {
     expect(wallTimeText('2026-10-22T07:12:03.000Z')).toBe('Thu 22 Oct, 10:12:03 (wall time)');
     expect(wallTimeText('soon')).toBe('soon (wall time)');
+  });
+
+  describe('an event time relative to the plant clock (A-01)', () => {
+    const clock = '2026-10-15T06:10:00.000Z'; // Thu 15 Oct, 09:10 plant time
+
+    it("shows the time only, marked today, on the plant clock's current day", () => {
+      expect(formatPlantTimeRelative('2026-10-15T04:15:00.000Z', clock)).toBe('Today, 07:15:00');
+      expect(
+        formatPlantTimeRelative(Date.parse('2026-10-15T04:15:00.000Z'), Date.parse(clock)),
+      ).toBe('Today, 07:15:00');
+    });
+
+    it('shows the date for another plant day, past or future', () => {
+      // SPINDLE-OVERLOAD raised Mon 12 Oct and still standing on Thu 15 Oct.
+      expect(formatPlantTimeRelative('2026-10-12T04:15:00.000Z', clock)).toBe(
+        'Mon 12 Oct, 07:15:00',
+      );
+      expect(formatPlantTimeRelative('2026-10-16T04:15:00.000Z', clock)).toBe(
+        'Fri 16 Oct, 07:15:00',
+      );
+      // The same clock time a week earlier is another day.
+      expect(formatPlantTimeRelative('2026-10-08T06:10:00.000Z', clock)).toBe(
+        'Thu 08 Oct, 09:10:00',
+      );
+    });
+
+    it('turns the day at midnight in the plant zone, not in UTC', () => {
+      // 21:00 UTC is 00:00 the next day in Istanbul.
+      expect(formatPlantTimeRelative('2026-10-14T21:00:00.000Z', clock)).toBe('Today, 00:00:00');
+      expect(formatPlantTimeRelative('2026-10-14T20:59:59.000Z', clock)).toBe(
+        'Wed 14 Oct, 23:59:59',
+      );
+      // The plant clock just after midnight: still the 14th in UTC, already the 15th in the plant.
+      const justAfter = '2026-10-14T21:00:01.000Z';
+      expect(formatPlantTimeRelative('2026-10-14T21:00:00.000Z', justAfter)).toBe(
+        'Today, 00:00:00',
+      );
+      expect(formatPlantTimeRelative('2026-10-14T20:00:00.000Z', justAfter)).toBe(
+        'Wed 14 Oct, 23:00:00',
+      );
+    });
+
+    it('shows the date while there is no plant clock yet', () => {
+      expect(formatPlantTimeRelative('2026-10-15T04:15:00.000Z', undefined)).toBe(
+        'Thu 15 Oct, 07:15:00',
+      );
+    });
+  });
+
+  it('keeps the plant zone at UTC+3 all year: no DST shift in the day boundary', () => {
+    // Istanbul has had no DST since 2016: midnight is 21:00 UTC in winter and summer alike,
+    // including around the EU change-over weekends (28/29 March, 24/25 October 2026).
+    for (const date of ['2026-01-14', '2026-03-28', '2026-07-14', '2026-10-24', '2026-12-30']) {
+      const before = Date.parse(`${date}T20:59:59.000Z`);
+      const after = Date.parse(`${date}T21:00:00.000Z`);
+      expect(plantDayOf(before)).toBe(date);
+      expect(plantDayOf(after)).not.toBe(date);
+      expect(formatClockSeconds(after)).toBe('00:00:00');
+    }
   });
 
   it('formats durations for people', () => {

@@ -36,6 +36,33 @@ export function formatPlantTime(time: string | number): string {
   return dateTime.format(new Date(time));
 }
 
+const plantDay = new Intl.DateTimeFormat('en-CA', {
+  timeZone: PLANT_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+/** The plant-zone calendar day of an instant, `2026-10-15`. */
+export function plantDayOf(time: string | number): string {
+  return plantDay.format(new Date(time));
+}
+
+/**
+ * An event time relative to the plant clock (design system 6.2, A-01): `Today, 07:15:00` when it
+ * falls on the plant clock's current day in the plant zone, `Mon 12 Oct, 07:15:00` on any other day
+ * or while there is no plant clock yet, so a days-old standing alarm never reads as this morning's.
+ */
+export function formatPlantTimeRelative(
+  at: string | number,
+  clock: string | number | undefined,
+): string {
+  if (clock !== undefined && plantDayOf(at) === plantDayOf(clock)) {
+    return `Today, ${formatClockSeconds(at)}`;
+  }
+  return formatPlantTime(at);
+}
+
 /**
  * An API time for people, in plant time as the header shows it (#295): `–` when there is none, the
  * text as it came when it is no time (never a thrown `RangeError` from a malformed event line).

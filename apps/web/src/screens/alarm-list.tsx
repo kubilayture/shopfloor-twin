@@ -42,7 +42,12 @@ import {
   stateText,
   type AlarmView,
 } from '../domain/alarms.ts';
-import { formatClockSeconds, formatDuration, formatPlantTime } from '../domain/time.ts';
+import {
+  formatClockSeconds,
+  formatDuration,
+  formatPlantTime,
+  formatPlantTimeRelative,
+} from '../domain/time.ts';
 import type { WriteFailure } from '../domain/writes.ts';
 import { dropLiveOccurrences, upsertOccurrence, upsertPoint } from '../live/live-cache.ts';
 import {
@@ -1101,9 +1106,9 @@ export function AlarmList() {
                           <span className="block text-slate-800">{occurrence.text}</span>
                         ) : null}
                       </td>
-                      <td className="px-2 py-1 tabular-nums">
+                      <td className="whitespace-nowrap px-2 py-1 tabular-nums">
                         <time dateTime={occurrence.raisedAt}>
-                          {formatClockSeconds(occurrence.raisedAt)}
+                          {formatPlantTimeRelative(occurrence.raisedAt, clock?.watermark)}
                         </time>
                       </td>
                       <td className="px-2 py-1">

@@ -1,9 +1,349 @@
 @import 'tailwindcss';
 
+/*
+ * Design tokens (UX-1a, #314): `docs/ux/design-system.md` sections 2 and 8, also as data in
+ * `src/components/ui/tokens.ts` (`tokens.test.ts` keeps the two and the contrast ratios equal).
+ * Each `@theme` entry is a CSS variable and a Tailwind utility (`--color-surface`: `bg-surface`,
+ * `text-surface`, `border-surface` …). `static`: every variable is emitted, used or not, so the
+ * chart theme can read them at run time. Screens use the semantic names, never the neutral scale
+ * or Tailwind's palette.
+ */
+
+@theme static {
+  /* 2.1 Neutral scale (slate): the same in both themes, for this file only */
+  --color-neutral-0: #ffffff;
+  --color-neutral-50: #f8fafc;
+  --color-neutral-100: #f1f5f9;
+  --color-neutral-200: #e2e8f0;
+  --color-neutral-300: #cbd5e1;
+  --color-neutral-400: #94a3b8;
+  --color-neutral-500: #64748b;
+  --color-neutral-600: #475569;
+  --color-neutral-700: #334155;
+  --color-neutral-800: #1e293b;
+  --color-neutral-900: #0f172a;
+
+  /* Surfaces, lines and text (2.1) */
+  --color-canvas: #f1f5f9;
+  --color-surface: #ffffff;
+  --color-surface-sunken: #f8fafc;
+  --color-surface-hover: #f1f5f9;
+  --color-line: #cbd5e1;
+  --color-line-subtle: #e2e8f0;
+  --color-line-strong: #64748b;
+  --color-ink: #0f172a;
+  --color-ink-secondary: #475569;
+  --color-ink-inverse: #ffffff;
+  --color-disabled: #f1f5f9;
+  --color-disabled-line: #cbd5e1;
+  --color-disabled-ink: #475569;
+  --color-backdrop: rgb(15 23 42 / 0.5);
+
+  /* Actions and links (2.2) */
+  --color-accent: #075985;
+  --color-accent-hover: #0c4a6e;
+  --color-on-accent: #ffffff;
+  --color-accent-subtle: #e0f2fe;
+  --color-link: #075985;
+  --color-nav-active: #0c4a6e;
+  --color-nav-active-ink: #ffffff;
+  --color-nav-active-bar: #38bdf8;
+  --color-focus: #0369a1;
+  --color-focus-on-dark: #38bdf8;
+
+  /* Shell (3.2): the same in both themes */
+  --color-topbar: #0f172a;
+  --color-topbar-ink: #ffffff;
+  --color-nav: #1e293b;
+  --color-nav-ink: #e2e8f0;
+  --color-nav-heading: #94a3b8;
+  --color-nav-hover: #334155;
+
+  /* Tones (2.3): ink on soft, border, solid fill and the text on it */
+  --color-neutral-ink: #334155;
+  --color-neutral-soft: #f1f5f9;
+  --color-neutral-border: #64748b;
+  --color-neutral-solid: #334155;
+  --color-neutral-on-solid: #ffffff;
+  --color-info-ink: #1e40af;
+  --color-info-soft: #eff6ff;
+  --color-info-border: #2563eb;
+  --color-info-solid: #1d4ed8;
+  --color-info-on-solid: #ffffff;
+  --color-ok-ink: #065f46;
+  --color-ok-soft: #ecfdf5;
+  --color-ok-border: #047857;
+  --color-ok-solid: #047857;
+  --color-ok-on-solid: #ffffff;
+  --color-warn-ink: #78350f;
+  --color-warn-soft: #fffbeb;
+  --color-warn-border: #b45309;
+  --color-warn-solid: #fcd34d;
+  --color-warn-on-solid: #451a03;
+  --color-caution-ink: #7c2d12;
+  --color-caution-soft: #fff7ed;
+  --color-caution-border: #c2410c;
+  --color-caution-solid: #fdba74;
+  --color-caution-on-solid: #431407;
+  --color-alarm-ink: #991b1b;
+  --color-alarm-soft: #fef2f2;
+  --color-alarm-border: #b91c1c;
+  --color-alarm-solid: #b91c1c;
+  --color-alarm-on-solid: #ffffff;
+
+  /* Machine states (2.4): badge and timeline band */
+  --color-state-running-fill: #f1f5f9;
+  --color-state-running-ink: #0f172a;
+  --color-state-running-border: #334155;
+  --color-state-idle-fill: #e2e8f0;
+  --color-state-idle-ink: #0f172a;
+  --color-state-idle-border: #e2e8f0;
+  --color-state-setup-fill: #e2e8f0;
+  --color-state-setup-ink: #0f172a;
+  --color-state-setup-border: #64748b;
+  --color-state-planned-stop-fill: #f8fafc;
+  --color-state-planned-stop-ink: #334155;
+  --color-state-planned-stop-border: #64748b;
+  --color-state-maintenance-fill: #1d4ed8;
+  --color-state-maintenance-ink: #ffffff;
+  --color-state-maintenance-border: #1d4ed8;
+  --color-state-off-fill: #f1f5f9;
+  --color-state-off-ink: #475569;
+  --color-state-off-border: #cbd5e1;
+  --color-state-starved-fill: #fcd34d;
+  --color-state-starved-ink: #451a03;
+  --color-state-starved-border: #b45309;
+  --color-state-blocked-fill: #fdba74;
+  --color-state-blocked-ink: #431407;
+  --color-state-blocked-border: #c2410c;
+  --color-state-stopped-fill: #fee2e2;
+  --color-state-stopped-ink: #7f1d1d;
+  --color-state-stopped-border: #b91c1c;
+  --color-state-down-fill: #b91c1c;
+  --color-state-down-ink: #ffffff;
+  --color-state-down-border: #b91c1c;
+  --color-state-no-data-fill: #ffffff;
+  --color-state-no-data-ink: #475569;
+  --color-state-no-data-border: #64748b;
+
+  /* Alarm priorities (2.5) */
+  --color-priority-high-fill: #b91c1c;
+  --color-priority-high-ink: #ffffff;
+  --color-priority-high-border: #b91c1c;
+  --color-priority-medium-fill: #fbbf24;
+  --color-priority-medium-ink: #451a03;
+  --color-priority-medium-border: #b45309;
+  --color-priority-low-fill: #ffffff;
+  --color-priority-low-ink: #1e40af;
+  --color-priority-low-border: #2563eb;
+
+  /* Charts (5) */
+  --color-chart-1: #0369a1;
+  --color-chart-2: #b45309;
+  --color-chart-3: #6d28d9;
+  --color-chart-4: #047857;
+  --color-chart-5: #be185d;
+  --color-chart-other: #334155;
+  --color-chart-limit: #b91c1c;
+
+  /* 2.7 Typography */
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1rem;
+  --text-sm: 0.875rem;
+  --text-sm--line-height: 1.25rem;
+  --text-base: 1rem;
+  --text-base--line-height: 1.5rem;
+  --text-lg: 1.125rem;
+  --text-lg--line-height: 1.75rem;
+  --text-xl: 1.25rem;
+  --text-xl--line-height: 1.75rem;
+  --text-2xl: 1.5rem;
+  --text-2xl--line-height: 2rem;
+  --text-3xl: 1.875rem;
+  --text-3xl--line-height: 2.25rem;
+  --text-4xl: 2.25rem;
+  --text-4xl--line-height: 2.5rem;
+
+  /* 2.8 Spacing: a 4 px base */
+  --spacing: 0.25rem;
+
+  /* 2.9 Radius, elevation, z-index, motion */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-full: 9999px;
+  --shadow-elevation-1: 0 1px 2px rgb(15 23 42 / 0.06);
+  --shadow-elevation-2: 0 4px 12px rgb(15 23 42 / 0.12);
+  --shadow-elevation-3: 0 12px 32px rgb(15 23 42 / 0.24);
+  --z-sticky: 10;
+  --z-topbar: 20;
+  --z-nav: 30;
+  --z-popover: 40;
+  --z-toast: 50;
+  --z-dialog: 60;
+  --z-lock: 70;
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
+  /* 3.1 Breakpoints: Tailwind's plus `wide` */
+  --breakpoint-wide: 90rem;
+}
+
+/*
+ * The dark values (design system section 8): unused until the theme switch (UX-12) sets
+ * `data-theme` on `<html>`. A token missing here keeps its light value (the shell, the light
+ * solid fills).
+ */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* Surfaces, lines and text (2.1) */
+  --color-canvas: #0b1220;
+  --color-surface: #111a2b;
+  --color-surface-sunken: #0e1626;
+  --color-surface-hover: #1e293b;
+  --color-line: #334155;
+  --color-line-subtle: #1e293b;
+  --color-ink: #e2e8f0;
+  --color-ink-secondary: #94a3b8;
+  --color-ink-inverse: #0b1220;
+  --color-disabled: #1e293b;
+  --color-disabled-line: #334155;
+  --color-disabled-ink: #94a3b8;
+  --color-backdrop: rgb(2 6 23 / 0.7);
+
+  /* Actions and links (2.2) */
+  --color-accent: #38bdf8;
+  --color-accent-hover: #7dd3fc;
+  --color-on-accent: #0b1220;
+  --color-accent-subtle: #0c2d48;
+  --color-link: #7dd3fc;
+  --color-focus: #38bdf8;
+
+  /* Tones (2.3): ink on soft, border, solid fill and the text on it */
+  --color-neutral-ink: #cbd5e1;
+  --color-neutral-soft: #1e293b;
+  --color-neutral-solid: #475569;
+  --color-info-ink: #93c5fd;
+  --color-info-soft: #0f1d3a;
+  --color-info-border: #60a5fa;
+  --color-info-solid: #2563eb;
+  --color-ok-ink: #6ee7b7;
+  --color-ok-soft: #0f2a22;
+  --color-ok-border: #10b981;
+  --color-warn-ink: #fcd34d;
+  --color-warn-soft: #2a2110;
+  --color-warn-border: #f59e0b;
+  --color-caution-ink: #fdba74;
+  --color-caution-soft: #2b1a10;
+  --color-caution-border: #f97316;
+  --color-alarm-ink: #fca5a5;
+  --color-alarm-soft: #2a1215;
+  --color-alarm-border: #f87171;
+  --color-alarm-solid: #dc2626;
+
+  /* Machine states (2.4): badge and timeline band */
+  --color-state-running-fill: #1e293b;
+  --color-state-running-ink: #e2e8f0;
+  --color-state-running-border: #cbd5e1;
+  --color-state-idle-fill: #334155;
+  --color-state-idle-ink: #e2e8f0;
+  --color-state-idle-border: #334155;
+  --color-state-setup-fill: #334155;
+  --color-state-setup-ink: #e2e8f0;
+  --color-state-setup-border: #94a3b8;
+  --color-state-planned-stop-fill: #0e1626;
+  --color-state-planned-stop-ink: #cbd5e1;
+  --color-state-maintenance-fill: #2563eb;
+  --color-state-maintenance-border: #2563eb;
+  --color-state-off-fill: #111a2b;
+  --color-state-off-ink: #94a3b8;
+  --color-state-off-border: #334155;
+  --color-state-stopped-fill: #2a1215;
+  --color-state-stopped-ink: #fca5a5;
+  --color-state-stopped-border: #f87171;
+  --color-state-down-fill: #dc2626;
+  --color-state-down-border: #dc2626;
+  --color-state-no-data-fill: #111a2b;
+  --color-state-no-data-ink: #94a3b8;
+
+  /* Alarm priorities (2.5) */
+  --color-priority-high-fill: #dc2626;
+  --color-priority-high-border: #dc2626;
+  --color-priority-low-fill: #111a2b;
+  --color-priority-low-ink: #93c5fd;
+  --color-priority-low-border: #60a5fa;
+
+  /* Charts (5) */
+  --color-chart-1: #38bdf8;
+  --color-chart-2: #f59e0b;
+  --color-chart-3: #a78bfa;
+  --color-chart-4: #34d399;
+  --color-chart-5: #f472b6;
+  --color-chart-other: #cbd5e1;
+  --color-chart-limit: #f87171;
+}
+
+/* Tailwind has no theme namespace for z-index and durations: their utilities by name. */
+@utility z-sticky {
+  z-index: var(--z-sticky);
+}
+
+@utility z-topbar {
+  z-index: var(--z-topbar);
+}
+
+@utility z-nav {
+  z-index: var(--z-nav);
+}
+
+@utility z-popover {
+  z-index: var(--z-popover);
+}
+
+@utility z-toast {
+  z-index: var(--z-toast);
+}
+
+@utility z-dialog {
+  z-index: var(--z-dialog);
+}
+
+@utility z-lock {
+  z-index: var(--z-lock);
+}
+
+@utility duration-fast {
+  --tw-duration: var(--duration-fast);
+  transition-duration: var(--duration-fast);
+}
+
+@utility duration-base {
+  --tw-duration: var(--duration-base);
+  transition-duration: var(--duration-base);
+}
+
 @layer base {
+  /* Focus (design system section 7): a 2 px ring in `focus`, 2 px off the element. */
   :focus-visible {
-    outline: 3px solid var(--color-sky-600);
+    outline: 2px solid var(--color-focus);
     outline-offset: 2px;
+  }
+
+  /*
+   * G-22: the heading and `main` that only ever take focus from script after a navigation show no
+   * ring. `:focus:not(:focus-visible)` would not do: after a keyboard-triggered navigation the
+   * browser treats the script's `focus()` as focus-visible.
+   */
+  h1[tabindex='-1']:focus-visible,
+  main[tabindex='-1']:focus {
+    outline: none;
   }
 }
 

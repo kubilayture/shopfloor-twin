@@ -206,6 +206,28 @@ Vertical rhythm on a page: page header, 24 px, filter bar, 16 px, first section;
 
 Motion: `--duration-fast: 120ms` (hover, press), `--duration-base: 200ms` (drawer, dialog, panel), easing `cubic-bezier(0.2, 0, 0, 1)`. Nothing animates a value the plant reports (no tweened numbers, no chart animation; ECharts `animation: false`). The existing `prefers-reduced-motion` rule stays and also stops the connection dot's pulse.
 
+### 2.10 Token names
+
+The tables above give the values; these are the names `src/index.css` defines (UX-1a, #314). The same names, values and the contrast ratios this document states are kept as data in `src/components/ui/tokens.ts`, and `tokens.test.ts` checks the stylesheet, the Tailwind utilities and the recomputed ratios against them. Colours are `--color-<name>` (utilities `bg-<name>`, `text-<name>`, `border-<name>`, …).
+
+| Group                 | Names                                                                                                                                                                                                                    |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Neutral scale (2.1)   | `neutral-0` … `neutral-900`: the same in both themes, for the token file only; screens use the semantic names                                                                                                            |
+| Surfaces, lines, text | `canvas`, `surface`, `surface-sunken`, `surface-hover` (= `neutral-100`: a button's hover), `line`, `line-subtle`, `line-strong`, `ink`, `ink-secondary`, `ink-inverse`                                                  |
+| Disabled (4.1)        | `disabled` (fill), `disabled-line`, `disabled-ink`                                                                                                                                                                       |
+| Accent (2.2)          | `accent` (primary fill, selected tab), `accent-hover`, `on-accent` (text on the fill), `accent-subtle`, `link`, `nav-active`, `nav-active-ink`, `nav-active-bar`, `focus`, `focus-on-dark`                               |
+| Shell (3.2)           | `topbar`, `topbar-ink`, `nav`, `nav-ink`, `nav-heading`, `nav-hover` (`#334155`, nav text 8.40): the same in both themes                                                                                                 |
+| Tones (2.3)           | `<tone>-ink`, `<tone>-soft`, `<tone>-border`, `<tone>-solid`, `<tone>-on-solid` for `neutral`, `info`, `ok`, `warn`, `caution`, `alarm`                                                                                  |
+| Machine states (2.4)  | `state-<state>-fill`, `-ink`, `-border` for `running`, `idle`, `setup`, `planned-stop`, `maintenance`, `off`, `starved`, `blocked`, `stopped`, `down`, `no-data`; a state without a border in 2.4 has its fill as border |
+| Alarm priority (2.5)  | `priority-<high\|medium\|low>-fill`, `-ink`, `-border`                                                                                                                                                                   |
+| Charts (5)            | `chart-1` … `chart-5` (the categorical palette in order), `chart-other` (`neutral-700`), `chart-limit` (`#b91c1c`)                                                                                                       |
+| Overlay               | `backdrop` (`rgb(15 23 42 / 0.5)`, elevation 3)                                                                                                                                                                          |
+| Type (2.7)            | `text-2xs` … `text-4xl` (size and line height; the weight is set where used), `font-sans`, `font-mono`                                                                                                                   |
+| Spacing (2.8)         | `--spacing: 0.25rem`, Tailwind's scale                                                                                                                                                                                   |
+| Radius, shadow (2.9)  | `rounded-sm`, `rounded-md`, `rounded-lg`, `rounded-full`; `shadow-elevation-1` … `shadow-elevation-3` (the same in both themes)                                                                                          |
+| Layers, motion (2.9)  | `z-sticky` … `z-lock`, `duration-fast`, `duration-base`, `ease-standard` (`--z-*` and `--duration-*` are variables with utilities written by name: Tailwind has no theme namespace for them)                             |
+| Breakpoint (3.1)      | `wide:` (`--breakpoint-wide: 90rem`)                                                                                                                                                                                     |
+
 ## 3. Layout and navigation
 
 ### 3.1 Breakpoints
@@ -769,8 +791,8 @@ The bar for every issue. The harness of UX-1g reports it with axe on every route
   | `surface`                | `#111a2b`                                                 | `ink` 14.12; `ink-secondary` `#94a3b8` 6.79 |
   | `surface-sunken`         | `#0e1626`                                                 | –                                           |
   | `line` / `line-strong`   | `#334155` / `#64748b`                                     | `line-strong` on surface 3.66 (non-text)    |
-  | `accent` (links)         | `#7dd3fc`                                                 | on surface 10.44                            |
-  | `accent` (primary fill)  | `#38bdf8`, text `#0b1220`                                 | 8.74                                        |
+  | `link`                   | `#7dd3fc`                                                 | on surface 10.44                            |
+  | `accent` (primary fill)  | `#38bdf8`, text `on-accent` `#0b1220`                     | 8.74                                        |
   | `focus`                  | `#38bdf8`                                                 | on surface 8.13                             |
   | Running badge            | fill `#1e293b`, text `#e2e8f0`, border `#cbd5e1`          | 11.87                                       |
   | Active nav item          | `#0c4a6e`, text `#ffffff`, bar `#38bdf8`                  | 9.46 (as light)                             |
@@ -782,6 +804,32 @@ The bar for every issue. The harness of UX-1g reports it with axe on every route
   | `ok` soft                | text `#6ee7b7` on `#0f2a22`                               | 10.02                                       |
   | `info` soft              | text `#93c5fd` on `#0f1d3a`, border `#60a5fa`             | 9.26; border on surface 6.85                |
   | Chart series 1, 2; limit | `#38bdf8` 8.13, `#f59e0b` 8.10; `#f87171` 6.29 on surface | –                                           |
+
+  The other dark values (UX-1a), each pair recomputed by `tokens.test.ts`. The shell (top bar and nav), the light solid fills (Starved, Blocked, medium priority, the `warn` and `caution` solids) and the shadows keep their light values.
+
+  | Token                                      | Dark                                                                           | Pair and ratio                                   |
+  | ------------------------------------------ | ------------------------------------------------------------------------------ | ------------------------------------------------ |
+  | `surface-hover`, `disabled`, `line-subtle` | `#1e293b`                                                                      | `ink` on it 11.87; `disabled-ink` `#94a3b8` 5.71 |
+  | `disabled-line`                            | `#334155`                                                                      | –                                                |
+  | `ink-inverse`                              | `#0b1220`                                                                      | –                                                |
+  | `ink-secondary` on `canvas`                | –                                                                              | 7.30                                             |
+  | `accent-hover`                             | `#7dd3fc`                                                                      | `on-accent` on it 11.23                          |
+  | `accent-subtle`                            | `#0c2d48`                                                                      | `ink` on it 11.47                                |
+  | `neutral` tone                             | ink `#cbd5e1` on soft `#1e293b`; border `#64748b`; solid `#475569`             | 9.85; border 3.66; white on solid 7.58           |
+  | `info` tone                                | solid `#2563eb`                                                                | white 5.17                                       |
+  | `ok` tone                                  | border `#10b981`; solid `#047857` (unchanged)                                  | border 6.86; white 5.48                          |
+  | `warn` tone                                | border `#f59e0b`                                                               | 8.10                                             |
+  | `caution` tone                             | ink `#fdba74` on soft `#2b1a10`; border `#f97316`                              | 9.90; border 6.21                                |
+  | `alarm` tone                               | border `#f87171`; solid `#dc2626`                                              | border 6.29; white 4.83                          |
+  | Setup badge                                | as Idle, dashed border `#94a3b8`                                               | 8.40                                             |
+  | Planned stop badge                         | fill `#0e1626`, text `#cbd5e1`, border `#64748b`                               | 12.18                                            |
+  | Maintenance badge                          | `info` solid `#2563eb`, text `#ffffff`                                         | 5.17                                             |
+  | Off badge                                  | fill `#111a2b`, text `#94a3b8`, border `#334155`                               | 6.79                                             |
+  | Stopped badge                              | `alarm` soft: text `#fca5a5` on `#2a1215`, border `#f87171`                    | 9.25                                             |
+  | No data badge                              | fill `#111a2b`, text `#94a3b8`, dashed border `#64748b`                        | 6.79                                             |
+  | Priority high / low                        | high as Down (`#dc2626`); low fill `#111a2b`, text `#93c5fd`, border `#60a5fa` | 4.83; 9.65                                       |
+  | Chart series 3, 4, 5; other                | `#a78bfa`, `#34d399`, `#f472b6`; `#cbd5e1`                                     | 6.40, 9.05, 6.57; 11.72 on surface               |
+  | `backdrop`                                 | `rgb(2 6 23 / 0.7)`                                                            | –                                                |
 
 ## 9. Rules for every migration
 

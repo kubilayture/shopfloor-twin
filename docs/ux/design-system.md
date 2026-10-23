@@ -1,0 +1,723 @@
+# Design system of the web app
+
+The visual and interaction rules every screen of `apps/web` follows from UX-1 on. It answers the [audit](audit.md) (ids in brackets) and is built issue by issue as [`ux-plan.md`](ux-plan.md) lays out. When a screen and this document disagree after its migration, the screen is wrong; a rule that turns out wrong is changed here first, in the same pull request that changes the code.
+
+## 1. Direction
+
+An industrial control-room style, after ISA-101's high-performance HMI:
+
+1. **Calm by default.** Neutral grey surfaces, dark text, no decorative colour. A plant running normally looks quiet.
+2. **Colour means abnormal.** Saturated colour is reserved for states that need a person: down, stopped, starved, blocked, alarms by priority, holds, signals, refused writes. Normal states (running, idle, planned stop, final) are shades of grey. Colour never stands alone: every state also has a word, and the abnormal ones a glyph.
+3. **Dense but readable.** Tables and figures carry the work. Body text is 14 px, line height 1.43, numbers right-aligned in tabular figures, labels short, explanations one line with the rest a click away.
+4. **One way to do each thing.** One button, one badge, one table, one page header, one chart theme. A screen composes primitives from `src/components/ui/`; it defines no colours, sizes or button classes of its own (G-09).
+5. **The plant's clock is the truth.** Times are plant time unless labelled "(wall time)" (#295). Raw values stay in `data-value` and `data-fraction` for the tests and tools; people read the formatted text.
+
+## 2. Tokens
+
+Tokens are CSS custom properties defined once in `src/index.css` with Tailwind 4's `@theme`, so each is both a variable (`var(--color-surface)`) and a utility (`bg-surface`, `text-ink`, `border-line`). Screens use the semantic names only; the raw scale is for the token file. Every colour token has a light and a dark value (section 8); the dark values sit under `:root[data-theme='dark']`.
+
+```css
+@import 'tailwindcss';
+
+@theme {
+  --color-canvas: #f1f5f9;
+  --color-surface: #ffffff;
+  --color-surface-sunken: #f8fafc;
+  --color-ink: #0f172a;
+  --color-ink-secondary: #475569;
+  /* … every token below … */
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+}
+
+:root[data-theme='dark'] {
+  --color-canvas: #0b1220;
+  /* … */
+}
+```
+
+### 2.1 Neutral scale
+
+Slate, as today, so the change of palette is small and the existing contrast results carry over.
+
+| Token         | Hex       | Use                                                             |
+| ------------- | --------- | --------------------------------------------------------------- |
+| `neutral-0`   | `#ffffff` | Surface (cards, tables, inputs)                                 |
+| `neutral-50`  | `#f8fafc` | Sunken surface (table header, zebra, read-only field)           |
+| `neutral-100` | `#f1f5f9` | Canvas (page background)                                        |
+| `neutral-200` | `#e2e8f0` | Hairlines, row dividers, chart grid; Idle fill                  |
+| `neutral-300` | `#cbd5e1` | Card and table borders                                          |
+| `neutral-400` | `#94a3b8` | Decorative only (disabled borders); never text                  |
+| `neutral-500` | `#64748b` | Input borders, icons, the non-text 3:1 minimum; never body text |
+| `neutral-600` | `#475569` | Secondary text (labels, captions, hints)                        |
+| `neutral-700` | `#334155` | Strong secondary text; Running fill; chart axis text            |
+| `neutral-800` | `#1e293b` | Navigation surface; hover on dark                               |
+| `neutral-900` | `#0f172a` | Primary text; top bar                                           |
+
+Semantic aliases: `canvas` = 100, `surface` = 0, `surface-sunken` = 50, `line` = 300, `line-subtle` = 200, `line-strong` = 500, `ink` = 900, `ink-secondary` = 600, `ink-inverse` = 0.
+
+### 2.2 Accent (actions and links)
+
+| Token           | Hex       | Use                                      |
+| --------------- | --------- | ---------------------------------------- |
+| `accent`        | `#075985` | Primary button fill, links, selected tab |
+| `accent-hover`  | `#0c4a6e` | Primary hover and pressed                |
+| `accent-subtle` | `#e0f2fe` | Selected row, selected nav item on light |
+| `focus`         | `#0369a1` | Focus ring on light surfaces             |
+| `focus-on-dark` | `#38bdf8` | Focus ring on the top bar and nav        |
+
+The accent is for things you can act on. It is never a state colour, so a link never reads as "info".
+
+### 2.3 Semantic tones
+
+Five tones serve every status in the app. Each has an ink (text on the soft background), a soft background, a border and a solid fill with its on-solid text. Ratios are WCAG 2.x contrast, computed for these exact pairs (AA: 4.5:1 for text, 3:1 for borders and other non-text parts).
+
+| Tone      | Meaning                                                                                 | Ink on soft                 | Border on white | Solid fill / text           |
+| --------- | --------------------------------------------------------------------------------------- | --------------------------- | --------------- | --------------------------- |
+| `neutral` | Normal, informational, final, closed                                                    | `#334155` on `#f1f5f9` 9.45 | `#64748b` 4.76  | `#334155` / `#ffffff` 10.35 |
+| `info`    | Planned intervention, in progress, low priority                                         | `#075985` on `#e0f2fe` 6.59 | `#0369a1` 5.93  | `#1d4ed8` / `#ffffff` 6.70  |
+| `ok`      | Explicit good outcome only (released hold, passed check)                                | `#065f46` on `#ecfdf5` 7.29 | `#047857` 5.48  | `#047857` / `#ffffff` 5.48  |
+| `warn`    | Abnormal, needs attention: starved, provisional signal, medium priority, short order    | `#78350f` on `#fffbeb` 8.75 | `#b45309` 5.02  | `#fcd34d` / `#451a03` 10.39 |
+| `caution` | Abnormal, held up: blocked                                                              | `#7c2d12` on `#fff7ed` 8.83 | `#c2410c` 5.18  | `#fdba74` / `#431407` 9.28  |
+| `alarm`   | Abnormal, act now: down, stopped, high priority, open hold, final signal, refused write | `#991b1b` on `#fef2f2` 7.60 | `#b91c1c` 6.47  | `#b91c1c` / `#ffffff` 6.47  |
+
+`ok` (green) is used sparingly: "final" and "completed" are normal and stay `neutral`. Green appears where a person made something good happen (a hold released) or a limit check passed ("Acceptable").
+
+### 2.4 Machine states
+
+ISA-101 restraint: grey for the states a plant spends its normal time in, colour for the ones that cost output. The badge always shows the word; abnormal states add a glyph so they survive greyscale and colour blindness. The timeline bands use the same fills.
+
+| State        | Tone        | Badge                                                   | Glyph               | Contrast |
+| ------------ | ----------- | ------------------------------------------------------- | ------------------- | -------- |
+| Running      | neutral     | solid `#334155`, text `#ffffff`                         | ▶                   | 10.35    |
+| Idle         | neutral     | fill `#e2e8f0`, text `#0f172a`                          | –                   | 14.48    |
+| Setup        | neutral     | fill `#e2e8f0`, text `#0f172a`, dashed border `#64748b` | ⟳                   | 14.48    |
+| Planned stop | neutral     | fill `#f8fafc`, text `#334155`, border `#64748b`        | ‖                   | 9.90     |
+| Maintenance  | info        | solid `#1d4ed8`, text `#ffffff`                         | wrench (SVG)        | 6.70     |
+| Off          | neutral     | fill `#f1f5f9`, text `#475569`, border `#cbd5e1`        | ○                   | 6.92     |
+| Starved      | warn        | solid `#fcd34d`, text `#451a03`                         | ◀ (input missing)   | 10.39    |
+| Blocked      | caution     | solid `#fdba74`, text `#431407`                         | ▶▮ (output blocked) | 9.28     |
+| Stopped      | alarm, soft | fill `#fee2e2`, text `#7f1d1d`, border `#b91c1c`        | ■                   | 8.20     |
+| Down         | alarm       | solid `#b91c1c`, text `#ffffff`                         | ✕                   | 6.47     |
+| No data      | neutral     | white, dashed border `#64748b`, text `#475569`          | ?                   | 7.58     |
+
+Glyphs are inline SVG icons from `src/components/ui/icons.tsx`, `aria-hidden`, 12 px in a badge. A machine card in an abnormal state also gets a 4 px left border in the state's border colour, so the overview shows the problem from across the room (G-13, O-01).
+
+### 2.5 Alarm priority
+
+| Priority | Badge                                   | Glyph | Contrast |
+| -------- | --------------------------------------- | ----- | -------- |
+| High     | solid `#b91c1c`, text `#ffffff`         | ▲▲    | 6.47     |
+| Medium   | solid `#fbbf24`, text `#451a03`         | ▲     | 8.97     |
+| Low      | white, border `#0369a1`, text `#075985` | ●     | 7.56     |
+
+The glyphs are today's (`PriorityBadge`). An unacknowledged alarm's row has a 4 px left bar in its priority's border colour and bold text; acknowledged rows are plain (A-03).
+
+### 2.6 Finality and other statuses
+
+Every status the app shows maps to one tone, so the same word always looks the same (G-12).
+
+| Domain                                           | Value → tone                                                                                                                                                                                           |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Finality (OEE, alarm KPIs, shift reports, trace) | Final → `neutral` outline with a check glyph; Provisional → `neutral` dashed outline; revised → `info` outline                                                                                         |
+| Order status                                     | Imported, Released, Closed → `neutral`; Dispatched, In progress → `info`; Completed → `neutral` with check; Rejected, Cancelled → `alarm` soft; flags (Short, Dispatch failed, Dispatch lost) → `warn` |
+| Command state                                    | as today's `COMMAND_STATE_TEXT` tones, mapped good → `neutral`, bad → `alarm`, warn → `warn`, info → `info`                                                                                            |
+| Quality hold                                     | Open → `alarm` soft; Released → `ok` soft; Rejected → `neutral` solid                                                                                                                                  |
+| SPC signal episode                               | Provisional → `warn` soft; Final → `alarm` soft, text "Signal"; Withdrawn → `neutral` outline, struck through                                                                                          |
+| Serial status                                    | Packed, In WIP → `neutral`; Rework → `warn`; Scrapped → `alarm` soft                                                                                                                                   |
+| Live connection                                  | Live → `neutral` dot; Connecting, Reconnecting → `warn` dot pulsing (still under reduced motion: no pulse); Offline → `alarm` dot                                                                      |
+
+Finality is shown once per scope: in the section header or card header, not on every row; a row shows its own badge only when it differs from its section (E-03). Where a test reads the badge text (`order-status`, `hold-state`, `signal-status`), the text stays and only the tone changes; a text change is made in its screen's issue with the spec updated in the same pull request.
+
+### 2.7 Typography
+
+System fonts only: the CSP allows `font-src 'self'` and nothing is fetched from a CDN. `--font-sans` and `--font-mono` as above.
+
+| Token       | Size / line height         | Weight  | Use                                                       |
+| ----------- | -------------------------- | ------- | --------------------------------------------------------- |
+| `text-2xs`  | 11 px / 16 px (0.6875 rem) | 500     | Chart axis ticks, badge counts                            |
+| `text-xs`   | 12 px / 16 px (0.75 rem)   | 400–600 | Badges, captions, hints, table footnotes                  |
+| `text-sm`   | 14 px / 20 px (0.875 rem)  | 400     | **Body and tables (the default)**                         |
+| `text-base` | 16 px / 24 px (1 rem)      | 400     | Forms on the login and account pages; terminal small text |
+| `text-lg`   | 18 px / 28 px (1.125 rem)  | 600     | Section title (`h2`), card title                          |
+| `text-xl`   | 20 px / 28 px (1.25 rem)   | 600     | Page title (`h1`) on detail and list pages; terminal body |
+| `text-2xl`  | 24 px / 32 px (1.5 rem)    | 600     | Page title on dashboards; KPI value (small tile)          |
+| `text-3xl`  | 30 px / 36 px (1.875 rem)  | 600     | KPI value (headline tile); terminal headings              |
+| `text-4xl`  | 36 px / 40 px (2.25 rem)   | 700     | One headline figure per page at most                      |
+
+- **Numbers** use `font-variant-numeric: tabular-nums` (the `tabular-nums` utility, applied by `DataTable` numeric cells, `Stat` and `KpiTile`), in the sans font, never monospace (G-15).
+- **Monospace** is for identifiers only: equipment ids, lots, serials, cartons, order ids, alarm codes, request ids. At 0.95 em so it sits on the sans baseline.
+- **Weights:** 400 body, 500 labels and table headers, 600 titles and emphasised values, 700 the one headline figure. No 800/900.
+- **Line length:** prose at most `72ch` (`max-w-prose`); a page's description is one line at most 90 characters (G-08).
+
+### 2.8 Spacing
+
+A 4 px base. Tailwind's default spacing already is this scale (`1` = 4 px); screens use only these steps.
+
+| Step | px  | Use                                                             |
+| ---- | --- | --------------------------------------------------------------- |
+| 0.5  | 2   | Badge vertical padding, icon to text in a badge                 |
+| 1    | 4   | Inline gaps inside a control                                    |
+| 2    | 8   | Table cell vertical padding (compact), gap between badges       |
+| 3    | 12  | Table cell horizontal padding; gap between form fields in a row |
+| 4    | 16  | Card padding (compact); phone page gutter; gap between cards    |
+| 5    | 20  | Card padding (default)                                          |
+| 6    | 24  | Gap between sections; tablet page gutter                        |
+| 8    | 32  | Desktop page gutter; gap under the page header                  |
+| 10   | 40  | –                                                               |
+| 12   | 48  | Top bar height                                                  |
+| 16   | 64  | Empty-state vertical padding                                    |
+
+Vertical rhythm on a page: page header, 24 px, filter bar, 16 px, first section; sections 32 px apart; within a section, title to content 12 px.
+
+### 2.9 Radius, elevation, z-index, motion
+
+| Radius token  | px   | Use                           |
+| ------------- | ---- | ----------------------------- |
+| `radius-sm`   | 4    | Badges, checkboxes, table     |
+| `radius-md`   | 6    | Buttons, inputs, selects      |
+| `radius-lg`   | 8    | Cards, dialogs, menus         |
+| `radius-full` | 9999 | Status dots, pills in the nav |
+
+| Elevation | Look                                                                | Use                                 |
+| --------- | ------------------------------------------------------------------- | ----------------------------------- |
+| 0         | border `line`, no shadow                                            | Cards, tables, panels (the default) |
+| 1         | border `line` + `0 1px 2px rgb(15 23 42 / 0.06)`                    | Sticky table header, sticky panel   |
+| 2         | border `line` + `0 4px 12px rgb(15 23 42 / 0.12)`                   | Menus, tooltips, popovers           |
+| 3         | `0 12px 32px rgb(15 23 42 / 0.24)` + backdrop `rgb(15 23 42 / 0.5)` | Dialogs, the nav drawer             |
+
+| z-index token | Value | Layer                                                                    |
+| ------------- | ----- | ------------------------------------------------------------------------ |
+| `z-sticky`    | 10    | Sticky table headers, sticky detail panels                               |
+| `z-topbar`    | 20    | The top bar                                                              |
+| `z-nav`       | 30    | The nav drawer and its backdrop                                          |
+| `z-popover`   | 40    | Menus, tooltips                                                          |
+| `z-toast`     | 50    | Toasts; the idle warning (today `z-40`)                                  |
+| `z-dialog`    | 60    | Dialogs (native `<dialog>` uses the top layer; this is for the fallback) |
+| `z-lock`      | 70    | The re-login cover (today `z-50`): above everything                      |
+
+Motion: `--duration-fast: 120ms` (hover, press), `--duration-base: 200ms` (drawer, dialog, panel), easing `cubic-bezier(0.2, 0, 0, 1)`. Nothing animates a value the plant reports (no tweened numbers, no chart animation; ECharts `animation: false`). The existing `prefers-reduced-motion` rule stays and also stops the connection dot's pulse.
+
+## 3. Layout and navigation
+
+### 3.1 Breakpoints
+
+Tailwind's defaults. What changes at each:
+
+| Name  | Min width | Shell                                        | Content                                                                      |
+| ----- | --------- | -------------------------------------------- | ---------------------------------------------------------------------------- |
+| base  | 0         | Top bar 48 px; nav in a drawer; gutter 16 px | One column; tables become stacked rows or scroll with a fade                 |
+| `sm`  | 640       | as base                                      | Two-column KPI tiles                                                         |
+| `md`  | 768       | as base; gutter 24 px                        | Filter bars on one row; two-column cards                                     |
+| `lg`  | 1024      | as base                                      | Three-column cards; list-and-detail as list, detail below or in a side sheet |
+| `xl`  | 1280      | Side nav 232 px, always open; gutter 32 px   | List-and-detail side by side; four-column KPI tiles                          |
+| `2xl` | 1536      | as `xl`                                      | Content capped at 1440 px                                                    |
+
+`xl` is where the side nav is open because the Playwright suites and the demo recording run at 1280 × 720 (Desktop Chrome): every `nav-*` link stays visible and clickable there, as the specs expect.
+
+### 3.2 App shell
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│ ☰  ShopFloor Twin   Gebze plant time Thu 22 Oct, 03:25:03 ● Live  user  Log out │  top bar 48 px, neutral-900
+├────────────┬─────────────────────────────────────────────────────────┤
+│ MONITOR    │  ‹ All orders                                            │
+│  Overview  │  Order PO-2610-303  [Completed] [Short]   [Close order]  │  page header
+│  Alarms    │  VB-100 · 60 blanks · due Mon 12 Oct, 22:00              │
+│  Alarm KPIs│ ──────────────────────────────────────────────────────── │
+│  OEE       │  filters                                                 │
+│ PRODUCTION │                                                          │
+│  Orders  ● │  sections …                                              │
+│  …         │                                                          │
+└────────────┴─────────────────────────────────────────────────────────┘
+```
+
+- **Top bar** (`<header>`, 48 px, `neutral-900`, sticky): the menu button (below `xl`), the product name (link to `/`), the plant clock (`plant-clock`, unchanged text "Gebze plant time: …"), the connection status (`connection-status`), the user name (`nav-account` → `/account`, `signed-in-user`; the roles move to its `title` and the account page, G-04) and a visible "Log out" ghost button (`logout`; the demo and the login helper click it directly). Below `md` the clock drops the "Gebze plant time:" prefix visually (kept as visually hidden text) and the user name truncates.
+- **Side nav** (`<nav aria-label="Screens">`, 232 px, `neutral-800`): groups by job, each with a small caps heading (`text-xs`, 600, `neutral-400` on `neutral-800` is decorative; the heading is also a visually hidden `h2` for screen readers). A group with no visible link for the role is not rendered.
+
+  | Group      | Links (permission)                                                    |
+  | ---------- | --------------------------------------------------------------------- |
+  | Monitor    | Overview, Alarms, Alarm KPIs, OEE                                     |
+  | Production | Orders, Downtime coding, Shift reports, Terminal (`terminal:operate`) |
+  | Quality    | SPC, Holds, Traceability                                              |
+  | Admin      | Users (`user:admin`), Console (`sim:control`)                         |
+
+  Every link keeps its `data-testid` (`nav-overview` … `nav-console`) and its text. A link is **active** for its route and every route under it (G-03): `aria-current="page"` on the exact route, `aria-current="true"` on a sub-route, the same look for both (accent-subtle background on dark, white text, 3 px accent bar on the left). Alarms is active on `/alarms` only, Alarm KPIs on `/alarms/kpi`.
+
+- **Below `xl`** the same `<nav>` element becomes a drawer: off-canvas, opened by the top bar's menu button (`aria-expanded`, `aria-controls`), `inert` while closed, closed by Escape, by the backdrop and by following a link; focus moves into it on open and back to the button on close. The links are rendered at every width (only CSS hides them), so the jsdom tests that click `nav-*` keep working.
+- **Main** (`<main id="main" tabIndex={-1}>`): `canvas` background, gutter per breakpoint, content `max-width: 1440px` centred on `2xl`. The skip link, the heading focus on navigation (`useFocusOnNavigation`, `useHeadingFocus`) and the print rules stay. The heading's programmatic focus shows no ring (`:focus:not(:focus-visible)`), G-22.
+- **Document title:** every screen sets `"<page title> · ShopFloor Twin"` through a `usePageTitle(title)` hook called by `PageHeader` (G-05); detail pages include the id ("Order PO-2610-303 · ShopFloor Twin").
+- **The terminal** (`/terminal/:workCenter`) keeps its own standalone shell, restyled with the same tokens: a 56 px top bar with the work center's **name** and id (X-02), the plant clock, the connection status only once the operator is signed on (X-03), and a "Change work center" link to `/terminal` (X-04). The picker `/terminal` is a desk page in the shell.
+- **Login** keeps its centred card on the canvas, with the product name as the card's header.
+
+### 3.3 Page header
+
+One component for every page (G-06):
+
+```
+‹ Back label                                                   (optional)
+Title  [status badges]                              [secondary] [Primary]
+One-line description, max 90 characters.            (optional)
+[meta: key facts as "label value · label value"]   (optional)
+──────────────────────────────────────────────────────────────────────────
+[filter bar: label + control pairs inline, wraps; right-aligned summary]   (optional)
+```
+
+- Title: `h1`, `text-xl` (lists and details) or `text-2xl` (dashboards: overview, OEE, alarm KPIs), with `useHeadingFocus`. Ids in the title are monospace (`Order <code>PO-2610-303</code>`).
+- Back link: always "‹ " plus the parent's name: "All orders", "Plant overview", "Traceability", "All holds", "SPC charts", "Shift reports", "Operator terminal" (one rule, G-06). The hold detail gets one (H-04).
+- Actions: at most one primary; destructive actions are `danger` (G-11); more than three go into an overflow menu. Below `md` the actions wrap under the title, full width.
+- Filter bar: labels inline to the left of their control (`Shift [select]`), 12 px between pairs, wraps; the result summary ("4 records, 0 uncoded") sits right-aligned on the same row from `md`.
+- Long explanations: a "What this page shows" `Disclosure` under the description, closed by default (G-08).
+
+### 3.4 Content patterns
+
+- **Sections:** `Section` = `h2` (`text-lg`) + optional description + optional actions + content; 32 px apart. A section with a finality has its badge beside the title.
+- **Cards** for groups of facts and charts; **tables** (in a `DataTable`, which brings its own card frame) for lists. A page never mixes a bare table with carded ones (G-07, M-03).
+- **List and detail** (downtime coding, alarms): at `xl` the detail is a sticky side panel (`top: 64px`, max height the viewport, scrolls itself) of 440 px, rendered only while an item is selected; with nothing selected the table takes the full width (G-26). Below `xl` the detail opens as a full-height side sheet (a `Dialog` with `variant="sheet"`) over the list. The URL parameter (`?record=`, `?alarm=`) and the panel's test ids (`coding-panel`, `alarm-panel`) are unchanged.
+- **Long detail pages** (order, shift report, serial, lot, SPC chart): an in-page section index (`SectionNav`) under the header, sticky at `xl` as a row of anchor links; each section keeps its id and test id (Q-01, R-01).
+- **Key facts** (order, serial, carton, hold headers): a `DescriptionList` in a fixed number of columns per breakpoint (1 / 2 / 4) that flows by column, so the reading order never changes with the width; fields with no value are left out unless their absence is the information (Q-02).
+
+## 4. Components
+
+All live in `src/components/ui/`, are written in-house on Tailwind and the tokens, and each has a unit test for its accessible name, role, keyboard behaviour and states. Every component passes through `data-testid` and any other `data-*` props, so a screen's test ids stay where they are. Signatures are sketches; the issue that builds a component settles details.
+
+### 4.1 Button and IconButton
+
+```ts
+type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
+type ButtonSize = 'sm' | 'md' | 'lg' | 'touch';
+interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+  variant?: ButtonVariant; // default 'secondary'
+  size?: ButtonSize; // default 'md'
+  loading?: boolean; // shows a spinner, sets aria-busy, keeps the label for the accessible name
+  icon?: IconName; // leading icon, aria-hidden
+  fullWidth?: boolean;
+}
+interface IconButtonProps extends Omit<ButtonProps, 'icon' | 'children'> {
+  icon: IconName;
+  label: string; // required: the accessible name and the tooltip
+}
+```
+
+| Variant     | Rest                                                                                            | Hover                 | Use                                                                                                                              |
+| ----------- | ----------------------------------------------------------------------------------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `primary`   | fill `accent`, text white (7.56)                                                                | `accent-hover` (9.46) | The one main action of a page, form or dialog                                                                                    |
+| `secondary` | white, border `neutral-500`, text `ink`                                                         | fill `neutral-100`    | Every other action                                                                                                               |
+| `ghost`     | no border, text `accent`                                                                        | fill `neutral-100`    | Low-weight actions in tables and toolbars                                                                                        |
+| `danger`    | white, border `#b91c1c`, text `#991b1b`; in a confirm dialog solid `#b91c1c`, text white (6.47) | fill `#fef2f2`        | Irreversible or destructive: Disable, Reset password, Close, Cancel order, Block, Take offline, Break tool, Retract, End version |
+
+| Size    | Height | Padding x | Text  |
+| ------- | ------ | --------- | ----- |
+| `sm`    | 28 px  | 10 px     | 13 px |
+| `md`    | 36 px  | 14 px     | 14 px |
+| `lg`    | 44 px  | 18 px     | 16 px |
+| `touch` | 56 px  | 20 px     | 18 px |
+
+- **Disabled** (G-10): fill `neutral-100`, border `neutral-300`, text `neutral-600` (6.92 on `neutral-100`), `cursor: not-allowed`, no hover; never opacity. The same look for every variant, so a disabled primary never reads as enabled. When the reason is not obvious, a hint beside it says why ("Select alarms to acknowledge them").
+- **Loading:** the label stays, a 14 px spinner replaces the icon, the button is disabled and `aria-busy="true"`; `prefers-reduced-motion` shows a static ellipsis instead of the spin.
+- **Focus:** 2 px `focus` ring, 2 px offset (section 7).
+- Buttons in a row: primary last (right), 8 px apart. Row actions in tables are `ghost` `sm`, side by side, never stacked (A-02).
+
+### 4.2 Badge and StatusPill
+
+One component for every status (G-12):
+
+```ts
+type Tone = 'neutral' | 'info' | 'ok' | 'warn' | 'caution' | 'alarm';
+interface BadgeProps {
+  tone: Tone;
+  variant?: 'soft' | 'solid' | 'outline' | 'dashed'; // default 'soft'
+  icon?: IconName; // aria-hidden glyph
+  size?: 'sm' | 'md' | 'lg'; // 18 / 22 / 28 px high
+  title?: string; // tooltip text (also an accessible description)
+  children: React.ReactNode; // the word: always present
+}
+```
+
+Domain wrappers keep today's names and test attributes, and map values to tones by the tables in section 2:
+
+- `StateBadge({ state, size, testId })` → `data-state`, the machine-state table (2.4).
+- `PriorityBadge({ priority, testId })` → `data-priority`, 2.5.
+- `OrderStatusBadge`, `OrderFlags`, `CommandStateBadge` → `data-testid="order-status"` / `order-flags` / `command-state`, `data-status`, `data-state` (2.6).
+- `HoldStateBadge`, `SignalStatusBadge` → `hold-state`, `signal-status` (2.6).
+- `FinalityBadge({ final, revision, incidents, title })` → replaces the per-row `StatusFlags` list for the section-level finality; `StatusFlags` stays for the detail disclosure with `data-flag`.
+- `LossBadge({ kind: 'own' | 'external' })`: `own` → `warn` soft, `external` → `neutral` outline (D-02).
+
+Shape: `radius-sm`, `text-xs` 600 (`md`: 13 px), 2 px × 6 px padding, a 1 px border on every variant (so soft and outline badges line up), `white-space: nowrap`.
+
+### 4.3 Card
+
+```ts
+interface CardProps {
+  title?: React.ReactNode; // h2 or h3 by `headingLevel`
+  headingLevel?: 2 | 3;
+  description?: string;
+  actions?: React.ReactNode; // top-right
+  status?: React.ReactNode; // a badge beside the title (finality)
+  tone?: Tone; // a 4 px left bar in the tone's border colour, for abnormal items only
+  padding?: 'compact' | 'default'; // 16 / 20 px
+  as?: 'section' | 'article' | 'div';
+  children: React.ReactNode;
+}
+```
+
+White surface, 1 px `line` border, `radius-lg`, elevation 0. Card grids: 16 px gap, equal heights per row only where the cards are peers (machine cards), otherwise natural height (E-05).
+
+### 4.4 KpiTile and Stat
+
+```ts
+interface StatProps {
+  label: string; // above the value, text-xs 500 ink-secondary
+  value: React.ReactNode; // tabular-nums; size by `emphasis`
+  unit?: string; // after the value, text-sm ink-secondary, a space before it
+  emphasis?: 'headline' | 'default' | 'compact'; // text-3xl / text-2xl / text-lg
+  hint?: React.ReactNode; // below: the raw fraction, a comparison, "of 18"
+  tone?: Tone; // colours the value only when abnormal (above a limit)
+  verdict?: { tone: Tone; text: string }; // e.g. Acceptable / Overloaded, as a Badge
+  testId?: string;
+  valueTestId?: string; // keeps today's ids on the figure itself (e.g. `${id}-percent`)
+  dataValue?: string; // raw value for tests (#295)
+}
+```
+
+`KpiTile` is a `Card` holding one headline `Stat` and up to four compact ones underneath. A KPI with no value renders "—" in `ink-secondary` at the same size plus a one-line reason ("No planned time this shift"), never "n/a" at headline size (E-01). The OEE cards, the alarm KPI cards (K-01: the average per 10 min is the headline with its EEMUA verdict; the other nine rows move into a compact `DescriptionList`), the order OEE, FPY and line OEE cards and a new overview summary strip (O-04) use it.
+
+### 4.5 DataTable
+
+```ts
+interface Column<Row> {
+  key: string;
+  header: React.ReactNode; // always present; may be visually hidden ("Actions")
+  cell: (row: Row) => React.ReactNode;
+  align?: 'start' | 'end' | 'center'; // 'end' for every number, duration and time-of-day column
+  numeric?: boolean; // implies align 'end' and tabular-nums
+  width?: string; // e.g. '8rem'; ids and times get a fixed min width so they don't wrap
+  nowrap?: boolean; // default true for numeric, ids, dates, badges
+  priority?: 1 | 2 | 3; // which columns survive on narrow screens (1 always)
+  sticky?: boolean; // first column sticky on horizontal scroll
+}
+interface DataTableProps<Row> {
+  caption: string; // visually hidden <caption>, as today
+  columns: Column<Row>[];
+  rows: readonly Row[];
+  rowKey: (row: Row) => string;
+  rowTestId?: (row: Row) => string; // keeps `alarm-row-${id}`, `order-row-${id}` …
+  rowProps?: (row: Row) => Record<`data-${string}`, string>; // data-blocked, data-state …
+  rowTone?: (row: Row) => Tone | undefined; // left bar for abnormal rows (unacknowledged alarm)
+  selection?: {
+    selected: ReadonlySet<string>;
+    onChange: (next: Set<string>) => void;
+    label: (row: Row) => string;
+    allLabel: string;
+    testId?: string;
+  };
+  activeRowKey?: string; // the row whose detail is open: aria-selected / aria-current
+  actions?: (row: Row) => React.ReactNode; // ghost sm buttons in the last column, in a row
+  empty?: React.ReactNode; // an EmptyState; the header row is not shown when empty
+  stickyHeader?: boolean; // default true when rows > 15
+  density?: 'compact' | 'default'; // 32 / 40 px rows
+  narrow?: 'scroll' | 'stack'; // below md: scroll with an edge fade, or one card per row
+  pageSize?: number; // client-side paging for long lists (lot units: 50)
+  testId: string;
+  count?: number; // data-count, as today's quality Table
+}
+```
+
+- Header row: `surface-sunken`, `text-xs` 600 uppercase-free (sentence case), `ink-secondary`, a 1 px `line` bottom border; `th scope="col"`; right-aligned headers over right-aligned columns.
+- Rows: 1 px `line-subtle` dividers, no zebra (the dividers carry the rows; zebra fights the tone bars), hover `neutral-50`, the active row `accent-subtle` with a 3 px `accent` left bar (D-03).
+- Numbers right-aligned in tabular figures; units in the header ("Loss (min)") rather than in every cell where a column shares one.
+- Narrow screens: `scroll` keeps the table and adds a right-edge fade and a visually hidden "Scroll for more columns" note; columns with `priority: 3` drop below `md`, `priority: 2` below `sm`; `stack` renders each row as a definition list (used for the alarm list and downtime records on phones, G-27).
+- Long lists: `pageSize` with a pager under the table ("1–50 of 180", previous and next) (T-04).
+- Selection: a checkbox column with a 24 × 24 px hit area (G-30), a select-all in the header with `aria-checked="mixed"` for some.
+
+### 4.6 Tabs
+
+```ts
+interface TabsProps {
+  label: string; // aria-label of the tablist
+  tabs: { id: string; label: React.ReactNode; count?: number; testId?: string }[];
+  value: string;
+  onChange: (id: string) => void;
+  panelId?: string; // the tabpanel's id
+}
+```
+
+WAI-ARIA tabs: `role="tablist"`, roving `tabindex`, Left/Right/Home/End move and select (automatic activation), `aria-controls` to the panel, the panel `role="tabpanel"` with `aria-labelledby`. Look: underline tabs (2 px `accent` under the selected one, text `ink` 600; others `ink-secondary`), counts as a `neutral` badge. Below `sm` the tab list scrolls sideways instead of wrapping (A-04). Today's alarm tabs (`tab-active`, `tab-acknowledged`, `tab-shelved`, `tab-history`) keep their ids.
+
+### 4.7 Form fields
+
+```ts
+interface FieldProps {
+  label: string; // visible <label>
+  hint?: React.ReactNode; // below the control, aria-describedby
+  error?: string; // below the hint, red ink, aria-invalid + aria-describedby, role none (the form's summary announces)
+  required?: boolean; // " (required)" in the label; optional fields say nothing
+  inline?: boolean; // label left of the control (filter bars)
+  children: (ids: {
+    id: string;
+    describedBy: string | undefined;
+    invalid: boolean;
+  }) => React.ReactNode;
+}
+```
+
+- Controls (`TextInput`, `Textarea`, `Select`, `Checkbox`, `Radio`, `NumberInput`): 36 px high (`md`), 56 px in the terminal (`touch`), white, 1 px `neutral-500` border (4.76:1), `radius-md`, focus ring; invalid: border `#b91c1c` plus the error text; disabled: `neutral-50` fill, `neutral-600` text. Every control gets an `id` and a `name` (G-23).
+- `Select` is the native `<select>` styled with tokens (an arrow from `icons.tsx`), never a custom listbox: it is accessible on every platform, the e2e specs drive it with `selectOption`, and long option texts can be read (H-05: the select is as wide as its longest option up to the field's width, and the option text is shortened at the source, not cut).
+- `Checkbox`: 16 px box in a 24 px hit area, label to the right.
+- `CharacterCount` as today's comment box ("12 of 500 characters", `aria-describedby`).
+- Form errors: a refused write keeps today's `FailureMessage` (role alert, problem type) restyled as an `alarm` soft `Callout` at the top of the form; field errors under their fields.
+
+### 4.8 Plant-time input
+
+The one way to enter a time (N-02, D-05, C-07):
+
+```ts
+interface PlantTimeInputProps {
+  label: string;
+  value: string | null; // ISO 8601 UTC, as the API takes it
+  onChange: (iso: string | null) => void;
+  withSeconds?: boolean; // downtime split: true
+  min?: string;
+  max?: string; // ISO bounds (the shift)
+  required?: boolean;
+  testId?: string;
+}
+```
+
+Two plain text inputs, date (`dd/mm/yyyy`, or a `Select` of the shift's days when bounded) and time (`hh:mm` or `hh:mm:ss`), not the native pickers (they follow the OS locale). The label says "(plant time, Europe/Istanbul)"; the hint shows the UTC instant as it will be sent, live ("= 2026-10-12 05:00:00 UTC"). Parsing and formatting go through `domain/time.ts` in the plant zone. Where the console needs simulation time, the same input is labelled "(simulation time)".
+
+### 4.9 Dialog and ConfirmDialog
+
+```ts
+interface DialogProps {
+  open: boolean;
+  onClose: () => void;
+  title: string; // h2, aria-labelledby
+  description?: string; // aria-describedby
+  variant?: 'modal' | 'sheet'; // centred 480 px, or a full-height side sheet 440 px (list-and-detail below xl)
+  initialFocus?: React.RefObject<HTMLElement>;
+  children: React.ReactNode;
+  footer?: React.ReactNode; // buttons, primary last
+}
+interface ConfirmDialogProps {
+  open: boolean;
+  title: string; // "Close order PO-2610-303?"
+  body: React.ReactNode; // what happens and what cannot be undone
+  confirmLabel: string; // the verb again: "Close order"
+  tone?: 'danger' | 'default';
+  onConfirm: () => void | Promise<void>;
+  onCancel: () => void;
+  pending?: boolean;
+}
+```
+
+Native `<dialog>` with `showModal()`: the browser gives the top layer, the inert background, Escape and the `::backdrop`. The component adds focus to `initialFocus` or the first control, focus back to the opener on close, and closes on a backdrop click only when nothing was typed. Confirmations are for irreversible writes only (close, cancel or abandon an order, disable a user, reset a password, retract a note, end a limit version, the console's destructive levers); an action that today confirms inline in its form (order actions' `action-form-*`, the terminal's `terminal-pause-confirm-*`) keeps its inline confirm and its ids, restyled. The re-login cover (`relogin`) keeps its own markup and moves to the tokens.
+
+### 4.10 Toast
+
+```ts
+toast({ tone: 'neutral' | 'ok' | 'alarm', title: string, body?: string, action?: { label: string; onClick: () => void } });
+```
+
+Bottom-right (bottom, full width below `md`), at most three, 6 s for neutral and ok (paused on hover and focus), alarm toasts stay until dismissed. A region with `role="status"` (`aria-live="polite"`; `alarm` tone uses `role="alert"`). Toasts confirm a completed write that leaves the screen ("Coding saved"); a write's result that the screen shows anyway (a row changes) needs none. Today's inline result messages with test ids (`coding-message`, `action-message`, `action-done`, `new-note-message`) stay inline: a toast never replaces an element a test reads.
+
+### 4.11 EmptyState, Skeleton, ErrorState, NotFound
+
+```ts
+interface EmptyStateProps {
+  title: string;
+  body?: React.ReactNode;
+  action?: React.ReactNode;
+  icon?: IconName;
+  size?: 'inline' | 'section' | 'page';
+  testId?: string;
+}
+interface SkeletonProps {
+  shape: 'text' | 'stat' | 'table' | 'chart' | 'card';
+  rows?: number;
+  label: string; /* "Loading OEE" */
+}
+interface ErrorStateProps {
+  what: string;
+  error: unknown;
+  onRetry?: () => void;
+} // QueryError, restyled
+interface NotFoundProps {
+  kind: string /* "order" */;
+  id: string;
+  back: { to: string; label: string };
+}
+```
+
+- **Empty** (H-03, K-04, N-05, E-01): a centred block in the section's frame with a title ("No holds match these filters"), one line of why or what to do, and an action when there is one ("Clear filters", "Open a hold"). A table with no rows shows the EmptyState instead of its header row. Test ids that mark today's empty texts (`alarm-list-empty` …) move onto the EmptyState.
+- **Loading** (G-19): skeletons of the content's own shape at its final size (a table skeleton with its header and five grey rows, a stat skeleton the height of the figure), so nothing jumps. The skeleton has `role="status"` and a visually hidden label ("Loading OEE…", today's text, so tests and screen readers hear the same); shimmer only without reduced motion. Below 300 ms nothing is shown (a delayed skeleton), to avoid flashes on fast loads.
+- **Error** (`QueryError`, kept by name and props): an `alarm` soft callout with "Could not load …", the MES's detail in `ink-secondary`, and "Try again" (secondary) only for errors a retry can fix: network, 5xx, 429. A 404 is not an error but **NotFound**: the page header with the id as asked ("Order PO-NOPE"), an EmptyState "No order PO-NOPE" with "The MES has no order with this id." and the back link (G-21, M-06, T-06). The router's own "Page not found" uses the same component.
+- **Offline** (G-20): the shell shows a `warn` bar under the top bar while the browser is offline or the live connection is lost ("Offline: the figures below stopped updating at 03:25:03"), and queries run with `networkMode: 'always'` so a request fails with the network error instead of waiting silently; the header status then reads "Offline". This is a behaviour fix and goes in its own issue (UX-B4).
+
+### 4.12 Tooltip, InfoTip and Disclosure
+
+```ts
+interface TooltipProps {
+  content: string;
+  children: React.ReactElement;
+  side?: 'top' | 'bottom';
+}
+interface InfoTipProps {
+  label: string /* "About line OEE" */;
+  children: React.ReactNode;
+}
+interface DisclosureProps {
+  summary: string;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+  testId?: string;
+}
+```
+
+- `Tooltip` is a supplement only, never the only place a fact lives (touch has no hover): it shows on hover and focus after 400 ms, hides on Escape, and its trigger gets `aria-describedby`. Built on the Popover API (`popover="manual"`) and CSS anchor positioning where present, a fixed position otherwise. Today's `title` attributes that carry exact fractions stay (`RatioValue`'s `title`).
+- `InfoTip` is a 24 px `IconButton` ("i") that toggles a popover with the explanation; used for the long explanations taken out of the body text (G-08), reachable by keyboard and touch.
+- `Disclosure` is a styled `<details>`/`<summary>` (as today's "What the status means", "Bill of materials", "Payload"), with a chevron and a 24 px hit area.
+
+### 4.13 Others
+
+- `PageHeader`, `Section`, `SectionNav`, `DescriptionList`, `FilterBar` (3.3, 3.4).
+- `Callout({ tone, title, children })`: page-level messages (a refused write, the idle warning restyled, "Your role cannot change orders" as a one-line neutral callout instead of an empty "Actions" section, G-29, Q-08).
+- `Code`: an inline identifier in monospace; `Kbd` for the terminal's keyboard hints.
+- `Icon` (`icons.tsx`): about 20 inline SVG icons drawn in-house at 16 and 20 px with `currentColor` (menu, close, chevrons, check, alert, info, play, pause, stop, wrench, ban, arrow-left/right, external, download, print, search, user, logout, filter, clock); no icon package.
+- `Duration`, `PlantTime`, `WallTime`, `Ratio`, `Percent`, `Quantity`: formatting components over `domain/time.ts` and `domain/numbers.ts` that render the text by the content rules (section 6) and keep the raw value in `data-value` / `data-fraction` and `<time dateTime>`.
+
+### 4.14 No headless UI dependency
+
+Decision: build every primitive in-house; add no Radix, Headless UI, React Aria or similar. Reasons:
+
+1. The hard parts now come from the platform: `<dialog>` with `showModal()` (focus containment, inert background, Escape, top layer), the Popover API (light dismiss, top layer) for menus and tooltips, `inert` (React 19 types it), `<details>` for disclosures and native `<select>`. The remaining behaviour (roving tab index for tabs, focus return, a menu's arrow keys) is a few dozen lines each, unit-tested.
+2. The component set is small and fixed (section 4); no comboboxes, date pickers or virtualised grids are needed (the plant-time input deliberately avoids a picker).
+3. The CSP (`style-src 'self'`, no inline styles in markup) is easier to keep with code we write; the pnpm `minimumReleaseAge` policy and the dependency review (`docs/dependencies.md`) stay untouched.
+4. Every test contract (test ids, accessible names, `selectOption` on native selects) survives without adapting to a library's DOM.
+
+If an issue later needs a primitive the platform cannot give (a searchable combobox, for example), it writes an ADR first, as the brief requires. No ADR is needed for this decision because nothing is added.
+
+## 5. Chart theme
+
+One module, `src/chart/theme.ts`, read by ECharts (registered as theme `shopfloor` and passed to `init`) and by uPlot (an options helper), with its colours taken from the CSS tokens at run time (`getComputedStyle(document.documentElement)`) so the dark theme repaints the canvases (G-25).
+
+| Element         | Rule                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Font            | `--font-sans`, 12 px axis labels and legend, 11 px tick labels, `ink-secondary`; values in tooltips in tabular figures                                                                                                                                                                                                                                                                                                    |
+| Axes            | Axis line `neutral-500`, ticks outside 4 px, split lines `neutral-200` dashed on the value axis only; the value axis starts at 0 for bars                                                                                                                                                                                                                                                                                 |
+| Axis titles     | The unit only, at the end of the axis ("min", "Pa/min", "%"), never a sentence                                                                                                                                                                                                                                                                                                                                            |
+| Legend          | Top-left, above the plot, square 10 px markers for bars and 16 px line samples for lines; hidden when there is one series                                                                                                                                                                                                                                                                                                 |
+| Tooltip         | White, `line` border, elevation 2, plant time with date, one row per series with its marker, the unit                                                                                                                                                                                                                                                                                                                     |
+| Series palette  | Categorical, in this order: `#0369a1` (5.93), `#b45309` (5.02), `#6d28d9` (7.10), `#047857` (5.48), `#be185d` (6.04); `neutral-700` for "total" or "other"                                                                                                                                                                                                                                                                |
+| State colours   | Machine states, alarm priorities, own and external loss use the tokens of section 2, never the categorical palette                                                                                                                                                                                                                                                                                                        |
+| SPC             | Points `neutral-700` circles (provisional: hollow), signalling points `alarm` diamonds, UCL/LCL `#b91c1c` dashed 1.5 px, centre `neutral-600` solid, ±1σ/2σ zones `neutral-200` dotted, retests `info` triangles; every symbol drawn (`showAllSymbol: true`, C-03); rule labels in a lane above the plot, staggered and collision-avoided (`labelLayout: { hideOverlap: true }` plus the rule list under the chart, C-02) |
+| Category labels | Wrap to two lines at 180 px instead of truncating; still too long, the label ends in "…" and the full text is in the tooltip and the table (E-07)                                                                                                                                                                                                                                                                         |
+| Value labels    | Only when there are ≤ 12 bars and the value is not zero; zero or no data draws no label (E-05)                                                                                                                                                                                                                                                                                                                            |
+| Empty data      | No chart: the figure shows an `EmptyState` ("No planned time in this shift") at the chart's height                                                                                                                                                                                                                                                                                                                        |
+| Animation       | Off (`animation: false`); uPlot has none                                                                                                                                                                                                                                                                                                                                                                                  |
+| Sizes           | Height 240 px (compact), 320 px (default); grid padding 8 px left (axis labels contained), 16 px right                                                                                                                                                                                                                                                                                                                    |
+| Narrow screens  | Below `md`: fewer x ticks (every other), legend under the title, horizontal bar charts get their own label column so axis labels never overlap                                                                                                                                                                                                                                                                            |
+| Accessibility   | As today: the canvas `role="img"` with a one-sentence `aria-label` that states the main reading ("OEE per hour: 0 % in all 2 hours"), and the table beside it with every value                                                                                                                                                                                                                                            |
+
+Waterfall (E-06): every step is drawn as a positive bar from its base, losses labelled with a true minus sign (U+2212, no space: "−93.1"), the table writes the same.
+
+## 6. Content rules
+
+### 6.1 Numbers and units
+
+- **Ratios** (OEE, A, P, Q, yield) show as a percentage with the precision `percentText` gives today (two decimals): "83.04 %". The four-decimal fraction (`0.8304`) leaves the visible text; it stays in `data-fraction`, in the `title` ("83/100 exactly") and in the shift report's JSON (E-02, R-02). The reconciliation reads `data-fraction`, not the text; the issue that changes a ratio's text checks every spec reading that element.
+- **Percent sign** with a space before it ("83.04 %"), as today.
+- **Units** after the value with a space ("93.1 min", "3.245 Pa/min", "60 blanks"); in a column with one unit, the unit goes in the header ("Loss (min)") and the cells hold numbers only.
+- **Precision:** a measured value with its characteristic's precision (`domain/numbers.ts`, #295); loss minutes with one decimal, rounded half up as the MES does; counts as integers. Thousands with a comma ("1,800.0 min") from 10,000 up only, so figures under it keep their reconciled spelling.
+- **Signs:** a true minus (U+2212) directly before the number ("−93.1"); "+" only for deltas.
+- **Durations** (one function, G-17): under a minute "45 s"; under an hour "12 min" (with seconds, "12 min 05 s", only where it ticks live: time in state, a running pause); under a day "4 h 54 min"; from a day "2 d 12 h". Loss totals that reconcile stay in minutes with one decimal.
+
+### 6.2 Time
+
+- **Plant time** is the default and needs no label inside the app; the shell's clock names the zone ("Gebze plant time"). Format `Mon 12 Oct, 07:15:00` (en-GB, plant zone).
+- **The date goes with every time** unless the time is on the plant clock's current day and the column or the context says so; a list of events spanning days always shows dates (A-01). Seconds are shown for event times (facts, alarms, cycles), not for planning times (due, planned start: `Mon 12 Oct, 22:00`).
+- **Wall time** (when the MES or a person did something) always ends with "(wall time)" and never uses the browser's locale or zone settings (Y-01); the formatting functions live in `domain/time.ts` only, and no screen calls `toLocaleString`.
+- **Ranges:** "Mon 12 Oct, 06:15 – 12:17" on one day, "Wed 21 Oct, 22:00 – Thu 22 Oct, 06:00" across midnight.
+- **Inputs** are plant time with the UTC instant shown (4.8).
+
+### 6.3 Empty, absent and not applicable
+
+| Case                                                      | Show                                                                                                                             |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| A real zero                                               | `0` (or `0.0 min`)                                                                                                               |
+| No value: not applicable, not yet known, nothing recorded | `—` (em dash, `ink-secondary`) with the reason in a tooltip and as visually hidden text ("not applicable: no planned busy time") |
+| A device did not report the field                         | `Not reported` in `ink-secondary`                                                                                                |
+| Nobody (no operator signed on, no comment)                | `—` in tables; a sentence in prose ("Nobody signed on")                                                                          |
+| An empty list or section                                  | An `EmptyState` with a sentence, never a lone "none"                                                                             |
+
+"n/a", "none", "None" and "–" (en dash) leave the visible text (G-16). Raw markers that tests read stay raw (`data-fraction="n/a"`, `data-value`).
+
+### 6.4 Words
+
+- **Sentence case** everywhere: titles, buttons, tabs, table headers, badges ("Planned stop", "Line OEE per hour"). Codes and names keep their case ("OP30", "VB-100", "SPINDLE-OVERLOAD").
+- **Names before codes:** "Leak tester (lkt-01)", "Spindle overload · SPINDLE-OVERLOAD"; in tables the name in `ink`, the code in `ink-secondary` monospace below or beside it. Telemetry metrics get display names from the plant model ("Coolant temperature", M-02).
+- **No protocol talk in the UI:** no HTTP status codes, problem-type URIs or fact sequence numbers in body text (Q-06, A-06); the problem type stays in `FailureMessage`'s small print where it helps support, and sequence numbers move into a "Technical details" disclosure.
+- **Action labels** are a verb and, where it is not obvious, its object: "Acknowledge", "Acknowledge 3 alarms", "Save coding", "Open hold", "Close order", "Disable user". No "OK", "Submit" or "Yes". A confirm dialog repeats the verb on its button. Accessible names may say more than the visible label (today's "Code Manual assembly station at 22:00:00" stays).
+- **Read-only roles** see "View" instead of an action verb that opens a read-only panel (D-04), or a one-line callout instead of an empty actions section.
+- **Explanations:** one line under the page title; anything longer in an `InfoTip` or a closed `Disclosure`.
+
+## 7. Accessibility (WCAG 2.2 AA)
+
+The bar for every issue; UX-final checks it with axe on every route.
+
+| Criterion                                        | Rule here                                                                                                                                                                                                                                                                                                                                       |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1.1.1 Non-text content                           | Every chart: `role="img"`, an `aria-label` with the main reading, and its data table. Decorative glyphs `aria-hidden`.                                                                                                                                                                                                                          |
+| 1.3.1 Info and relationships                     | Real headings in order (one `h1`), `table` with `caption` and `th scope`, `dl` for facts, `fieldset`/`legend` for groups of checkboxes, labels tied to controls.                                                                                                                                                                                |
+| 1.3.2 / 1.3.4 Sequence, orientation              | Fact grids flow by column (3.4); no layout depends on orientation (the terminal works in both).                                                                                                                                                                                                                                                 |
+| 1.4.1 Use of colour                              | Every state and tone carries a word; abnormal states a glyph; links are underlined in body text.                                                                                                                                                                                                                                                |
+| 1.4.3 Contrast (text)                            | ≥ 4.5:1 for every text pair in section 2 (computed): the lowest light-theme text pair is 5.48 (white on `#047857`), the lowest dark-theme one 4.83 (white on the dark Down fill). `neutral-500` is 4.76 on white but **4.34 on the canvas**, so it is never used for text; secondary text is `neutral-600` (7.58 on white, 6.92 on the canvas). |
+| 1.4.11 Non-text contrast                         | Input borders `neutral-500` (4.76 on white, 4.34 on canvas), focus rings ≥ 3:1 (5.93 on white, 8.33 on the top bar), state badge fills against their surface or a 1 px border that is ≥ 3:1.                                                                                                                                                    |
+| 1.4.10 / 1.4.4 Reflow, resize                    | Usable at 320 px wide and 200 % zoom without two-way scrolling except data tables and charts (allowed), which scroll inside their own frame.                                                                                                                                                                                                    |
+| 1.4.12 / 1.4.13                                  | Text spacing overrides don't clip (no fixed heights on text); tooltips are dismissible (Escape), hoverable and persistent.                                                                                                                                                                                                                      |
+| 2.1.1 Keyboard                                   | Everything by keyboard: tabs with arrows, dialogs trap and return focus, the nav drawer, table row actions as buttons (rows are not clickable divs), the SPC chart's points through its table.                                                                                                                                                  |
+| 2.4.1 / 2.4.2 / 2.4.3                            | Skip link kept; page titles per route (G-05); focus order follows the visual order; focus moves to the new page's `h1` on navigation (kept).                                                                                                                                                                                                    |
+| 2.4.7 / 2.4.11 / 2.4.13 Focus                    | A 2 px solid ring in `focus` (`focus-on-dark` on the top bar and nav) with a 2 px offset on every interactive element, `:focus-visible` only; sticky headers and panels never cover the focused element (`scroll-padding-top: 64px`).                                                                                                           |
+| 2.5.3 Label in name                              | The visible label starts the accessible name ("Acknowledge" → "Acknowledge SPINDLE-OVERLOAD on Horizontal machining centre 1", as today).                                                                                                                                                                                                       |
+| 2.5.8 Target size                                | ≥ 24 × 24 px for every target on desktop (checkboxes in a 24 px hit area), ≥ 44 px on touch layouts, 56 px in the terminal.                                                                                                                                                                                                                     |
+| 3.2.2 / 3.3.1 / 3.3.3 Forms                      | No change of context on input (filters update the list, not the page); errors identified in text, tied to their field (`aria-invalid`, `aria-describedby`), with a suggestion where possible (L-01).                                                                                                                                            |
+| 3.3.7 Redundant entry                            | Forms keep what was typed after a refused write (they do today: keep it).                                                                                                                                                                                                                                                                       |
+| 4.1.2 / 4.1.3 Name, role, value; status messages | Native elements first; toggles expose `aria-pressed` or `aria-current`; live regions: the connection status (polite, kept), toasts, the skeleton's `role="status"`, the offline bar.                                                                                                                                                            |
+| Motion                                           | `prefers-reduced-motion` stops pulses, shimmer, drawer slides and spinners (a static indicator instead); nothing flashes.                                                                                                                                                                                                                       |
+
+## 8. Dark mode
+
+**Decision: in scope, token-ready from UX-1, shipped as its own issue after the screen migrations.**
+
+- UX-1 defines every colour token with a light and a dark value and a `data-theme` attribute on `<html>` (`light`, `dark`, or absent = follow `prefers-color-scheme`). From UX-1a on, a migrated screen that uses a raw colour (a Tailwind palette class like `bg-slate-50`, a hex in a chart option) fails review; a check script (UX-1a) lists the files still using raw colours, and UX-F3 turns it into a failing check.
+- The switch (System, Light, Dark) ships in UX-12, after every screen is on tokens, in the top bar's user area and on the account page, stored in `localStorage` per browser. Until then the app is light only, as now.
+- **Print is always light** (the existing `@media print` rules force white; charts print from their light snapshot). **The terminal** follows the same switch; tablets in a bright hall will mostly stay light.
+- Dark values (computed pairs, AA):
+
+  | Token                    | Dark                                                      | Pair and ratio                              |
+  | ------------------------ | --------------------------------------------------------- | ------------------------------------------- |
+  | `canvas`                 | `#0b1220`                                                 | `ink` `#e2e8f0` on it 15.19                 |
+  | `surface`                | `#111a2b`                                                 | `ink` 14.12; `ink-secondary` `#94a3b8` 6.79 |
+  | `surface-sunken`         | `#0e1626`                                                 | –                                           |
+  | `line` / `line-strong`   | `#334155` / `#64748b`                                     | `line-strong` on surface 3.66 (non-text)    |
+  | `accent` (links)         | `#7dd3fc`                                                 | on surface 10.44                            |
+  | `accent` (primary fill)  | `#38bdf8`, text `#0b1220`                                 | 8.74                                        |
+  | `focus`                  | `#38bdf8`                                                 | on surface 8.13                             |
+  | Running badge            | fill `#cbd5e1`, text `#0b1220`                            | 12.61                                       |
+  | Idle badge               | fill `#334155`, text `#e2e8f0`                            | 8.40                                        |
+  | Starved badge            | fill `#fcd34d`, text `#451a03` (unchanged)                | 10.39                                       |
+  | Down badge               | fill `#dc2626`, text `#ffffff`                            | 4.83; fill on surface 3.6                   |
+  | `alarm` soft             | text `#fca5a5` on `#2a1215`                               | 9.25                                        |
+  | `warn` soft              | text `#fcd34d` on `#2a2110`                               | 11.00                                       |
+  | `ok` soft                | text `#6ee7b7` on `#0f2a22`                               | 10.02                                       |
+  | `info` soft              | text `#7dd3fc` on `#0c2235`                               | 9.72                                        |
+  | Chart series 1, 2; limit | `#38bdf8` 8.13, `#f59e0b` 8.10; `#f87171` 6.29 on surface | –                                           |
+
+## 9. Rules for every migration
+
+1. Keep every `data-testid`, `data-*` value a test reads (raw, #295), accessible name and role. A rename updates the specs in the same pull request and says so in its description.
+2. No behaviour, API or contract change; a defect found on the way is fixed in its own issue or reported.
+3. No raw colours, no per-screen button or input classes, no `toLocaleString`, no monospace numbers.
+4. Every state of the screen designed: loading (skeleton), empty, error, not found where an id is in the URL, data, read-only role.
+5. Checked at 1440, 1280, 1024, 768 and 390, keyboard only once, and with the axe browser extension or the UX-final spec on the touched routes.

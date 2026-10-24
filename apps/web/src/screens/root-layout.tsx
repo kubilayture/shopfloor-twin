@@ -1,13 +1,13 @@
 import { STATES_TOPIC } from '@shopfloor/contracts/mes-api';
 import { Link, Outlet, useRouterState } from '@tanstack/react-router';
-import { useLayoutEffect, useRef } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { requestHeadingFocus, useHeadingFocus } from '../components/heading-focus.ts';
 import { usePlantClock } from '../api/queries.ts';
 import { useAuth } from '../auth/auth.tsx';
 import { rolesText } from '../domain/identity.ts';
 import { ConnectionStatus } from '../components/connection-status.tsx';
-import { formatPlantTime } from '../domain/time.ts';
-import { useLiveSubscription } from '../live/live-context.tsx';
+import { formatClockSeconds, formatPlantTime } from '../domain/time.ts';
+import { useLiveConnection, useLiveSubscription } from '../live/live-context.tsx';
 
 const NAV = [
   { id: 'overview', to: '/', label: 'Overview' },
@@ -71,6 +71,46 @@ function PlantClock() {
 }
 
 /**
+ * While the browser is offline (#312): says since when the figures stopped updating, as the plant
+ * clock read when the network went, and goes when the network returns. Writes fail meanwhile
+ * where each form shows a refused one, and are not sent later by themselves.
+ */
+function OfflineBar() {
+  const { offline } = useLiveConnection();
+  const { clock } = usePlantClock();
+  // The plant clock when the network went, kept while offline whatever arrives late.
+  const [since, setSince] = useState<{ readonly at: string | null } | null>(null);
+  if (offline && since === null) setSince({ at: clock?.watermark ?? null });
+  if (!offline && since !== null) setSince(null);
+  if (!offline) return null;
+  const at = since ? since.at : (clock?.watermark ?? null);
+  return (
+    <div
+      role="alert"
+      data-testid="offline-bar"
+      className="border-b-2 border-warn-border bg-warn-soft text-ink print:hidden"
+      data-print="hidden"
+    >
+      <p className="mx-auto max-w-7xl px-4 py-2 text-sm">
+        <span className="font-semibold">Offline:</span>{' '}
+        {at === null ? (
+          'the figures on this page stopped updating when the network was lost.'
+        ) : (
+          <>
+            the figures on this page stopped updating at{' '}
+            <time dateTime={at} className="font-mono tabular-nums">
+              {formatClockSeconds(at)}
+            </time>{' '}
+            plant time.
+          </>
+        )}{' '}
+        They update again when the network is back; what you send meanwhile is not saved.
+      </p>
+    </div>
+  );
+}
+
+/**
  * After the route changes (not on the first load, not when only the search changes, so the range
  * picker keeps its focus), focus moves to `main` at once, as the link that had it is gone, and
  * then to the new screen's heading when it mounts (`useHeadingFocus`). A layout effect, so the
@@ -108,11 +148,16 @@ export function RootLayout() {
     <div className="min-h-screen bg-slate-50 text-slate-900 print:min-h-0 print:bg-white">
       <a
         href="#main"
-        className="sr-only print:hidden focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-10 focus:rounded focus:bg-white focus:px-3 focus:py-2"
+        data-surface="dark"
+        className="sr-only print:hidden focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-popover focus:rounded focus:bg-white focus:px-3 focus:py-2"
       >
         Skip to content
       </a>
-      <header className="bg-slate-900 text-white print:hidden" data-print="hidden">
+      <header
+        className="bg-slate-900 text-white print:hidden"
+        data-print="hidden"
+        data-surface="dark"
+      >
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-x-6 gap-y-2 px-4 py-3">
           <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
             <Link to="/" className="text-lg font-bold hover:underline">
@@ -143,6 +188,7 @@ export function RootLayout() {
           </div>
         </div>
       </header>
+      <OfflineBar />
       <main
         id="main"
         tabIndex={-1}

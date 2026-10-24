@@ -13,8 +13,9 @@ import {
   shelf,
 } from '../test/alarm-fixtures.ts';
 import { EQUIPMENT, PLANT, json, problem, sessionOf } from '../test/fixtures.ts';
+import { network, resetNetwork } from '../test/network.ts';
 import { requestBody, requestUrl } from '../test/oee-fixtures.ts';
-import { renderApp } from '../test/render-app.tsx';
+import { renderApp, settle } from '../test/render-app.tsx';
 
 vi.mock('../chart/echarts-view.tsx', () => ({ EChartsView: () => null }));
 
@@ -148,6 +149,7 @@ const empty = (): State => ({ active: [], acknowledged: [], shelved: [], history
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  resetNetwork();
 });
 
 const rowIds = () =>
@@ -517,6 +519,57 @@ describe('alarm panel', () => {
     await waitFor(() => {
       expect(screen.queryByTestId('alarm-panel')).toBeNull();
     });
+  });
+
+  it('fails a comment sent offline at once, keeps the draft and never sends it by itself (#312)', async () => {
+    const a = occurrence(1);
+    const server = mes({ ...empty(), active: [a], points: [point()] }, (_path, body) =>
+      json({
+        comment: {
+          id: 8,
+          text: (body as { text: string }).text,
+          actor: 'Ayşe',
+          authenticated: true,
+          at: '2026-10-16T08:01:00.000Z',
+          plantAt: null,
+          requestId: 'req-2',
+        },
+        occurrence: { ...a, comments: 1 },
+      }),
+    );
+    const net = network(server.fetch);
+    vi.stubGlobal('fetch', net.fetch);
+    await renderApp('/alarms');
+    fireEvent.click(await screen.findByTestId(`details-${a.id}`));
+    const panel = await screen.findByTestId('alarm-panel');
+    await within(panel).findAllByTestId('history-entry');
+
+    await net.cut();
+    const text = within(panel).getByTestId<HTMLTextAreaElement>('comment-text');
+    fireEvent.change(text, { target: { value: 'pump replaced' } });
+    fireEvent.click(within(panel).getByTestId('add-comment'));
+    // Where a refused write shows, at once: not queued until the network returns.
+    await waitFor(() => {
+      expect(within(panel).getByTestId('alarm-message').textContent).toBe(
+        'Comment not saved: the MES cannot be reached.',
+      );
+    });
+    expect(net.calls.filter((call) => call.method === 'POST')).toEqual([
+      { method: 'POST', up: false },
+    ]);
+    expect(text.value).toBe('pump replaced');
+    expect(within(panel).getByTestId<HTMLButtonElement>('add-comment').disabled).toBe(false);
+
+    // Back online: nothing is sent again by itself; the person sends the kept draft.
+    await net.restore();
+    await settle(() => undefined);
+    expect(net.calls.filter((call) => call.method === 'POST')).toHaveLength(1);
+    expect(text.value).toBe('pump replaced');
+    fireEvent.click(within(panel).getByTestId('add-comment'));
+    await waitFor(() => {
+      expect(within(panel).getByTestId('alarm-message').textContent).toBe('Comment added.');
+    });
+    expect(server.calls.filter((call) => call.method === 'POST')).toHaveLength(1);
   });
 
   it('on 409 reads the shelf again and sends the new version next time', async () => {

@@ -22,6 +22,7 @@
   --color-neutral-700: #334155;
   --color-neutral-800: #1e293b;
   --color-neutral-900: #0f172a;
+  --color-neutral-950: #020617;
 
   /* Surfaces, lines and text (2.1) */
   --color-canvas: #f1f5f9;
@@ -291,6 +292,15 @@
 }
 
 /* Tailwind has no theme namespace for z-index and durations: their utilities by name. */
+
+/*
+ * The duration utilities set `--tw-duration` as Tailwind's own do; registered so it does not
+ * inherit (a child with `transition` would otherwise take its parent's `duration-base`).
+ */
+@property --tw-duration {
+  syntax: '*';
+  inherits: false;
+}
 @utility z-sticky {
   z-index: var(--z-sticky);
 }
@@ -336,7 +346,11 @@
     outline-offset: 2px;
   }
 
-  /* On the dark top bar (and later the nav): `focus-on-dark`, 8.33:1 on `topbar` (section 7). */
+  /*
+   * On the dark top bar, in it or over it (the skip link; later the nav): `focus-on-dark`, 8.33:1 on
+   * `topbar` (section 7).
+   */
+  [data-surface='dark']:focus-visible,
   [data-surface='dark'] :focus-visible {
     outline-color: var(--color-focus-on-dark);
   }

@@ -108,7 +108,8 @@ export function RootLayout() {
     <div className="min-h-screen bg-slate-50 text-slate-900 print:min-h-0 print:bg-white">
       <a
         href="#main"
-        className="sr-only print:hidden focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-10 focus:rounded focus:bg-white focus:px-3 focus:py-2"
+        data-surface="dark"
+        className="sr-only print:hidden focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-popover focus:rounded focus:bg-white focus:px-3 focus:py-2"
       >
         Skip to content
       </a>

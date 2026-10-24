@@ -18,7 +18,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 
-/** Tailwind's colour palettes (v4), each with steps 50 to 950. */
+/** Tailwind's colour palettes (v4), each with steps 50 to 950; `neutral` also has our `neutral-0`. */
 export const PALETTES = [
   'slate',
   'gray',
@@ -75,7 +75,7 @@ const COLOUR_UTILITIES = [
  */
 const CLASS = new RegExp(
   String.raw`(?<![\w-])(?:[\w-]+:)*(?:${COLOUR_UTILITIES.join('|')})-` +
-    String.raw`(?:(?:${PALETTES.join('|')})-(?:50|[1-9]00|950)|white|black)(?:\/[\w.]+)?(?![\w-])`,
+    String.raw`(?:(?:${PALETTES.join('|')})-(?:0|50|[1-9]00|950)|white|black)(?:\/[\w.]+)?(?![\w-])`,
   'g',
 );
 

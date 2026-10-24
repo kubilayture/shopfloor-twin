@@ -41,19 +41,20 @@ Tokens are CSS custom properties defined once in `src/index.css` with Tailwind 4
 
 Slate, as today, so the change of palette is small and the existing contrast results carry over.
 
-| Token         | Hex       | Use                                                             |
-| ------------- | --------- | --------------------------------------------------------------- |
-| `neutral-0`   | `#ffffff` | Surface (cards, tables, inputs)                                 |
-| `neutral-50`  | `#f8fafc` | Sunken surface (table header, zebra, read-only field)           |
-| `neutral-100` | `#f1f5f9` | Canvas (page background)                                        |
-| `neutral-200` | `#e2e8f0` | Hairlines, row dividers, chart grid; Idle fill                  |
-| `neutral-300` | `#cbd5e1` | Card and table borders                                          |
-| `neutral-400` | `#94a3b8` | Decorative only (disabled borders); never text                  |
-| `neutral-500` | `#64748b` | Input borders, icons, the non-text 3:1 minimum; never body text |
-| `neutral-600` | `#475569` | Secondary text (labels, captions, hints)                        |
-| `neutral-700` | `#334155` | Strong secondary text; Running badge border; chart axis text    |
-| `neutral-800` | `#1e293b` | Navigation surface; hover on dark                               |
-| `neutral-900` | `#0f172a` | Primary text; top bar                                           |
+| Token         | Hex       | Use                                                              |
+| ------------- | --------- | ---------------------------------------------------------------- |
+| `neutral-0`   | `#ffffff` | Surface (cards, tables, inputs)                                  |
+| `neutral-50`  | `#f8fafc` | Sunken surface (table header, zebra, read-only field)            |
+| `neutral-100` | `#f1f5f9` | Canvas (page background)                                         |
+| `neutral-200` | `#e2e8f0` | Hairlines, row dividers, chart grid; Idle fill                   |
+| `neutral-300` | `#cbd5e1` | Card and table borders; disabled borders (`disabled-line`)       |
+| `neutral-400` | `#94a3b8` | Decorative only; never text                                      |
+| `neutral-500` | `#64748b` | Input borders, icons, the non-text 3:1 minimum; never body text  |
+| `neutral-600` | `#475569` | Secondary text (labels, captions, hints)                         |
+| `neutral-700` | `#334155` | Strong secondary text; Running badge border; chart axis text     |
+| `neutral-800` | `#1e293b` | Navigation surface; hover on dark                                |
+| `neutral-900` | `#0f172a` | Primary text; top bar                                            |
+| `neutral-950` | `#020617` | Not used; defined so Tailwind's own `neutral-950` cannot survive |
 
 Semantic aliases: `canvas` = 100, `surface` = 0, `surface-sunken` = 50, `line` = 300, `line-subtle` = 200, `line-strong` = 500, `ink` = 900, `ink-secondary` = 600, `ink-inverse` = 0.
 
@@ -212,7 +213,7 @@ The tables above give the values; these are the names `src/index.css` defines (U
 
 | Group                 | Names                                                                                                                                                                                                                    |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Neutral scale (2.1)   | `neutral-0` … `neutral-900`: the same in both themes, for the token file only; screens use the semantic names                                                                                                            |
+| Neutral scale (2.1)   | `neutral-0` … `neutral-950` (950 = `#020617`, so no Tailwind neutral survives): the same in both themes, for the token file only; screens use the semantic names                                                         |
 | Surfaces, lines, text | `canvas`, `surface`, `surface-sunken`, `surface-hover` (= `neutral-100`: a button's hover), `line`, `line-subtle`, `line-strong`, `ink`, `ink-secondary`, `ink-inverse`                                                  |
 | Disabled (4.1)        | `disabled` (fill), `disabled-line`, `disabled-ink`                                                                                                                                                                       |
 | Accent (2.2)          | `accent` (primary fill, selected tab), `accent-hover`, `on-accent` (text on the fill), `accent-subtle`, `link`, `nav-active`, `nav-active-ink`, `nav-active-bar`, `focus`, `focus-on-dark`                               |
@@ -353,7 +354,7 @@ interface IconButtonProps extends Omit<ButtonProps, 'icon' | 'children'> {
 | `lg`    | 44 px  | 18 px     | 16 px |
 | `touch` | 56 px  | 20 px     | 18 px |
 
-- **Disabled** (G-10): fill `neutral-100`, border `neutral-300`, text `neutral-600` (6.92 on `neutral-100`), `cursor: not-allowed`, no hover; never opacity. The same look for every variant, so a disabled primary never reads as enabled. When the reason is not obvious, a hint beside it says why ("Select alarms to acknowledge them").
+- **Disabled** (G-10): fill `neutral-100`, border `neutral-300`, text `neutral-600` (6.92 on `neutral-100`; the tokens `disabled`, `disabled-line`, `disabled-ink`, also for disabled form controls, 4.7), `cursor: not-allowed`, no hover; never opacity. The same look for every variant, so a disabled primary never reads as enabled. When the reason is not obvious, a hint beside it says why ("Select alarms to acknowledge them").
 - **Loading:** the label stays, a 14 px spinner replaces the icon, the button is disabled and `aria-busy="true"`; `prefers-reduced-motion` shows a static ellipsis instead of the spin.
 - **Focus:** 2 px `focus` ring, 2 px offset (section 7).
 - Buttons in a row: primary last (right), 8 px apart. Row actions in tables are `ghost` `sm`, side by side, never stacked (A-02).
@@ -506,7 +507,7 @@ interface FieldProps {
 }
 ```
 
-- Controls (`TextInput`, `Textarea`, `Select`, `Checkbox`, `Radio`, `NumberInput`): 36 px high (`md`), 56 px in the terminal (`touch`), white, 1 px `neutral-500` border (4.76:1), `radius-md`, focus ring; invalid: border `#b91c1c` plus the error text; disabled: `neutral-50` fill, `neutral-600` text. Every control gets an `id` and a `name` (G-23).
+- Controls (`TextInput`, `Textarea`, `Select`, `Checkbox`, `Radio`, `NumberInput`): 36 px high (`md`), 56 px in the terminal (`touch`), white, 1 px `neutral-500` border (4.76:1), `radius-md`, focus ring; invalid: border `#b91c1c` plus the error text; disabled: as a disabled button, `disabled` fill (`neutral-100`), `disabled-line` border (`neutral-300`), `disabled-ink` text (`neutral-600`, 6.92:1). Every control gets an `id` and a `name` (G-23).
 - `Select` is the native `<select>` styled with tokens (an arrow from `icons.tsx`), never a custom listbox: it is accessible on every platform, the e2e specs drive it with `selectOption`, and long option texts can be read (H-05: the select is as wide as its longest option up to the field's width, and the option text is shortened at the source, not cut).
 - `Checkbox`: 16 px box in a 24 px hit area, label to the right.
 - `CharacterCount` as today's comment box ("12 of 500 characters", `aria-describedby`).

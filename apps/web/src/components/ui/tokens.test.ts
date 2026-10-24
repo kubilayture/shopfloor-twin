@@ -146,7 +146,7 @@ describe('the token map and src/index.css', () => {
       /:focus-visible \{\s*outline: 2px solid var\(--color-focus\);\s*outline-offset: 2px;\s*\}/,
     );
     expect(css).toMatch(
-      /\[data-surface='dark'\] :focus-visible \{\s*outline-color: var\(--color-focus-on-dark\);\s*\}/,
+      /\[data-surface='dark'\]:focus-visible,\s*\[data-surface='dark'\] :focus-visible \{\s*outline-color: var\(--color-focus-on-dark\);\s*\}/,
     );
     expect(css).toMatch(
       /h1\[tabindex='-1'\]:focus-visible,\s*main\[tabindex='-1'\]:focus \{\s*outline: none;\s*\}/,
@@ -172,6 +172,22 @@ describe('every token as a Tailwind utility', async () => {
     const at = out.indexOf(selector);
     return at < 0 ? undefined : out.slice(at, out.indexOf('}', at));
   }
+
+  it('leaves no Tailwind default in the neutral scale: every --color-neutral-<step> is ours', () => {
+    const out = compiler.build([]);
+    const steps = [...out.matchAll(/--color-(neutral-\d+): ([^;]+);/g)].map(
+      ([, name = '', value = '']) => [name, value] as const,
+    );
+    expect(Object.fromEntries(steps)).toEqual(NEUTRAL_SCALE);
+    expect(rule('bg-neutral-950')).toContain('var(--color-neutral-950)');
+  });
+
+  it('registers --tw-duration as not inherited, so a child keeps its own transition duration', () => {
+    expect(css).toMatch(/@property --tw-duration \{\s*syntax: '\*';\s*inherits: false;\s*\}/);
+    const out = compiler.build(['duration-base', 'transition']);
+    const registered = /@property --tw-duration \{[^}]*inherits: false;[^}]*\}/.exec(out);
+    expect(registered).not.toBeNull();
+  });
 
   it('emits every @theme variable, used or not (static)', () => {
     const out = compiler.build([]);

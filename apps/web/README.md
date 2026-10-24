@@ -106,7 +106,7 @@ The screens follow `docs/ux/design-system.md` (the UX overhaul, `docs/ux/ux-plan
 
 - **Use the semantic names.** A screen on the tokens names no Tailwind palette class (`bg-slate-50`, `text-white`) and no hex colour; the raw neutral scale (`neutral-0` … `neutral-900`) is for the token file. `pnpm check:ui-tokens` (`scripts/check-ui-tokens.ts`) lists the raw colours still in `src/` per file, report only, so the migration shows its progress (UX-F3 makes it a failing check).
 - **Icons:** `src/components/ui/icons.tsx`, `<Icon name="clock" size={12|16|20|24} />`: an in-house SVG set on a 20 × 20 grid (the design system's 4.13 list and the state and priority glyphs of 2.4 and 2.5), in `currentColor`, always `aria-hidden` and not focusable: the text or accessible name beside an icon carries its meaning. No icon package.
-- **Focus:** every focusable element shows a 2 px `focus` ring 2 px off it on `:focus-visible`, in `focus-on-dark` inside an element marked `data-surface="dark"` (the top bars); the `h1` and `main` that take focus only from script after a navigation (`tabindex="-1"`) show none (G-22).
+- **Focus:** the base style gives a focusable element a 2 px `focus` ring 2 px off it on `:focus-visible`, in `focus-on-dark` inside an element marked `data-surface="dark"` (the top bars); the `h1` and `main` that take focus only from script after a navigation (`tabindex="-1"`) show none (G-22). Elements that still set their own outline keep it until their screen moves to the tokens (the terminal's buttons: a 4 px `sky-700` outline, until UX-7).
 
 ## Accessibility
 

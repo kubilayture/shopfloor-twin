@@ -38,6 +38,7 @@ export const NEUTRAL_SCALE: Readonly<Record<string, string>> = {
   'neutral-700': '#334155',
   'neutral-800': '#1e293b',
   'neutral-900': '#0f172a',
+  'neutral-950': '#020617',
 };
 
 /** Surfaces, lines and text (2.1 aliases; dark values from section 8). */

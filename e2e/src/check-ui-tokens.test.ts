@@ -26,7 +26,7 @@ function webTree(files: Record<string, string>): string {
 
 describe('rawColours', () => {
   it('finds palette classes with variants, opacity, sides, white and black', () => {
-    const source = `<div className="bg-slate-50 hover:bg-sky-100 md:focus-visible:outline-sky-700 border-t-red-700/40 text-white print:bg-black ring-offset-amber-950 divide-zinc-200" />`;
+    const source = `<div className="bg-slate-50 hover:bg-sky-100 md:focus-visible:outline-sky-700 border-t-red-700/40 text-white print:bg-black ring-offset-amber-950 divide-zinc-200 bg-neutral-0" />`;
     expect(rawColours(source).classes).toEqual([
       'bg-slate-50',
       'hover:bg-sky-100',
@@ -36,6 +36,7 @@ describe('rawColours', () => {
       'print:bg-black',
       'ring-offset-amber-950',
       'divide-zinc-200',
+      'bg-neutral-0',
     ]);
   });
 

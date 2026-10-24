@@ -222,7 +222,8 @@ describe('serial page (backward trace)', () => {
       '/quality/holds/new?kind=serial&id=VB-100-000042',
     );
     // Holds are opened and decided on #203's screen, never here.
-    expect(screen.queryAllByRole('button')).toHaveLength(1); // the header's Log out
+    // (The shell's menu, drawer close and Log out buttons are outside `main`.)
+    expect(within(screen.getByRole('main')).queryAllByRole('button')).toHaveLength(0);
     expect(screen.getByTestId('trace-unit').dataset.carton).toBe('');
   });
 

@@ -3,9 +3,10 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import { listEquipment } from '../api/client.ts';
 import { queryKeys, usePlantClock } from '../api/queries.ts';
-import { useHeadingFocus } from '../components/heading-focus.ts';
 import { QueryError } from '../components/query-error.tsx';
 import { StateBadge } from '../components/state-badge.tsx';
+import { PageHeader } from '../components/ui/page-header.tsx';
+import { Section } from '../components/ui/section.tsx';
 import { groupEquipment } from '../domain/plant.ts';
 import { isConnectionLost, newest, staleness, timeInState } from '../domain/states.ts';
 import { formatDuration, formatPlantTime } from '../domain/time.ts';
@@ -82,7 +83,6 @@ function MachineCard({
 }
 
 export function Overview() {
-  const heading = useHeadingFocus<HTMLHeadingElement>();
   const equipment = useQuery({
     queryKey: queryKeys.equipmentList,
     queryFn: ({ signal }) => listEquipment(signal),
@@ -93,12 +93,15 @@ export function Overview() {
 
   return (
     <section aria-labelledby="overview-title">
-      <h1 ref={heading} id="overview-title" tabIndex={-1} className="text-2xl font-bold">
-        Plant overview
-      </h1>
-      {equipment.isPending ? <p className="mt-4">Loading equipment…</p> : null}
+      <PageHeader
+        id="overview-title"
+        title="Plant overview"
+        size="dashboard"
+        description="Every machine's state as it reports it, by area and work center."
+      />
+      {equipment.isPending ? <p>Loading equipment…</p> : null}
       {equipment.isError ? (
-        <div className="mt-4">
+        <div>
           <QueryError
             what="the equipment"
             error={equipment.error}
@@ -106,34 +109,28 @@ export function Overview() {
           />
         </div>
       ) : null}
-      {equipment.data?.length === 0 ? (
-        <p className="mt-4">No equipment yet: master data is not seeded.</p>
-      ) : null}
-      {groupEquipment(equipment.data ?? []).map((area) => (
-        <section key={area.id} aria-labelledby={`area-${area.id}`} className="mt-6">
-          <h2 id={`area-${area.id}`} className="text-xl font-semibold">
-            {area.name}
-          </h2>
-          {area.workCenters.map((center) => (
-            <section key={center.id} aria-labelledby={`wc-${center.id}`} className="mt-3">
-              <h3 id={`wc-${center.id}`} className="text-base font-medium text-slate-700">
-                {center.name}
-              </h3>
-              <ul className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {center.equipment.map((item) => (
-                  <MachineCard
-                    key={item.id}
-                    equipment={item}
-                    current={newest(item.current, live?.states[item.id])}
-                    clock={clock}
-                    connectionLost={connectionLost}
-                  />
-                ))}
-              </ul>
-            </section>
-          ))}
-        </section>
-      ))}
+      {equipment.data?.length === 0 ? <p>No equipment yet: master data is not seeded.</p> : null}
+      <div>
+        {groupEquipment(equipment.data ?? []).map((area) => (
+          <Section key={area.id} id={`area-${area.id}`} title={area.name}>
+            {area.workCenters.map((center) => (
+              <Section key={center.id} level={3} id={`wc-${center.id}`} title={center.name}>
+                <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {center.equipment.map((item) => (
+                    <MachineCard
+                      key={item.id}
+                      equipment={item}
+                      current={newest(item.current, live?.states[item.id])}
+                      clock={clock}
+                      connectionLost={connectionLost}
+                    />
+                  ))}
+                </ul>
+              </Section>
+            ))}
+          </Section>
+        ))}
+      </div>
     </section>
   );
 }

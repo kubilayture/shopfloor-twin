@@ -9,6 +9,7 @@ import { rootRoute } from './root.tsx';
 export const overviewRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
+  staticData: { title: 'Plant overview' },
   component: Overview,
 });
 
@@ -22,6 +23,7 @@ export const detailRoute = createRoute({
   validateSearch: (search: Record<string, unknown>): DetailSearch => ({
     range: isRangeKey(search.range) ? search.range : '8h',
   }),
+  staticData: { title: ({ id }) => `Machine ${id ?? ''}` },
   component: MachineDetail,
 });
 

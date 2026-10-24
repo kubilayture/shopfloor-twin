@@ -27,18 +27,21 @@ export const loginRoute = createRoute({
       ? (search.reason as LoginReason)
       : undefined,
   }),
+  staticData: { title: 'Log in' },
   component: Login,
 });
 
 export const accountRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/account',
+  staticData: { title: 'Account' },
   component: Account,
 });
 
 export const usersRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/admin/users',
+  staticData: { title: 'Users' },
   component: Users,
 });
 

@@ -8,6 +8,7 @@ import { rootRoute } from './root.tsx';
 export const shiftListRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/shifts',
+  staticData: { title: 'Shift reports' },
   component: ShiftList,
 });
 
@@ -26,6 +27,7 @@ export const shiftReportRoute = createRoute({
         typeof epoch === 'number' && Number.isSafeInteger(epoch) && epoch >= 0 ? epoch : undefined,
     };
   },
+  staticData: { title: ({ date, shift }) => `Shift report ${date ?? ''} ${shift ?? ''}` },
   component: ShiftReport,
 });
 

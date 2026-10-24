@@ -366,6 +366,11 @@
   main[tabindex='-1']:focus {
     outline: none;
   }
+
+  /* The page behind the open nav drawer does not scroll (UX-1b, #316). */
+  html[data-nav-open] {
+    overflow: hidden;
+  }
 }
 
 /*

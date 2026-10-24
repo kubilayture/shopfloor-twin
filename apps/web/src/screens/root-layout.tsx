@@ -295,7 +295,7 @@ function SideNav({
       // Closed below `xl`: off screen and out of the focus order and the accessibility tree.
       inert={!wide && !open}
       className={[
-        'fixed inset-y-0 left-0 z-nav flex w-72 max-w-[85vw] flex-col overflow-y-auto bg-nav pb-6 text-nav-ink',
+        'fixed inset-y-0 left-0 z-nav flex w-72 max-w-[85vw] flex-col overflow-y-auto overscroll-contain bg-nav pb-6 text-nav-ink',
         'motion-safe:transition-transform motion-safe:duration-base motion-safe:ease-standard',
         'xl:top-12 xl:w-58 xl:max-w-none xl:translate-x-0 xl:shadow-none xl:transition-none',
         'print:hidden',
@@ -393,6 +393,32 @@ export function RootLayout() {
     }
   }, [drawer]);
 
+  // Narrowing to the drawer layout (a resize, a 200 % zoom) with the focus on a nav link: the nav
+  // turns inert under it, so the focus goes to the menu button rather than to the page's body. A
+  // layout effect: the browser moves a focus out of an inert element only after this commit.
+  const wasWide = useRef(wide);
+  useLayoutEffect(() => {
+    if (
+      wasWide.current &&
+      !wide &&
+      document.getElementById(NAV_ID)?.contains(document.activeElement)
+    ) {
+      menuRef.current?.focus();
+    }
+    wasWide.current = wide;
+  }, [wide]);
+
+  // The page behind an open drawer does not scroll (`html[data-nav-open]` in `index.css`); undone
+  // when it closes, on a widening and on unmount.
+  useEffect(() => {
+    if (!drawer) return;
+    const root = document.documentElement;
+    root.dataset.navOpen = '';
+    return () => {
+      delete root.dataset.navOpen;
+    };
+  }, [drawer]);
+
   // Escape anywhere closes the open drawer (the focus is in it, but a click may have moved it).
   useEffect(() => {
     if (!drawer) return;
@@ -409,6 +435,7 @@ export function RootLayout() {
     <div className="min-h-screen bg-canvas text-ink print:min-h-0 print:bg-surface">
       <a
         href="#main"
+        inert={drawer}
         data-surface="dark"
         className="sr-only print:hidden focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-popover focus:rounded-md focus:bg-surface focus:px-3 focus:py-2 focus:text-ink"
       >
@@ -466,9 +493,15 @@ export function RootLayout() {
           setOpen(false);
         }}
       />
-      <div className="xl:pl-58 print:pl-0" inert={drawer}>
+      {/* Only `main` is inert under the drawer: the offline alert is still announced. */}
+      <div className="xl:pl-58 print:pl-0">
         <OfflineBar />
-        <main id="main" tabIndex={-1} className="px-4 py-6 md:px-6 xl:px-8 print:p-0">
+        <main
+          id="main"
+          tabIndex={-1}
+          inert={drawer}
+          className="px-4 py-6 md:px-6 xl:px-8 print:p-0"
+        >
           <div className="mx-auto w-full max-w-360 print:max-w-none">
             <Outlet />
           </div>

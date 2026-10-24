@@ -1,6 +1,7 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EQUIPMENT, PLANT, fakeFetch, json, sessionOf } from '../test/fixtures.ts';
+import { network, resetNetwork } from '../test/network.ts';
 import { renderApp, settle } from '../test/render-app.tsx';
 import { formatPlantTime } from '../domain/time.ts';
 import { NAV_GROUPS, navCurrent } from './root-layout.tsx';
@@ -37,6 +38,7 @@ function stubWidth(wide: boolean) {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  resetNetwork();
 });
 
 const nav = () => screen.getByRole('navigation', { name: 'Screens' });
@@ -214,15 +216,96 @@ describe('the nav drawer below xl', () => {
     expect(document.activeElement).toBe(
       within(drawer).getByRole('button', { name: 'Close the navigation' }),
     );
-    // The rest of the page is inert while it is open.
+    // The rest of the page is inert while it is open: every focusable element outside the drawer,
+    // the skip link before it included, so Tab and Shift+Tab stay in the drawer.
     expect(screen.getByRole('banner').hasAttribute('inert')).toBe(true);
-    expect(document.getElementById('main')?.parentElement?.hasAttribute('inert')).toBe(true);
+    expect(screen.getByRole('main').hasAttribute('inert')).toBe(true);
+    expect(screen.getByRole('link', { name: 'Skip to content' }).hasAttribute('inert')).toBe(true);
+    const focusable = [
+      ...document.querySelectorAll<HTMLElement>(
+        'a[href], button, input, select, textarea, [tabindex]',
+      ),
+    ].filter((element) => !drawer.contains(element));
+    expect(focusable.length).toBeGreaterThan(5);
+    expect(focusable.filter((element) => element.closest('[inert]') === null)).toEqual([]);
 
     fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
     expect(menu.getAttribute('aria-expanded')).toBe('false');
     expect(drawer.hasAttribute('inert')).toBe(true);
     expect(screen.getByRole('banner').hasAttribute('inert')).toBe(false);
+    expect(screen.getByRole('main').hasAttribute('inert')).toBe(false);
+    expect(screen.getByRole('link', { name: 'Skip to content' }).hasAttribute('inert')).toBe(false);
     expect(document.activeElement).toBe(menu);
+  });
+
+  it('keeps the offline alert announced while the drawer is open', async () => {
+    stubWidth(false);
+    const net = network(fakeFetch(api));
+    vi.stubGlobal('fetch', net.fetch);
+    const app = await renderApp('/');
+    await app.open();
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+    await net.cut();
+    const bar = screen.getByTestId('offline-bar');
+    expect(bar.getAttribute('role')).toBe('alert');
+    expect(bar.closest('[inert]')).toBeNull();
+    expect(screen.getByRole('main').hasAttribute('inert')).toBe(true);
+    await net.restore();
+  });
+
+  it('locks the page scroll while open, and frees it on close, widening and unmount', async () => {
+    const width = stubWidth(false);
+    vi.stubGlobal('fetch', fakeFetch(api));
+    const view = await renderApp('/');
+    const root = document.documentElement;
+    const menu = screen.getByRole('button', { name: 'Menu' });
+    expect(nav().className).toContain('overscroll-contain');
+    expect(root.hasAttribute('data-nav-open')).toBe(false);
+
+    fireEvent.click(menu);
+    expect(root.hasAttribute('data-nav-open')).toBe(true);
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(root.hasAttribute('data-nav-open')).toBe(false);
+
+    fireEvent.click(menu);
+    expect(root.hasAttribute('data-nav-open')).toBe(true);
+    await settle(() => {
+      width.resize(true);
+    });
+    expect(root.hasAttribute('data-nav-open')).toBe(false);
+    await settle(() => {
+      width.resize(false);
+    });
+
+    fireEvent.click(menu);
+    expect(root.hasAttribute('data-nav-open')).toBe(true);
+    view.unmount();
+    expect(root.hasAttribute('data-nav-open')).toBe(false);
+  });
+
+  it('gives the focus to the menu button when the layout narrows under a focused nav link', async () => {
+    const width = stubWidth(true);
+    vi.stubGlobal('fetch', fakeFetch(api));
+    await renderApp('/');
+    const link = screen.getByTestId('nav-orders');
+    link.focus();
+    expect(document.activeElement).toBe(link);
+    await settle(() => {
+      width.resize(false);
+    });
+    expect(nav().hasAttribute('inert')).toBe(true);
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Menu' }));
+
+    // Focus elsewhere stays where it is.
+    await settle(() => {
+      width.resize(true);
+    });
+    const account = screen.getByTestId('nav-account');
+    account.focus();
+    await settle(() => {
+      width.resize(false);
+    });
+    expect(document.activeElement).toBe(account);
   });
 
   it('closes by the backdrop, by its close button and by following a link', async () => {

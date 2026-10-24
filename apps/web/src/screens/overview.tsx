@@ -114,11 +114,8 @@ export function Overview() {
         {groupEquipment(equipment.data ?? []).map((area) => (
           <Section key={area.id} id={`area-${area.id}`} title={area.name}>
             {area.workCenters.map((center) => (
-              <section key={center.id} aria-labelledby={`wc-${center.id}`} className="mt-3">
-                <h3 id={`wc-${center.id}`} className="text-base font-medium text-ink-secondary">
-                  {center.name}
-                </h3>
-                <ul className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <Section key={center.id} level={3} id={`wc-${center.id}`} title={center.name}>
+                <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   {center.equipment.map((item) => (
                     <MachineCard
                       key={item.id}
@@ -129,7 +126,7 @@ export function Overview() {
                     />
                   ))}
                 </ul>
-              </section>
+              </Section>
             ))}
           </Section>
         ))}

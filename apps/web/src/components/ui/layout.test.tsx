@@ -184,6 +184,28 @@ describe('Section (design system 3.4)', () => {
     expect(region.className).toContain('mt-8');
   });
 
+  it('nests by level: an h3 and an h4 with their smaller headings and spacing', () => {
+    render(
+      <Section title="Machining">
+        <Section title="Cell M1" level={3} testId="cell">
+          <Section title="Spindle" level={4} testId="spindle">
+            <p>content</p>
+          </Section>
+        </Section>
+      </Section>,
+    );
+    const cell = screen.getByRole('region', { name: 'Cell M1' });
+    const h3 = within(cell).getByRole('heading', { level: 3, name: 'Cell M1' });
+    expect(h3.className).toContain('text-base');
+    expect(cell.className).toContain('mt-6');
+    const spindle = screen.getByRole('region', { name: 'Spindle' });
+    expect(within(spindle).getByRole('heading', { level: 4 }).className).toContain('text-sm');
+    expect(spindle.className).toContain('mt-4');
+    expect(screen.getByRole('heading', { level: 2, name: 'Machining' }).className).toContain(
+      'text-lg',
+    );
+  });
+
   it('labels itself by a generated id without one', () => {
     render(
       <Section title="Lines">

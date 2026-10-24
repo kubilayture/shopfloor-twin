@@ -4,7 +4,9 @@ import { SVGRenderer } from 'echarts/renderers';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ECHARTS_MODULES } from './echarts-modules.ts';
 import { limitVersion, point, signal } from '../test/quality-fixtures.ts';
+import { themedOption } from './echarts-view.tsx';
 import { RULE_LANE, spcChartOption, type SpcChartInput } from './spc-options.ts';
+import { echartsTheme, readTokens } from './theme.ts';
 
 // The SPC chart as ECharts draws it (#308, C-03): a real instance (not SSR, which never animates)
 // on the SVG renderer in jsdom, given the option as EChartsView gives it (animation on, as without
@@ -12,6 +14,9 @@ import { RULE_LANE, spcChartOption, type SpcChartInput } from './spc-options.ts'
 // drawn at once and after each update: the line's intro animation used to draw the markers from
 // scale 0, each delayed by its place on the time axis, so a screenshot, a print or a look taken in
 // the first ~1.5 s after a load, a window switch or a resize showed the later points as a bare line.
+// Most cases keep the stricter set-up (animation on, no theme: the builder's option alone must draw
+// every marker); the last one draws the chart as it ships (UX-1f, #320): in the theme `shopfloor`
+// with the option `EChartsView` sets (`themedOption`: tokens resolved, no animation, rich text).
 
 // The app's own modules (echarts-view.tsx registers the same list on a canvas).
 registerModules([...ECHARTS_MODULES, SVGRenderer]);
@@ -183,4 +188,34 @@ describe('SPC chart rendering (#308)', () => {
     chart.resize({ width: 900, height: 240 });
     expect(markers(chart)).toEqual({ count: 2000, shown: 2000 });
   });
+
+  it.each([1440, 390])(
+    'draws the shipped, themed chart at %i px: every marker, hollow and diamond, labels apart',
+    (width) => {
+      const read = readTokens();
+      chart = init(document.createElement('div'), echartsTheme(read, 'system-ui'), {
+        renderer: 'svg',
+        width,
+        height: 240,
+      });
+      const drawn = input('I', 500);
+      chart.setOption(themedOption(spcChartOption(drawn), read), { notMerge: true });
+      expect(markers(chart)).toEqual({ count: 500, shown: 500 });
+      const model = (chart as unknown as { getModel(): EChartsModel }).getModel();
+      const data = model.getSeriesByName('Points')[0]?.getData();
+      const symbols = drawn.points.map((_, i) => data?.getItemGraphicEl(i)?.getSymbolType());
+      expect(symbols.filter((s) => s === 'emptyCircle')).toHaveLength(5);
+      expect(symbols.filter((s) => s === 'diamond')).toHaveLength(10);
+      const shown = laneLabels(chart).filter((l) => !l.hidden);
+      for (const [i, a] of shown.entries()) {
+        for (const b of shown.slice(i + 1)) expect(a.rect.intersect(b.rect)).toBe(false);
+      }
+      const svg = chart.renderToSVGString();
+      expect(svg).not.toContain('var(');
+      expect(svg).toContain('#b91c1c');
+      // A live update, as EChartsView applies it, still draws every marker.
+      chart.setOption(themedOption(spcChartOption(input('I', 501)), read), { notMerge: true });
+      expect(markers(chart)).toEqual({ count: 501, shown: 501 });
+    },
+  );
 });

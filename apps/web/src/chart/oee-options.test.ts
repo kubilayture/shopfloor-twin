@@ -18,8 +18,8 @@ describe('chart options', () => {
     ]);
     const [bars] = series(option);
     expect(bars?.data).toEqual([
-      { value: 0.63, itemStyle: { color: CHART_COLORS.final }, label: '0.6300' },
-      { value: null, itemStyle: { color: CHART_COLORS.provisional }, label: 'n/a' },
+      { value: 0.63, itemStyle: { color: CHART_COLORS.final } },
+      { value: null, itemStyle: { color: CHART_COLORS.provisional } },
     ]);
     expect(bars?.label?.formatter({ dataIndex: 1 })).toBe('n/a');
     expect((option.xAxis as { data: string[] }).data).toEqual(['06:00', '07:00']);

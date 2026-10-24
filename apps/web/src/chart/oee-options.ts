@@ -4,12 +4,17 @@ import { formatClockTime, formatPlantTimeMinutes } from '../domain/time.ts';
 import {
   minutesText,
   percentText,
-  ratioText,
   stepSign,
   type Waterfall,
   type WaterfallStep,
 } from '../domain/oee.ts';
-import { CATEGORY_LABEL_WIDTH, CHART_SIZES, CHART_TOKENS, MAX_VALUE_LABELS } from './theme.ts';
+import {
+  CATEGORY_LABEL_WIDTH,
+  CHART_SIZES,
+  CHART_TOKENS,
+  MAX_VALUE_LABELS,
+  NARROW_CHART_WIDTH,
+} from './theme.ts';
 
 /**
  * ECharts options for the OEE dashboard, built as plain data (tested without a canvas). Values
@@ -50,6 +55,9 @@ export const wrappedLabel = {
   ellipsis: '…',
 } as const;
 
+/** The category label column of a horizontal bar chart on a narrow screen (px). */
+export const NARROW_LABEL_WIDTH = 112;
+
 /** The ratio axis (0 to 1 as the API sends it) in per cent, the unit as its name. */
 const percentAxisLabel = { formatter: (value: number) => String(Math.round(value * 100)) };
 
@@ -60,7 +68,6 @@ export function hourlyOption(hours: readonly OeeBucketDto[]): EChartsCoreOption 
     return {
       value: oee ? Number(oee.decimal) : null,
       itemStyle: { color: hour.final ? CHART_COLORS.final : CHART_COLORS.provisional },
-      label: ratioText(oee),
     };
   });
   return {
@@ -144,8 +151,20 @@ const STEP_COLOR: Readonly<Record<string, string>> = {
   productive: CHART_COLORS.total,
 };
 
-const stepColor = (step: WaterfallStep): string =>
-  step.kind === 'gain' ? CHART_COLORS.gain : (STEP_COLOR[step.key] ?? CHART_COLORS.total);
+/** External loss as the `neutral` outline (`LossBadge`): a light fill with a 1 px edge. */
+export const EXTERNAL_STYLE = {
+  color: CHART_COLORS.external,
+  borderColor: CHART_TOKENS.externalEdge,
+  borderWidth: 1,
+} as const;
+
+const stepStyle = (step: WaterfallStep) =>
+  step.key === 'external'
+    ? EXTERNAL_STYLE
+    : {
+        color:
+          step.kind === 'gain' ? CHART_COLORS.gain : (STEP_COLOR[step.key] ?? CHART_COLORS.total),
+      };
 
 const SHORT_LABEL: Readonly<Record<string, string>> = {
   pbt: 'PBT',
@@ -199,7 +218,7 @@ export function waterfallOption(waterfall: Waterfall): EChartsCoreOption {
         barMaxWidth: 48,
         data: steps.map((step) => ({
           value: minutes(step.to - step.from),
-          itemStyle: { color: stepColor(step) },
+          itemStyle: stepStyle(step),
         })),
         label: {
           show: steps.length <= MAX_VALUE_LABELS,
@@ -210,6 +229,8 @@ export function waterfallOption(waterfall: Waterfall): EChartsCoreOption {
             return stepText(step).replace(' min', '');
           },
         },
+        // Narrow screens: a label that would run into its neighbour is left out (the table has it).
+        labelLayout: { hideOverlap: true },
       },
     ],
   };
@@ -275,8 +296,20 @@ export function paretoOption(
           name: 'External',
           stack: 'loss',
           barMaxWidth: 24,
-          itemStyle: { color: CHART_COLORS.external },
+          itemStyle: EXTERNAL_STYLE,
           data: external,
+        },
+      ],
+      // Narrow screens (section 5): a narrower label column, so the bars keep their room, and
+      // fewer ticks, so none is hidden and the axis still starts at 0. ECharts takes the root
+      // option as the base and applies this when the chart is at most 480 px wide.
+      media: [
+        {
+          query: { maxWidth: NARROW_CHART_WIDTH },
+          option: {
+            yAxis: { axisLabel: { width: NARROW_LABEL_WIDTH } },
+            xAxis: { splitNumber: 3 },
+          },
         },
       ],
     },

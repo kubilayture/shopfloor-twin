@@ -7,15 +7,44 @@ import { colorValue, FONTS, type Theme } from '../components/ui/tokens.ts';
  * The option builders (`oee-options.ts`, `alarm-options.ts`, `spc-options.ts`) stay plain data:
  * they name colours as token references (`var(--color-chart-1)`), never as values. The views
  * resolve every reference against the stylesheet when they draw (`getComputedStyle` on `<html>`),
- * so the canvases follow the tokens, and repaint when the theme on `<html>` changes (`data-theme`,
- * UX-12; also the light re-theme UX-12 does on `beforeprint`). Before the stylesheet is in, or in
- * jsdom, a token reads its value from `components/ui/tokens.ts`.
+ * so the canvases follow the tokens, and repaint when `data-theme` on `<html>` changes (UX-12).
+ * That repaint runs after the change (a MutationObserver, then a React effect), so it is too late
+ * for the print snapshot, which `EChartsView` takes synchronously on `beforeprint`: a print in the
+ * dark theme needs the snapshot built from light-resolved tokens (left to UX-12, #336). Before
+ * the stylesheet is in, or in jsdom, a token reads its value from `components/ui/tokens.ts`.
  */
 
-/** A colour token as the options name it: `var(--color-<name>)`, resolved when drawn. */
-export type TokenRef = `var(--color-${string})`;
+/**
+ * The colour tokens the charts draw with (section 2 names; `theme.test.ts` checks that each is a
+ * token of `tokens.ts`): a misspelt name is a type error, not a colour missing at run time.
+ */
+export const CHART_TOKEN_NAMES = [
+  'chart-1',
+  'chart-2',
+  'chart-3',
+  'chart-4',
+  'chart-5',
+  'chart-other',
+  'chart-limit',
+  'line-strong',
+  'line',
+  'line-subtle',
+  'ink',
+  'ink-secondary',
+  'surface',
+  'warn-border',
+  'neutral-border',
+  'alarm-border',
+  'info-border',
+  'neutral-900',
+] as const;
 
-export const tokenRef = (name: string): TokenRef => `var(--color-${name})`;
+export type ChartTokenName = (typeof CHART_TOKEN_NAMES)[number];
+
+/** A colour token as the options name it: `var(--color-<name>)`, resolved when drawn. */
+export type TokenRef = `var(--color-${ChartTokenName})`;
+
+export const tokenRef = (name: ChartTokenName): TokenRef => `var(--color-${name})`;
 
 /** The theme's colours by role (section 5): what every chart draws with. */
 export const CHART_TOKENS = {
@@ -40,10 +69,14 @@ export const CHART_TOKENS = {
   grid: tokenRef('line-subtle'),
   surface: tokenRef('surface'),
   border: tokenRef('line'),
-  /** Own availability loss (`LossBadge`'s `warn`) and external (its `neutral`). */
+  /**
+   * Own availability loss (`LossBadge`'s `warn`) and external (its `neutral` outline: a `line`
+   * fill with a `neutral-border` edge, so it never reads as a total).
+   */
   own: tokenRef('warn-border'),
-  external: tokenRef('neutral-border'),
-  /** SPC: a signalling point (`alarm`) and a retest (`info`). */
+  external: tokenRef('line'),
+  externalEdge: tokenRef('neutral-border'),
+  /** SPC: a signalling point (`alarm`) and a retest (`info`); also episode shades by state. */
   signal: tokenRef('alarm-border'),
   info: tokenRef('info-border'),
   /** The shadow of the tooltip (elevation 2 is ink at 12 %). */
@@ -67,6 +100,9 @@ export const MAX_VALUE_LABELS = 12;
 
 /** Reads a token's current value by name (`chart-1`, `ink-secondary`). */
 export type TokenReader = (name: string) => string;
+
+/** Below this chart width (px) the narrow layout applies (section 5 "Narrow screens"). */
+export const NARROW_CHART_WIDTH = 480;
 
 const themeOf = (root: HTMLElement): Theme => (root.dataset.theme === 'dark' ? 'dark' : 'light');
 
@@ -214,19 +250,22 @@ export function uplotTheme(read: TokenReader, font: string) {
 }
 
 /**
- * A number that changes whenever the theme on `<html>` changes (`data-theme`, `class`),
- * so a chart redraws with the tokens' new values.
+ * A number that changes whenever `data-theme` on `<html>` takes a new value (UX-12), so a chart
+ * redraws with the tokens' new values. Nothing else on `<html>` counts: a class added by an
+ * extension or a utility must not rebuild every chart.
  */
 export function useThemeVersion(): number {
   const [version, setVersion] = useState(0);
   useEffect(() => {
+    const root = document.documentElement;
+    let last = root.getAttribute('data-theme');
     const observer = new MutationObserver(() => {
+      const current = root.getAttribute('data-theme');
+      if (current === last) return;
+      last = current;
       setVersion((v) => v + 1);
     });
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ['data-theme', 'class'],
-    });
+    observer.observe(root, { attributes: true, attributeFilter: ['data-theme'] });
     return () => {
       observer.disconnect();
     };

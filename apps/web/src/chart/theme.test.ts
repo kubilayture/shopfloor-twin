@@ -2,7 +2,9 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { init, use as registerModules, type EChartsType } from 'echarts/core';
 import { SVGRenderer } from 'echarts/renderers';
+import { act, renderHook } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { COLOR_TOKENS, NEUTRAL_SCALE } from '../components/ui/tokens.ts';
 import { waterfall } from '../domain/oee.ts';
 import { hourKpi } from '../test/alarm-fixtures.ts';
 import { emptyResult, hourBucket, PARETO, result } from '../test/oee-fixtures.ts';
@@ -11,21 +13,25 @@ import { alarmHourlyOption, alarmHourlyReading } from './alarm-options.ts';
 import { ECHARTS_MODULES } from './echarts-modules.ts';
 import { themedOption } from './echarts-view.tsx';
 import {
+  EXTERNAL_STYLE,
   hourlyOption,
   hourlyReading,
+  NARROW_LABEL_WIDTH,
   paretoOption,
   paretoReading,
   waterfallOption,
   waterfallReading,
 } from './oee-options.ts';
-import { spcChartOption } from './spc-options.ts';
+import { CENTRE_DASH, SPC_COLORS, spcChartOption } from './spc-options.ts';
 import {
+  CHART_TOKEN_NAMES,
   CHART_TOKENS,
   echartsTheme,
   readTokens,
   resolveTokens,
   tokenRef,
   uplotTheme,
+  useThemeVersion,
   withAlpha,
 } from './theme.ts';
 import { options as uplotOptions } from './uplot-chart.tsx';
@@ -242,9 +248,76 @@ describe('chart theme (UX-1f, design system section 5)', () => {
     const byName = (name: string) => series.find((s) => s.name === name)?.lineStyle;
     expect(byName('UCL')).toEqual({ color: CHART_TOKENS.limit, type: 'dashed', width: 1.5 });
     expect(byName('LCL')).toEqual({ color: CHART_TOKENS.limit, type: 'dashed', width: 1.5 });
-    expect(byName('Centre')).toEqual({ color: CHART_TOKENS.text, width: 1 });
+    // The centre long-dashed and the join light: the two never read as one line.
+    expect(byName('Centre')).toEqual({ color: CHART_TOKENS.text, type: [12, 4], width: 1.5 });
+    expect(CENTRE_DASH).toEqual([12, 4]);
+    expect(byName('Points')).toEqual({ color: tokenRef('line'), width: 1 });
+    // Episode shades by state, never the categorical palette.
+    expect([
+      SPC_COLORS.episodeFinal,
+      SPC_COLORS.episodeProvisional,
+      SPC_COLORS.episodeGrowing,
+    ]).toEqual([tokenRef('alarm-border'), tokenRef('warn-border'), tokenRef('info-border')]);
     expect(byName('+1σ')).toMatchObject({ color: CHART_TOKENS.grid, type: 'dotted' });
     expect(OPTIONS.spc.legend).toMatchObject({ left: 0, itemWidth: 16 });
+  });
+
+  it('names only real tokens (a typo is a type error, and this catches a removed token)', () => {
+    const known = new Set([...COLOR_TOKENS.map((t) => t.name), ...Object.keys(NEUTRAL_SCALE)]);
+    for (const name of CHART_TOKEN_NAMES) expect(known.has(name), name).toBe(true);
+  });
+
+  it('draws external loss as the neutral outline, apart from the totals', () => {
+    interface Styled {
+      data: ({ itemStyle: unknown } | number | null)[];
+      itemStyle?: unknown;
+    }
+    const [, visible] = OPTIONS.waterfall.series as Styled[];
+    const external = steps.steps.findIndex((step) => step.key === 'external');
+    const pbt = steps.steps.findIndex((step) => step.key === 'pbt');
+    const style = (i: number) => (visible?.data[i] as { itemStyle: unknown }).itemStyle;
+    expect(style(external)).toEqual({
+      color: tokenRef('line'),
+      borderColor: tokenRef('neutral-border'),
+      borderWidth: 1,
+    });
+    expect(style(pbt)).toEqual({ color: tokenRef('chart-other') });
+    const [, paretoExternal] = OPTIONS.pareto.series as Styled[];
+    expect(paretoExternal?.itemStyle).toBe(EXTERNAL_STYLE);
+  });
+
+  it('lays out narrow charts (section 5): the Pareto label column and ticks, no crowded labels', () => {
+    expect(OPTIONS.pareto.media).toEqual([
+      {
+        query: { maxWidth: 480 },
+        option: { yAxis: { axisLabel: { width: NARROW_LABEL_WIDTH } }, xAxis: { splitNumber: 3 } },
+      },
+    ]);
+    const [, visible] = OPTIONS.waterfall.series as { labelLayout?: unknown }[];
+    expect(visible?.labelLayout).toEqual({ hideOverlap: true });
+    const [bars] = OPTIONS.hourly.series as { labelLayout?: unknown }[];
+    expect(bars?.labelLayout).toEqual({ hideOverlap: true });
+  });
+
+  it('redraws on a new data-theme only, not on other changes to <html>', async () => {
+    const { result: version } = renderHook(() => useThemeVersion());
+    const root = document.documentElement;
+    const flush = () =>
+      act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    root.dataset.theme = 'dark';
+    await flush();
+    expect(version.current).toBe(1);
+    // The same value again, or a class an extension adds: no redraw.
+    root.dataset.theme = 'dark';
+    root.classList.add('some-extension');
+    await flush();
+    expect(version.current).toBe(1);
+    root.dataset.theme = 'light';
+    await flush();
+    expect(version.current).toBe(2);
+    root.classList.remove('some-extension');
   });
 
   it('states the main reading of each chart for its text alternative', () => {
@@ -327,6 +400,39 @@ describe('chart theme (UX-1f, design system section 5)', () => {
       expect(svg).not.toContain('var(');
       // No zero label, and the n/a hour has no bar: one bar label only.
       expect(svg.match(/63\.00 %/g)).toHaveLength(1);
+    });
+
+    it.each([
+      [390, NARROW_LABEL_WIDTH, 3],
+      [900, 180, 5],
+    ])('draws the Pareto at %i px with a %i px label column, from 0', (width, labels, ticks) => {
+      chart = init(document.createElement('div'), echartsTheme(read, FONT), {
+        renderer: 'svg',
+        width,
+        height: 200,
+      });
+      const pareto = paretoOption({
+        reasons: [
+          {
+            reason: 'A',
+            name: 'Blocked by the downstream station',
+            loss: 'external',
+            ms: 13_400_000,
+            records: 62,
+          },
+          { reason: 'B', name: 'Chip jam', loss: 'own', ms: 390_000, records: 2 },
+        ],
+      });
+      chart.setOption(themedOption(pareto.option, read), { notMerge: true });
+      interface Axis {
+        get(path: string[]): unknown;
+      }
+      const model = (
+        chart as unknown as { getModel(): { getComponent(t: string): Axis } }
+      ).getModel();
+      expect(model.getComponent('yAxis').get(['axisLabel', 'width'])).toBe(labels);
+      expect(model.getComponent('xAxis').get(['splitNumber'])).toBe(ticks);
+      expect(chart.renderToSVGString()).toMatch(/>0<\/text>/);
     });
   });
 });

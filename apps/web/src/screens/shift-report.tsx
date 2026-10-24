@@ -9,7 +9,7 @@ import {
 } from '@shopfloor/contracts/mes-api';
 import { skipToken, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router';
-import { useEffect, useId, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useRef, type ReactNode } from 'react';
 import {
   getReasonCodes,
   getShiftReport,
@@ -501,7 +501,12 @@ function DowntimeSection({
   readonly names: ReadonlyMap<string, string>;
 }) {
   const { downtime } = report;
-  const pareto = downtime.reasons.length > 0 ? paretoOption({ reasons: downtime.reasons }) : null;
+  // Memoised on the reasons: the same option across unrelated re-renders (a new one redraws the
+  // chart and drops an open tooltip).
+  const pareto = useMemo(
+    () => (downtime.reasons.length > 0 ? paretoOption({ reasons: downtime.reasons }) : null),
+    [downtime.reasons],
+  );
   return (
     <section
       aria-labelledby="report-downtime-title"
@@ -542,7 +547,7 @@ function DowntimeSection({
           ) : null}
         </dd>
       </dl>
-      <div className="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-2 print:block">
+      <div className="mt-3 grid grid-cols-1 items-start gap-4 lg:grid-cols-2 print:block">
         <EChart
           testId="report-pareto-chart"
           title="Availability loss by reason"

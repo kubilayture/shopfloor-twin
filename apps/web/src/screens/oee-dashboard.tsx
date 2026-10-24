@@ -7,7 +7,7 @@ import {
 } from '@shopfloor/contracts/mes-api';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearch } from '@tanstack/react-router';
-import { useEffect, useId, useRef } from 'react';
+import { useEffect, useId, useMemo, useRef } from 'react';
 import { getOee, getPareto, getShiftOee, listEquipment, type OeeScope } from '../api/client.ts';
 import { queryKeys } from '../api/queries.ts';
 import { EChart } from '../chart/echart.tsx';
@@ -369,19 +369,27 @@ function HourlyChart({
   // Only the hour the clock is in is pushed; earlier hours come from REST, read again when the
   // clock moves into a new hour (live-cache).
   const pushed = useLiveOee(id)?.hour;
-  const byKey = new Map((hours.data?.buckets ?? []).map((bucket) => [bucket.key, bucket]));
-  if (pushed) {
-    const at = Date.parse(pushed.start);
-    const shown = at >= start && at < end ? pickBucket(byKey.get(pushed.key), pushed) : undefined;
-    if (shown) byKey.set(shown.key, shown);
-  }
-  const rows = [...byKey.values()].sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
+  // Built again only when the data changes: a new option redraws the chart (`notMerge`), which
+  // drops an open tooltip, so an unrelated re-render must hand the chart the same option.
+  const { rows, option } = useMemo(() => {
+    const byKey = new Map((hours.data?.buckets ?? []).map((bucket) => [bucket.key, bucket]));
+    if (pushed) {
+      const at = Date.parse(pushed.start);
+      const shown = at >= start && at < end ? pickBucket(byKey.get(pushed.key), pushed) : undefined;
+      if (shown) byKey.set(shown.key, shown);
+    }
+    const sorted = [...byKey.values()].sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
+    return {
+      rows: sorted,
+      option: sorted.some((hour) => hour.result.oee) ? hourlyOption(sorted) : null,
+    };
+  }, [hours.data, pushed, start, end]);
   return (
     <EChart
       testId="hourly"
       title="OEE per hour"
       description={`${hourlyReading(rows)}; the table below lists every value.`}
-      option={rows.some((hour) => hour.result.oee) ? hourlyOption(rows) : null}
+      option={option}
       empty={
         !hours.isSuccess
           ? undefined
@@ -445,13 +453,17 @@ function HourlyChart({
 }
 
 function WaterfallChart({ bucket }: { readonly bucket: OeeBucketDto | undefined }) {
-  const steps = bucket ? waterfall(bucket.result) : null;
+  // Memoised on the bucket (see HourlyChart): the same option across unrelated re-renders.
+  const { steps, option } = useMemo(() => {
+    const found = bucket ? waterfall(bucket.result) : null;
+    return { steps: found, option: found ? waterfallOption(found) : null };
+  }, [bucket]);
   return (
     <EChart
       testId="waterfall"
       title="Loss waterfall"
       description={`${steps ? waterfallReading(steps) : 'Loss waterfall'}; the table below lists every step.`}
-      option={steps ? waterfallOption(steps) : null}
+      option={option}
       empty={
         !bucket
           ? 'No data for this shift.'
@@ -589,7 +601,11 @@ function ParetoChart({
     [],
   );
 
-  const chart = pareto.data && pareto.data.reasons.length > 0 ? paretoOption(pareto.data) : null;
+  // Memoised on the data (see HourlyChart): the same option across unrelated re-renders.
+  const chart = useMemo(
+    () => (pareto.data && pareto.data.reasons.length > 0 ? paretoOption(pareto.data) : null),
+    [pareto.data],
+  );
   return (
     <EChart
       testId="pareto"

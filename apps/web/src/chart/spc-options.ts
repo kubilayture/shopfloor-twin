@@ -24,13 +24,15 @@ import { CHART_SIZES, CHART_TOKENS } from './theme.ts';
 // chart; the tooltip is text on the canvas (`richText`, the strict CSP).
 
 // Colours by role (design system section 5), as token references (theme.ts): points neutral-700
-// circles (provisional hollow), signalling points `alarm` diamonds, limits `chart-limit` dashed,
-// the centre neutral-600 solid, the zones neutral-200 dotted, retests `info` triangles. Episodes
-// are shaded at `EPISODE_OPACITY` of their colour.
+// circles (provisional hollow) joined by a light `line` (neutral-300), signalling points `alarm`
+// diamonds, limits `chart-limit` dashed, the centre neutral-600 long-dashed (never mistaken for
+// the line joining the points), the zones neutral-200 dotted, retests `info` triangles. Episodes
+// are shaded at `EPISODE_OPACITY` of their state's colour: final `alarm`, provisional `warn`, final
+// with its extent still growing `info`.
 export const SPC_COLORS = {
   point: CHART_TOKENS.other,
   provisional: CHART_TOKENS.other,
-  line: CHART_TOKENS.muted,
+  line: CHART_TOKENS.border,
   signal: CHART_TOKENS.signal,
   limit: CHART_TOKENS.limit,
   centre: CHART_TOKENS.text,
@@ -38,9 +40,12 @@ export const SPC_COLORS = {
   retest: CHART_TOKENS.info,
   episodeFinal: CHART_TOKENS.signal,
   /** Final, its extent still growing (the tester not final through its last point). */
-  episodeGrowing: CHART_TOKENS.series[4],
+  episodeGrowing: CHART_TOKENS.info,
   episodeProvisional: CHART_TOKENS.own,
 } as const;
+
+/** The centre line's dash: long dashes, unlike the limits' short ones and the solid join. */
+export const CENTRE_DASH: readonly number[] = [12, 4];
 
 /** How strongly an episode's span is shaded. */
 export const EPISODE_OPACITY = 0.12;
@@ -267,7 +272,7 @@ export function spcChartOption(input: SpcChartInput): EChartsCoreOption {
       step: 'end',
       symbol: 'none',
       silent: true,
-      lineStyle: { color: SPC_COLORS.centre, width: 1 },
+      lineStyle: { color: SPC_COLORS.centre, type: [...CENTRE_DASH], width: 1.5 },
       itemStyle: { color: SPC_COLORS.centre },
     },
     {

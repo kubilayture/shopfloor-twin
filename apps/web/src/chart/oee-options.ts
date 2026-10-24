@@ -243,7 +243,8 @@ export function paretoOption(
   return {
     height: Math.max(160, 64 + rows.length * 36),
     option: {
-      grid: { left: 8, right: 16, top: 32, bottom: 8, containLabel: true },
+      // Right: room for the axis name ("min") after the last tick.
+      grid: { left: 8, right: 32, top: 32, bottom: 8, containLabel: true },
       legend: barLegend(['Own', 'External']),
       tooltip: {
         trigger: 'item',

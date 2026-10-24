@@ -674,7 +674,9 @@ function FocusDetails({
 }) {
   const bucket = useShiftBucket(focus, rest, shiftKey);
   return (
-    <div className="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-2">
+    // Each chart card as tall as its own content (E-05: the hourly card was stretched to the
+    // waterfall's height and stood half empty).
+    <div className="mt-3 grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
       <HourlyChart
         scope={scope}
         id={focus}

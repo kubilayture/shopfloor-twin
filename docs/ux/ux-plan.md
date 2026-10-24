@@ -363,11 +363,11 @@ Each moves its screens onto the shell, `PageHeader`, the primitives and the cont
 
 - **Closes:** G-24.
 - **Scope:** a side-effect module `apps/web/src/zod-config.ts` (`import { z } from 'zod'; z.config({ jitless: true });`) made the **very first import** of `src/main.tsx`, so it runs before `@shopfloor/contracts` builds any schema (Zod reads the setting when a schema is built, which happens while the contracts module is imported; a call in `main.tsx`'s body would be too late); a unit test that the setting is on after importing `main`'s import chain; `docs/security-review.md` (one line: the probe and its removal).
-- **Acceptance:** zero `securitypolicyviolation` events in a real browser: a check in the UX-1g harness registers a listener before the app loads (`page.addInitScript`) on every route and expects none; schema parsing unchanged (the web unit tests and the reconciliation pass).
+- **Acceptance:** zero `securitypolicyviolation` events in a real browser, a failing check of the reconciliation (not a UX-1g report): `e2e/browser/csp/csp.spec.ts` in the `orders-dispatch` project registers a listener before the app loads (`page.addInitScript`) and expects none on every list and desk route (signed out, supervisor, admin, quality), on a machine's, an order's and an SPC characteristic's detail (asserted present) and on a hold's and a shift report's detail when one exists; schema parsing unchanged (the web unit tests and the reconciliation pass).
 - **Keep green:** all web unit tests, the reconciliation.
 - **Structural selectors and asserted texts:** none.
 - **Gate:** `verify,smoke,reconcile`.
-- **Depends on:** – (can merge any time; its browser check needs UX-1g, before which it is checked by hand in Chrome DevTools' Issues panel).
+- **Depends on:** – (can merge any time; its browser check is its own reconciliation spec, not UX-1g).
 
 ### UX-F3 Consistency review and the demo re-recording
 
@@ -412,5 +412,5 @@ Each moves its screens onto the shell, `PageHeader`, the primitives and the cont
 | UX-11  | Login and account                               | `login.tsx`, `account.tsx`                                                                                      | UX-1b, UX-1c, UX-1d2, UX-1e                                                                  | verify,smoke,reconcile; demo                                     |
 | UX-12  | Dark theme                                      | theme switch, `color-scheme`, chart repaint, light print via `beforeprint`                                      | UX-2, UX-3, UX-4a, UX-4b, UX-5a, UX-5b, UX-6a, UX-6b, UX-7, UX-8, UX-9a, UX-9b, UX-10, UX-11 | verify,smoke,reconcile; demo                                     |
 | UX-F1  | Accessibility gate                              | UX-1g turned failing; fixes                                                                                     | UX-1g, UX-12                                                                                 | verify,smoke,reconcile                                           |
-| UX-F2  | Console CSP "eval" issue                        | `src/zod-config.ts` as `main.tsx`'s first import; no CSP violation events                                       | – (browser check after UX-1g)                                                                | verify,smoke,reconcile                                           |
+| UX-F2  | Console CSP "eval" issue                        | `src/zod-config.ts` as `main.tsx`'s first import; no CSP violation events                                       | – (browser check in the reconciliation, `e2e/browser/csp`)                                   | verify,smoke,reconcile                                           |
 | UX-F3  | Consistency review and the demo re-recording    | review table, raw-colour check failing, `pnpm demo:record`                                                      | UX-F1, UX-F2                                                                                 | verify,smoke,reconcile; demo ×2 (PR #290 precedent); demo:record |

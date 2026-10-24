@@ -1,3 +1,5 @@
+// First: Zod's config must be set before any schema is built (#338, zod-config.ts).
+import './zod-config.ts';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { API_BASE } from './api/client.ts';

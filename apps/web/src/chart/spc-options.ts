@@ -82,34 +82,96 @@ function pointItem(p: SpcPointDto, precision: SpcPrecision, places: number) {
   };
 }
 
-/** The shaded span of each episode of this chart that is not withdrawn. */
+/** The episodes of this chart that are not withdrawn. */
+const shownEpisodes = (signals: readonly SpcSignalDto[], chart: SpcChartName) =>
+  signals.filter((s) => s.chart === chart && s.status !== 'withdrawn');
+
+/** An episode's label: its rule, and whether it or its extent is still provisional. */
+function episodeName(s: SpcSignalDto): string {
+  const suffix =
+    s.status === 'provisional' ? ' (provisional)' : isGrowing(s) ? ' (extent not final)' : '';
+  return `Rule ${String(s.rule)}${suffix}`;
+}
+
+/**
+ * The shaded span of each episode of this chart that is not withdrawn. The span has no label of
+ * its own: adjacent spans' labels ran into each other (C-02); the names are in the label lane.
+ */
 export function episodeAreas(signals: readonly SpcSignalDto[], chart: SpcChartName) {
-  return signals
-    .filter((s) => s.chart === chart && s.status !== 'withdrawn')
-    .map((s) => {
-      let from = Date.parse(s.first.at);
-      let to = Date.parse(s.last.at);
-      if (to - from < 2 * ONE_POINT_SPAN_MS) {
-        from -= ONE_POINT_SPAN_MS;
-        to += ONE_POINT_SPAN_MS;
-      }
-      const growing = isGrowing(s);
-      return [
-        {
-          name: `Rule ${String(s.rule)}${s.status === 'provisional' ? ' (provisional)' : growing ? ' (extent not final)' : ''}`,
-          xAxis: from,
-          itemStyle: {
-            color:
-              s.status === 'provisional'
-                ? SPC_COLORS.episodeProvisional
-                : growing
-                  ? SPC_COLORS.episodeGrowing
-                  : SPC_COLORS.episodeFinal,
-          },
+  return shownEpisodes(signals, chart).map((s) => {
+    let from = Date.parse(s.first.at);
+    let to = Date.parse(s.last.at);
+    if (to - from < 2 * ONE_POINT_SPAN_MS) {
+      from -= ONE_POINT_SPAN_MS;
+      to += ONE_POINT_SPAN_MS;
+    }
+    const growing = isGrowing(s);
+    return [
+      {
+        name: episodeName(s),
+        xAxis: from,
+        itemStyle: {
+          color:
+            s.status === 'provisional'
+              ? SPC_COLORS.episodeProvisional
+              : growing
+                ? SPC_COLORS.episodeGrowing
+                : SPC_COLORS.episodeFinal,
         },
-        { xAxis: to },
-      ];
+      },
+      { xAxis: to },
+    ];
+  });
+}
+
+/** The label lane's series: on its own hidden axis (0 to 1), its marks on the top edge (1). */
+export const RULE_LANE = 'Rule labels';
+
+/**
+ * The label lane (#308, C-02): one label per episode on the plot's top edge, above the span,
+ * starting at the span in the left half of the time range and ending at it in the right half (so
+ * none runs off the chart). Where two would overlap, ECharts hides one (`hideOverlap`; the
+ * newest first in the data, so it is the one kept); the span stays shaded and the episodes table
+ * lists every episode.
+ */
+export function ruleLane(
+  signals: readonly SpcSignalDto[],
+  chart: SpcChartName,
+  range: readonly [number, number] | undefined,
+) {
+  const middle = range ? (range[0] + range[1]) / 2 : Number.POSITIVE_INFINITY;
+  const data = shownEpisodes(signals, chart)
+    .map((s) => ({ s, from: Date.parse(s.first.at), to: Date.parse(s.last.at) }))
+    .sort((a, b) => b.from - a.from || b.s.id - a.s.id)
+    .map(({ s, from, to }) => {
+      const right = (from + to) / 2 > middle;
+      return {
+        name: episodeName(s),
+        value: [right ? to : from, 1],
+        label: { align: right ? 'right' : 'left' },
+      };
     });
+  return {
+    type: 'scatter',
+    name: RULE_LANE,
+    yAxisIndex: 1,
+    silent: true,
+    symbol: 'rect',
+    symbolSize: 1,
+    itemStyle: { color: 'transparent' },
+    tooltip: { show: false },
+    label: {
+      show: true,
+      position: 'top',
+      distance: 4,
+      formatter: '{b}',
+      ...axisText,
+    },
+    // "Newest kept" relies on every lane marker having the same size: hideOverlap ranks labels by
+    // their marker's area, and equal areas keep the data order (newest first).
+    labelLayout: { hideOverlap: true },
+    data,
+  };
 }
 
 interface TooltipParams {
@@ -178,7 +240,7 @@ export function spcChartOption(input: SpcChartInput): EChartsCoreOption {
       data: points.map((p) => pointItem(p, precision, places)),
       lineStyle: { color: SPC_COLORS.provisional, width: 1 },
       itemStyle: { color: SPC_COLORS.point },
-      markArea: { silent: true, data: episodeAreas(input.signals, chart) },
+      markArea: { silent: true, label: { show: false }, data: episodeAreas(input.signals, chart) },
     },
     {
       type: 'line',
@@ -250,12 +312,26 @@ export function spcChartOption(input: SpcChartInput): EChartsCoreOption {
       })),
     });
   }
+  // The points' time range (a loop: "Every reading" may be more points than a spread allows).
+  let range: [number, number] | undefined;
+  for (const p of points) {
+    const t = Date.parse(p.at);
+    range = range ? [Math.min(range[0], t), Math.max(range[1], t)] : [t, t];
+  }
+  series.push(ruleLane(input.signals, chart, range));
   return {
-    grid: { left: 56, right: 16, top: 40, bottom: 32 },
+    // No intro animation (#308, C-03; design system: no chart animation). ECharts drew the points'
+    // markers from scale 0, each delayed by its place on the time axis, for about 1.5 s after
+    // every load, window switch or new view; a look, print or screenshot then saw the later
+    // points (signals included) as a bare line. EChartsView lets the option's own value win.
+    animation: false,
+    grid: { left: 56, right: 16, top: 48, bottom: 32 },
+    // One row (scrolling when narrow): a wrapped second row ran into the label lane and the unit.
     legend: {
+      type: 'scroll',
       top: 0,
       textStyle: axisText,
-      data: series.map((s) => s.name as string).filter((n) => !n.endsWith('σ')),
+      data: series.map((s) => s.name as string).filter((n) => !n.endsWith('σ') && n !== RULE_LANE),
     },
     tooltip: { trigger: 'item', formatter: spcTooltip },
     xAxis: {
@@ -263,15 +339,22 @@ export function spcChartOption(input: SpcChartInput): EChartsCoreOption {
       axisLabel: { ...axisText, hideOverlap: true },
       splitLine: { show: false },
     },
-    yAxis: {
-      type: 'value',
-      name: unit,
-      nameTextStyle: axisText,
-      scale: zones,
-      ...(zones ? {} : { min: 0 }),
-      axisLabel: axisText,
-      splitLine: { lineStyle: { color: GRID_LINE } },
-    },
+    yAxis: [
+      {
+        type: 'value',
+        name: unit,
+        // Ends at the axis line, left of the label lane (which starts at the plot's left edge), and
+        // low enough to clear the legend.
+        nameGap: 8,
+        nameTextStyle: { ...axisText, align: 'right' },
+        scale: zones,
+        ...(zones ? {} : { min: 0 }),
+        axisLabel: axisText,
+        splitLine: { lineStyle: { color: GRID_LINE } },
+      },
+      // The label lane's axis: hidden, 0 to 1, so its marks sit on the plot's top edge.
+      { type: 'value', show: false, min: 0, max: 1 },
+    ],
     series,
   };
 }

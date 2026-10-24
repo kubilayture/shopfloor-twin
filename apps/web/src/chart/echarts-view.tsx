@@ -1,11 +1,3 @@
-import { BarChart, LineChart, ScatterChart } from 'echarts/charts';
-import {
-  GridComponent,
-  LegendComponent,
-  MarkAreaComponent,
-  MarkLineComponent,
-  TooltipComponent,
-} from 'echarts/components';
 import {
   init,
   use as registerModules,
@@ -14,21 +6,10 @@ import {
 } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
 import { useEffect, useRef } from 'react';
+import { ECHARTS_MODULES } from './echarts-modules.ts';
 
-// Tree-shaken (plan "API, push and web"): bar charts on a canvas with a grid, a legend, a mark
-// line (the alarm flood threshold, #145) and a canvas-drawn tooltip; since #203 line and scatter
-// charts with mark areas (the SPC charts: points, limits, zones, episodes, retests).
-registerModules([
-  BarChart,
-  LineChart,
-  ScatterChart,
-  GridComponent,
-  LegendComponent,
-  MarkAreaComponent,
-  MarkLineComponent,
-  TooltipComponent,
-  CanvasRenderer,
-]);
+// The charts' modules (echarts-modules.ts) on a canvas, with a canvas-drawn tooltip.
+registerModules([...ECHARTS_MODULES, CanvasRenderer]);
 
 /** The print image's pixels per CSS pixel of the chart on screen. */
 const PRINT_PIXEL_RATIO = 3;
@@ -53,6 +34,9 @@ export function EChartsView({
   const container = useRef<HTMLDivElement>(null);
   const snapshot = useRef<HTMLImageElement>(null);
   const chart = useRef<EChartsType | null>(null);
+  // The animation the chart is drawn with: the option's own (SPC charts: off, #308), else on
+  // unless the user prefers reduced motion. The print snapshot restores it afterwards.
+  const animation = useRef(true);
 
   useEffect(() => {
     const element = container.current;
@@ -79,7 +63,7 @@ export function EChartsView({
         pixelRatio: PRINT_PIXEL_RATIO,
         backgroundColor: '#ffffff',
       });
-      instance.setOption({ animation: !reducedMotion() });
+      instance.setOption({ animation: animation.current });
     };
     window.addEventListener('beforeprint', takeSnapshot);
     return () => {
@@ -91,10 +75,11 @@ export function EChartsView({
   }, [height]);
 
   useEffect(() => {
+    animation.current = typeof option.animation === 'boolean' ? option.animation : !reducedMotion();
     chart.current?.setOption(
       {
-        animation: !reducedMotion(),
         ...option,
+        animation: animation.current,
         tooltip: { renderMode: 'richText', ...(option.tooltip as object | undefined) },
       },
       { notMerge: true },

@@ -28,7 +28,13 @@ export function createQueryClient(): QueryClient {
         report(error, mutation.meta);
       },
     }),
-    defaultOptions: { queries: { retry: shouldRetry, staleTime: 5_000 } },
+    // `always` (#312): offline, a read fails within its retries and shows its error, and a write
+    // fails at once where the form shows a refused one; neither waits, paused, for the network
+    // (TanStack's `online` mode), which left screens "Loading…" and queued writes to send later.
+    defaultOptions: {
+      queries: { retry: shouldRetry, staleTime: 5_000, networkMode: 'always' },
+      mutations: { networkMode: 'always' },
+    },
   });
   bindAuthEvents(client, events);
   return client;

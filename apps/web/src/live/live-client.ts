@@ -7,6 +7,14 @@ import {
 
 export type LiveStatus = 'connecting' | 'open' | 'reconnecting' | 'stopped';
 
+/** Status and attempt, and whether the browser said the network is gone (#312). */
+export interface LiveConnectionState {
+  readonly status: LiveStatus;
+  readonly attempt: number;
+  /** Lost by the browser's `offline` event, until its `online`: the status is `stopped` then. */
+  readonly offline: boolean;
+}
+
 /** The part of the browser's WebSocket the client uses. */
 export interface LiveSocket {
   readonly readyState: number;
@@ -65,7 +73,9 @@ export function sameOriginWsUrl(path: string, location: Location = window.locati
  * One WebSocket to the MES per tab (docs/api/realtime.md): subscriptions are counted by their
  * users, sent again after every reconnect (which brings fresh snapshots), and paced below the
  * MES's rate limit. A lost connection is retried with exponential backoff and jitter; `busy`,
- * `rate-limited` and `unavailable` answers retry the subscriptions not yet confirmed.
+ * `rate-limited` and `unavailable` answers retry the subscriptions not yet confirmed. While the
+ * browser says the network is gone (`connectionLost`) it holds no socket and tries none; it
+ * connects again within `initialDelayMs` (jittered) when the network returns (`connectionFound`).
  */
 export class LiveClient {
   readonly #options: Required<Omit<LiveClientOptions, 'createSocket'>> & {
@@ -86,10 +96,10 @@ export class LiveClient {
   #tokensAt = 0;
   #drainTimer: ReturnType<typeof setTimeout> | undefined;
   #lastError: ServerMessage | undefined;
-  #connection: { readonly status: LiveStatus; readonly attempt: number } = {
-    status: 'stopped',
-    attempt: 0,
-  };
+  #offline = false;
+  /** Started or running (and not stopped since) while offline: how it connects when back. */
+  #resume: 'connecting' | 'reconnecting' | undefined;
+  #connection: LiveConnectionState = { status: 'stopped', attempt: 0, offline: false };
 
   constructor(options: LiveClientOptions) {
     this.#options = {
@@ -108,8 +118,8 @@ export class LiveClient {
     return this.#status;
   }
 
-  /** Status and attempt as one value that changes identity only when either changes. */
-  get connection(): { readonly status: LiveStatus; readonly attempt: number } {
+  /** Status, attempt and offline as one value that changes identity only when one changes. */
+  get connection(): LiveConnectionState {
     return this.#connection;
   }
 
@@ -125,11 +135,66 @@ export class LiveClient {
 
   start(): void {
     if (this.#status !== 'stopped') return;
+    if (this.#offline) {
+      this.#resume = 'connecting';
+      return;
+    }
     this.#connect('connecting');
   }
 
   stop(): void {
+    this.#resume = undefined;
+    this.#halt();
+  }
+
+  /**
+   * The browser said the network is gone (its `offline` event, #312). An open socket may not notice
+   * for a long while, so it is let go now and the status reads `stopped` (shown as offline); no
+   * reconnect is tried until `connectionFound`. Subscriptions are kept and sent again then.
+   */
+  connectionLost(): void {
+    if (this.#offline) return;
+    this.#offline = true;
+    if (this.#status === 'stopped') {
+      this.#setStatus('stopped');
+      return;
+    }
+    this.#resume = 'reconnecting';
+    this.#attempt = 0;
+    this.#halt();
+  }
+
+  /**
+   * The network is back (the browser's `online` event): if it was running (or was started while
+   * offline), it connects again after a random delay below `initialDelayMs`, not after the backoff
+   * it had reached; the jitter spreads the tabs that all hear `online` at the same moment.
+   */
+  connectionFound(): void {
+    if (!this.#offline) return;
+    this.#offline = false;
+    const resume = this.#resume;
+    if (resume === undefined) {
+      this.#setStatus(this.#status);
+      return;
+    }
+    this.#resume = undefined;
+    this.#setStatus(resume);
+    this.#reconnectTimer = setTimeout(
+      () => {
+        this.#reconnectTimer = undefined;
+        this.#connect(resume);
+      },
+      Math.round(this.#options.initialDelayMs * this.#options.random()),
+    );
+  }
+
+  /** Stopped: no socket, no reconnect waiting, nothing to send. */
+  #halt(): void {
     this.#setStatus('stopped');
+    for (const subscription of this.#subscriptions.values()) {
+      subscription.confirmed = false;
+      subscription.sent = false;
+    }
     clearTimeout(this.#reconnectTimer);
     this.#reconnectTimer = undefined;
     this.#clearSending();
@@ -204,8 +269,14 @@ export class LiveClient {
   #setStatus(status: LiveStatus): void {
     this.#status = status;
     const { connection } = this;
-    if (connection.status === status && connection.attempt === this.#attempt) return;
-    this.#connection = { status, attempt: this.#attempt };
+    if (
+      connection.status === status &&
+      connection.attempt === this.#attempt &&
+      connection.offline === this.#offline
+    ) {
+      return;
+    }
+    this.#connection = { status, attempt: this.#attempt, offline: this.#offline };
     for (const listener of this.#statusListeners) listener();
   }
 

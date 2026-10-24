@@ -29,7 +29,7 @@ import {
   type LiveStates,
   type LiveTelemetry,
 } from './live-cache.ts';
-import type { LiveClient, LiveStatus } from './live-client.ts';
+import type { LiveClient, LiveConnectionState } from './live-client.ts';
 import {
   QUALITY_READS,
   liveQualityKey,
@@ -39,7 +39,27 @@ import {
 
 const LiveContext = createContext<LiveClient | undefined>(undefined);
 
+/**
+ * Gives the screens the live client, and tells it when the browser says the network went or came
+ * back (#312): the socket of a lost network may look open for a long while, so the header would
+ * keep "Live" over figures that no longer update.
+ */
 export function LiveProvider({ client, children }: { client: LiveClient; children: ReactNode }) {
+  useEffect(() => {
+    const lost = () => {
+      client.connectionLost();
+    };
+    const found = () => {
+      client.connectionFound();
+    };
+    window.addEventListener('offline', lost);
+    window.addEventListener('online', found);
+    if (!navigator.onLine) lost();
+    return () => {
+      window.removeEventListener('offline', lost);
+      window.removeEventListener('online', found);
+    };
+  }, [client]);
   return <LiveContext value={client}>{children}</LiveContext>;
 }
 
@@ -49,10 +69,7 @@ export function useLiveClient(): LiveClient {
   return client;
 }
 
-export interface LiveConnection {
-  readonly status: LiveStatus;
-  readonly attempt: number;
-}
+export type LiveConnection = LiveConnectionState;
 
 export function useLiveConnection(): LiveConnection {
   const client = useLiveClient();

@@ -9,7 +9,7 @@ import { Icon, type IconName } from './icons.tsx';
  * toast never replaces an inline message a test reads (`coding-message`, `action-message` …).
  *
  * `toast({...})` from anywhere; `ToastRegion`, mounted once by the app, shows them bottom right
- * (top, full width below `md`, off the idle warning's bottom strip), at most three, the oldest
+ * (top, under the 48 px top bar, full width below `md`, off the idle warning's bottom strip), at most three, the oldest
  * timed one leaving first. Neutral and ok toasts go after 6 s, paused while the pointer is over
  * the region or the focus is in it; alarm toasts stay until dismissed. A polite live region
  * announces neutral and ok toasts, an assertive one alarm toasts (the live behaviour of
@@ -189,7 +189,7 @@ export function ToastRegion() {
       ref={region}
       data-testid="toast-region"
       data-paused={paused}
-      className="pointer-events-none fixed inset-x-4 top-4 z-toast flex flex-col gap-2 md:top-auto md:bottom-4 md:left-auto md:w-96 print:hidden"
+      className="pointer-events-none fixed inset-x-4 top-16 z-toast flex flex-col gap-2 md:top-auto md:bottom-4 md:left-auto md:w-96 print:hidden"
       onPointerEnter={() => {
         setHovered(true);
       }}

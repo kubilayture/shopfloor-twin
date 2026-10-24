@@ -90,4 +90,26 @@ describe('useConnectionLost', () => {
     });
     expect(hook.result.current).toBe(true);
   });
+
+  it('stays lost when a hung first connect finally fails into the first reconnect (#352 re-review)', () => {
+    const { live, factory, hook } = setup();
+    act(() => {
+      live.start();
+    });
+    act(() => {
+      vi.advanceTimersByTime(LOST_AFTER_MS);
+    });
+    expect(hook.result.current).toBe(true);
+    // The proxy gives up (a 504 after its timeout): connecting turns into reconnecting, attempt 1.
+    act(() => {
+      factory.last.drop();
+    });
+    expect(live.connection).toMatchObject({ status: 'reconnecting', attempt: 1 });
+    expect(hook.result.current).toBe(true);
+    // The same trying since the start: no new 5 s before it counts.
+    act(() => {
+      vi.advanceTimersByTime(100);
+    });
+    expect(hook.result.current).toBe(true);
+  });
 });

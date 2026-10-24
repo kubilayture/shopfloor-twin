@@ -28,6 +28,11 @@ export interface LiveSocket {
 
 const OPEN = 1;
 
+/** Connecting or reconnecting: trying to get through. */
+function isTrying(status: LiveStatus): boolean {
+  return status === 'connecting' || status === 'reconnecting';
+}
+
 export interface LiveClientOptions {
   readonly url: string;
   readonly createSocket?: (url: string) => LiveSocket;
@@ -119,7 +124,11 @@ export class LiveClient {
     return this.#status;
   }
 
-  /** When the status last changed (epoch ms): how long it has been reconnecting, for the UI. */
+  /**
+   * When the client last started trying to connect, or stopped trying (epoch ms): how long it has
+   * been connecting or reconnecting, for the UI. A failed first connect that turns `connecting`
+   * into `reconnecting` is the same attempt to get through and keeps its start (#352 review).
+   */
   get statusSince(): number {
     return this.#statusSince;
   }
@@ -273,7 +282,7 @@ export class LiveClient {
   }
 
   #setStatus(status: LiveStatus): void {
-    if (status !== this.#status) this.#statusSince = Date.now();
+    if (isTrying(status) !== isTrying(this.#status)) this.#statusSince = Date.now();
     this.#status = status;
     const { connection } = this;
     if (

@@ -37,8 +37,8 @@ export function useOfflineBarShown(): boolean {
  *
  * One `role="alert"` per outage: the screens' failed reads stay quiet meanwhile (`QueryError`).
  * When the connection is back, the active reads that failed are read again at once (#352 review
- * M4): TanStack Query does that by itself only when the browser was offline, and the quiet lines
- * would otherwise stand until the next poll.
+ * M4): the live cache does that after a dropped connection, and the bar after a first connect that
+ * hung, so the quiet lines never stand until the next poll.
  */
 export function OfflineBar() {
   const connection = useLiveConnection();
@@ -46,13 +46,24 @@ export function OfflineBar() {
   const lost = useConnectionLost();
   const queryClient = useQueryClient();
   const wasLost = useRef(false);
+  /** The outage dropped a connection (or the browser went offline), not only a hung connect. */
+  const dropped = useRef(false);
   useEffect(() => {
-    if (wasLost.current && !lost) {
+    if (lost && (connection.status === 'reconnecting' || connection.status === 'stopped')) {
+      dropped.current = true;
+    }
+  }, [lost, connection.status]);
+  useEffect(() => {
+    // After a dropped connection the live cache reads every REST query again when the socket is
+    // back (and TanStack Query on the browser's `online`): only a first connect that hung and then
+    // got through is left, and its failed reads are run here, once each (#352 review).
+    if (wasLost.current && !lost && !dropped.current) {
       void queryClient.refetchQueries({
         type: 'active',
         predicate: (query) => query.state.status === 'error',
       });
     }
+    if (!lost) dropped.current = false;
     wasLost.current = lost;
   }, [lost, queryClient]);
   useEffect(() => {

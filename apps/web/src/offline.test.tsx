@@ -17,6 +17,14 @@ afterEach(() => {
   resetNetwork();
 });
 
+/** The bar's own calls: the active reads in error, whatever their key (the live cache's leave out `live`). */
+function barRefetches(calls: readonly (readonly unknown[])[]): number {
+  const errored = { queryKey: ['live'], state: { status: 'error' } } as unknown as Query;
+  return calls
+    .map(([filters]) => filters as { type?: string; predicate?: (q: Query) => boolean } | undefined)
+    .filter((f) => f?.type === 'active' && f.predicate?.(errored) === true).length;
+}
+
 const api = fakeFetch({
   '/api/v1/equipment': () => json({ equipment: EQUIPMENT }),
   '/api/v1/plant': () => json(PLANT),
@@ -215,13 +223,10 @@ describe('offline (#312)', () => {
     );
     await app.open();
     expect(screen.queryByTestId('offline-bar')).toBeNull();
-    // The bar's own call: the active reads in error, whatever their key (the live cache's
-    // invalidation after a reconnect leaves out a first connect that hung, #352 L1).
-    const failedOnly = refetch.mock.calls
-      .map(([filters]) => filters)
-      .filter((f) => f?.type === 'active' && f.predicate !== undefined);
-    const errored = { queryKey: ['live'], state: { status: 'error' } } as unknown as Query;
-    expect(failedOnly.some((f) => f?.predicate?.(errored) === true)).toBe(true);
+    // Read again once: by the live cache's invalidation after the dropped connection, not a
+    // second time by the bar (#352 re-review), which keeps its own call for a hung first connect.
+    expect(barRefetches(refetch.mock.calls)).toBe(0);
+    expect(refetch.mock.calls.length).toBeGreaterThan(0);
     expect(screen.getAllByText(/^Could not load /).length).toBeGreaterThan(1);
     expect(screen.queryAllByRole('alert')).toEqual([]);
     held = undefined;
@@ -229,10 +234,51 @@ describe('offline (#312)', () => {
     await waitFor(() => {
       expect(screen.queryByText(/^Could not load /)).toBeNull();
     });
-  });
+
+    // A later outage of another kind on the same screen, a first connect that hangs (the client
+    // started again): the bar reads again itself this time, the earlier drop forgotten.
+    down = true;
+    await settle(() => {
+      app.live.stop();
+      app.live.start();
+    });
+    await screen.findByTestId('offline-bar', {}, { timeout: 8_000 });
+    await settle(() => {
+      void app.queryClient.refetchQueries({ type: 'active' });
+    });
+    down = false;
+    refetch.mockClear();
+    await app.open();
+    expect(screen.queryByTestId('offline-bar')).toBeNull();
+    expect(barRefetches(refetch.mock.calls)).toBe(1);
+  }, 20_000);
 
   it('keeps the errors loud on a screen without the bar (the terminal has none)', () => {
     render(<QueryError what="the terminal" error={new ApiError('HTTP 502', 502)} />);
     expect(screen.getByRole('alert').textContent).toContain('Could not load the terminal.');
   });
+
+  it('reads again what failed while a first connect hung, once the socket gets through', async () => {
+    let down = true;
+    const routes = (input: RequestInfo | URL, init?: RequestInit) =>
+      down ? Promise.resolve(new Response('Gateway Timeout', { status: 504 })) : api(input, init);
+    vi.stubGlobal('fetch', routes);
+    const app = await renderApp('/alarms');
+    // The handshake hangs: after 5 s of connecting the bar is up and the reads are quiet.
+    await screen.findByTestId('offline-bar', {}, { timeout: 8_000 });
+    await waitFor(() => {
+      expect(screen.getAllByText(/^Could not load /).length).toBeGreaterThan(1);
+    });
+    expect(screen.getAllByRole('alert')).toEqual([screen.getByTestId('offline-bar')]);
+    down = false;
+    const refetch = vi.spyOn(app.queryClient, 'refetchQueries');
+    await app.open();
+    expect(screen.queryByTestId('offline-bar')).toBeNull();
+    // The live cache does not read again after a first connect: the bar does, once.
+    expect(barRefetches(refetch.mock.calls)).toBe(1);
+    expect(screen.queryAllByRole('alert')).toEqual([]);
+    await waitFor(() => {
+      expect(screen.queryByText(/^Could not load /)).toBeNull();
+    });
+  }, 20_000);
 });

@@ -30,8 +30,8 @@ describe('Toast', () => {
     expect(screen.queryByRole('status')).toBeNull();
     expect(screen.queryByRole('alert')).toBeNull();
     expect(region().className).toContain('pointer-events-none');
-    // At the top below md, off the idle warning's bottom strip; bottom right from md.
-    expect(region().className).toMatch(/\btop-4\b.*\bmd:bottom-4\b/);
+    // At the top below md, under the 48 px top bar and off the idle card; bottom right from md.
+    expect(region().className).toMatch(/\btop-16\b.*\bmd:top-auto\b.*\bmd:bottom-4\b/);
   });
 
   it('announces neutral and ok politely, alarms assertively, words only', () => {

@@ -37,6 +37,8 @@ import { WEB_SPKI_ENV, chromiumSpkiArgument } from '@shopfloor/test-kit/tls';
  * The HTTPS front (P9-14, ADR-0039, checklist S4; browser/tls) runs in `orders-dispatch` (the gate's
  * reconciliation, while the simulator waits) and in `console`.
  * No Content-Security-Policy violation on any route (#338; browser/csp) runs in `orders-dispatch`.
+ * The visual and accessibility harness (UX-1g, #321; browser/a11y) has `a11y`: report-only, run by
+ * the reconciliation after its passes when RECONCILE_A11Y=1 (e2e/results/a11y).
  * Every run holds the host-wide heavy-suite lock (#228, src/playwright-lock.ts).
  * Chromium only. On failure: a trace and a screenshot in e2e/results/<pass>/playwright/<project>.
  *
@@ -80,6 +82,7 @@ export default defineConfig({
         'csp/**',
         'resilience/**',
         'demo/**',
+        'a11y/**',
       ],
       outputDir: join(results, 'playwright', 'live'),
       use: { ...chromium },
@@ -142,6 +145,13 @@ export default defineConfig({
       name: 'demo',
       testDir: './browser/demo',
       outputDir: join(results, 'playwright', 'demo'),
+      use: { ...chromium },
+    },
+    {
+      // UX-1g (#321): report-only, after the reconciliation's passes, with RECONCILE_A11Y=1.
+      name: 'a11y',
+      testDir: './browser/a11y',
+      outputDir: join(results, 'playwright', 'a11y'),
       use: { ...chromium },
     },
     {

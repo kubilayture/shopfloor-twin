@@ -16,7 +16,8 @@
     "demo:probe": "node src/demo-probe.ts",
     "demo:record": "node ../scripts/heavy.ts node src/demo.ts --record",
     "test:fresh-clone": "node ../scripts/heavy.ts node src/fresh-clone.ts",
-    "playwright:install": "playwright install --only-shell chromium"
+    "playwright:install": "playwright install --only-shell chromium",
+    "playwright:install:webkit": "playwright install webkit"
   },
   "dependencies": {
     "@playwright/test": "catalog:",
@@ -28,6 +29,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@axe-core/playwright": "catalog:",
     "@shopfloor/eslint-config": "workspace:*",
     "@shopfloor/pki": "workspace:*",
     "@shopfloor/test-kit": "workspace:*",

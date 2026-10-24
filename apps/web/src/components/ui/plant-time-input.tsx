@@ -14,7 +14,7 @@ import {
   utcInstantText,
 } from '../../domain/time.ts';
 import { SelectControl } from './controls.tsx';
-import { controlClass, FieldError, FieldHint, LabelText, type ControlSize } from './field.tsx';
+import { controlClass, FieldError, FieldHint, type ControlSize } from './field.tsx';
 
 /**
  * The one way to enter a time (UX-1d2, #319; design system 4.8; N-02, D-05, C-07): two plain
@@ -115,7 +115,9 @@ export function readPlantTime(date: string, time: string, options: ReadOptions):
     const instant = parseIsoInstant(timeText);
     if (instant !== undefined) return checked(instant, plantDayOf(instant));
   }
-  if (timeText === '' && (bounded || dateText === '')) return { kind: 'empty' };
+  // No time is no value, whatever the date box says (a prefilled `defaultDate`, a day picked):
+  // an optional field tabbed through stays quiet; a required one is the caller's `error`.
+  if (timeText === '') return { kind: 'empty' };
   const clock = parsePlantClock(timeText);
   if (clock === undefined) return { kind: 'error', field: 'time', message: timeMessage(options) };
   if (bounded) {
@@ -159,8 +161,8 @@ function textsOf(
 }
 
 const ZONE_TEXT: Readonly<Record<PlantTimeVariant, string>> = {
-  plant: `plant time, ${PLANT_TIME_ZONE}`,
-  console: `simulation time, ${PLANT_TIME_ZONE}`,
+  plant: `plant time in ${PLANT_TIME_ZONE}`,
+  console: `simulation time in ${PLANT_TIME_ZONE}`,
 };
 
 const join = (...parts: (string | undefined | false)[]): string => parts.filter(Boolean).join(' ');
@@ -261,7 +263,8 @@ export function PlantTimeInput({
       data-value={iso ?? ''}
     >
       <legend className="mb-1 text-sm font-medium text-ink">
-        <LabelText required={required}>{`${label} (${ZONE_TEXT[variant]})`}</LabelText>
+        {/* One parenthesis only: "Planned start (required), plant time in Europe/Istanbul". */}
+        {`${label}${required ? ' (required)' : ''}, ${ZONE_TEXT[variant]}`}
       </legend>
       <div className="flex flex-wrap items-end gap-2">
         <div className="flex flex-col gap-1">
@@ -276,7 +279,6 @@ export function PlantTimeInput({
               value={shownDay ?? ''}
               describedBy={describedBy}
               invalid={dateInvalid}
-              required={required}
               data-testid={testId === undefined ? undefined : `${testId}-date`}
               onChange={(event) => {
                 update({ date: event.target.value, time: texts.time });
@@ -299,7 +301,6 @@ export function PlantTimeInput({
               value={texts.date}
               aria-describedby={describedBy}
               aria-invalid={dateInvalid || undefined}
-              aria-required={required ? true : undefined}
               data-testid={testId === undefined ? undefined : `${testId}-date`}
               onChange={(event) => {
                 update({ date: event.target.value, time: texts.time });
@@ -328,7 +329,6 @@ export function PlantTimeInput({
             value={texts.time}
             aria-describedby={describedBy}
             aria-invalid={timeInvalid || undefined}
-            aria-required={required ? true : undefined}
             data-testid={testId}
             onChange={(event) => {
               update({ date: texts.date, time: event.target.value });

@@ -193,11 +193,21 @@ describe('the controls', () => {
   });
 
   it('NumberInput: a decimal text box with its unit read with it', () => {
-    render(<NumberInput label="Repair time" name="repair" unit="min" defaultValue="12" />);
+    render(
+      <NumberInput
+        label="Repair time"
+        name="repair"
+        unit="min"
+        defaultValue="x"
+        hint="Optional."
+        error="Enter a number."
+      />,
+    );
     const box = screen.getByRole('textbox', { name: 'Repair time' });
     expect(box.getAttribute('inputmode')).toBe('decimal');
     expect(box.getAttribute('type')).toBe('text');
-    expect(describedText(box)).toBe('min');
+    // The unit is read first, right after the value: "x, min, Optional., Enter a number."
+    expect(describedText(box)).toBe('min | Optional. | Enter a number.');
     expect(classesOf(box)).toContain('tabular-nums');
   });
 
@@ -219,6 +229,13 @@ describe('the controls', () => {
     // The whole label toggles it.
     fireEvent.click(screen.getByText('Only open holds'));
     expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('Checkbox in the terminal: the hint starts under the label, past the 44 px box', () => {
+    render(<Checkbox label="Scrap" name="scrap" size="touch" hint="Counts as a reject." />);
+    const box = screen.getByRole('checkbox', { name: 'Scrap' });
+    expect(box.parentElement?.className.split(' ')).toContain('size-11');
+    expect(screen.getByText('Counts as a reject.').parentElement?.className).toBe('pl-12');
   });
 
   it('ChoiceGroup and RadioGroup: a fieldset named by its legend, one name, invalid choices', () => {
@@ -310,6 +327,8 @@ describe('CommentInput (quality-ui, re-based on Textarea)', () => {
     expect(box.getAttribute('maxlength')).toBe('500');
     expect(box.getAttribute('aria-describedby')).toBe('ack-count');
     expect(screen.getByRole('textbox', { name: 'Comment (required)' })).toBe(box);
+    // Said once, in the name: no aria-required as well (design system 4.7).
+    expect(box.hasAttribute('aria-required')).toBe(false);
     expect(screen.getByText('7 of 500 characters').id).toBe('ack-count');
     fireEvent.change(box, { target: { value: 'checked the jig' } });
     expect(onChange).toHaveBeenCalledWith('checked the jig');

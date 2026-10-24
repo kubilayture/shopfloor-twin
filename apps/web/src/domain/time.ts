@@ -205,32 +205,46 @@ export function parsePlantDate(text: string): string | undefined {
   return undefined;
 }
 
-/** A clock time `hh:mm` or `hh:mm:ss` (also `h:mm`) as seconds into the day; undefined if none. */
+/**
+ * A clock time `hh:mm`, `hh:mm:ss` or `hh:mm:ss.sss` (also `h:mm`) as seconds into the day (with
+ * the milliseconds as a fraction); undefined if none.
+ */
 export function parsePlantClock(text: string): number | undefined {
-  const match = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(text.trim());
+  const match = /^(\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?$/.exec(text.trim());
   if (!match) return undefined;
   const [hours, minutes, seconds] = [Number(match[1]), Number(match[2]), Number(match[3] ?? '0')];
   if (hours > 23 || minutes > 59 || seconds > 59) return undefined;
-  return hours * 3600 + minutes * 60 + seconds;
+  const ms = Number((match[4] ?? '').padEnd(3, '0'));
+  return hours * 3600 + minutes * 60 + seconds + ms / 1000;
 }
 
 /**
  * A whole ISO 8601 instant with its zone (`2026-10-12T05:00:00Z`, `…+03:00`, with or without
- * seconds and fractions), as epoch ms; undefined for anything else, a bare date or a time without
- * a zone included (it would be read in the browser's zone).
+ * seconds and fractions), as epoch ms; undefined for anything else: a bare date, a time without a
+ * zone (it would be read in the browser's zone), or a day, hour, minute or second that does not
+ * exist (`2026-02-30`, which some engines roll over into March and others refuse).
  */
 export function parseIsoInstant(text: string): number | undefined {
   const value = text.trim();
-  if (
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2})$/i.test(value)
-  ) {
-    return undefined;
-  }
-  const [, month = '', day = ''] = value.slice(0, 10).split('-');
-  const [hours = '', minutes = ''] = value.slice(11, 16).split(':');
-  if (Number(month) > 12 || Number(day) > 31 || Number(hours) > 23 || Number(minutes) > 59) {
-    return undefined;
-  }
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(?:Z|[+-](\d{2}):(\d{2}))$/i.exec(
+      value,
+    );
+  if (!match) return undefined;
+  const [
+    ,
+    year,
+    month,
+    day,
+    hours,
+    minutes,
+    seconds = '0',
+    offsetHours = '0',
+    offsetMinutes = '0',
+  ] = match;
+  if (calendarDay(Number(year), Number(month), Number(day)) === undefined) return undefined;
+  if (Number(hours) > 23 || Number(minutes) > 59 || Number(seconds) > 59) return undefined;
+  if (Number(offsetHours) > 23 || Number(offsetMinutes) > 59) return undefined;
   const instant = Date.parse(value);
   return Number.isFinite(instant) ? instant : undefined;
 }
@@ -238,7 +252,7 @@ export function parseIsoInstant(text: string): number | undefined {
 /** The instant a plant day (`2026-10-12`) and a clock time (seconds into it) name in the zone. */
 export function plantInstant(day: string, secondsOfDay: number): number {
   const [year = 0, month = 1, date = 1] = day.split('-').map(Number);
-  const asUtc = Date.UTC(year, month - 1, date) + secondsOfDay * 1000;
+  const asUtc = Date.UTC(year, month - 1, date) + Math.round(secondsOfDay * 1000);
   const guess = asUtc - plantOffsetMs(asUtc);
   // Across an offset change the first guess can be an hour off: correct once.
   return asUtc - plantOffsetMs(guess);
@@ -250,9 +264,15 @@ export function plantDateText(time: string | number): string {
   return `${day ?? ''}/${month ?? ''}/${year ?? ''}`;
 }
 
-/** The plant clock time of an instant as the time input shows it: `14:05` or `14:05:09`. */
+/**
+ * The plant clock time of an instant as the time input shows it: `14:05` or `14:05:09`, and
+ * `14:05:09.123` whenever the instant has milliseconds (never dropped: the box shows what is sent).
+ */
 export function plantClockText(time: string | number, seconds: boolean): string {
-  return seconds ? formatClockSeconds(time) : formatClockTime(time);
+  const instant = typeof time === 'number' ? time : Date.parse(time);
+  const ms = ((instant % 1000) + 1000) % 1000;
+  if (ms !== 0) return `${formatClockSeconds(instant)}.${String(ms).padStart(3, '0')}`;
+  return seconds ? formatClockSeconds(instant) : formatClockTime(instant);
 }
 
 const dayLabel = new Intl.DateTimeFormat('en-GB', {

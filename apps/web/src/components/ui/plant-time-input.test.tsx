@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
+import { plantClockText, plantDateText } from '../../domain/time.ts';
 import { PlantTimeInput, readPlantTime, type PlantTimeInputProps } from './plant-time-input.tsx';
 
 const noop = (): void => undefined;
@@ -69,7 +70,9 @@ describe('readPlantTime', () => {
   it('is empty with nothing typed, and says which box is wrong otherwise', () => {
     expect(readPlantTime('', '', plant)).toEqual({ kind: 'empty' });
     expect(readPlantTime(' ', ' ', plant)).toEqual({ kind: 'empty' });
-    expect(readPlantTime('12/10/2026', '', plant)).toMatchObject({ kind: 'error', field: 'time' });
+    // No time is no value, also with a date in its box (a prefilled default): the caller's
+    // `required` error covers a missing one.
+    expect(readPlantTime('12/10/2026', '', plant)).toEqual({ kind: 'empty' });
     expect(readPlantTime('', '08:00', plant)).toMatchObject({
       kind: 'error',
       field: 'date',
@@ -112,6 +115,15 @@ describe('readPlantTime', () => {
     expect(readPlantTime('', '', night)).toEqual({ kind: 'empty' });
   });
 
+  it('reads back what it shows, across plant midnight and inside a night shift', () => {
+    const night = { ...plant, ...NIGHT };
+    for (let at = Date.parse(NIGHT.min); at <= Date.parse(NIGHT.max); at += 15 * 60_000 + 1_001) {
+      const time = plantClockText(at, true);
+      expect(readPlantTime(plantDateText(at), time, plant), time).toMatchObject({ instant: at });
+      expect(readPlantTime('', time, night), time).toMatchObject({ instant: at });
+    }
+  });
+
   it('checks a single bound', () => {
     expect(readPlantTime('12/10/2026', '07:00:00', { ...plant, min: NIGHT.min })).toMatchObject({
       message: 'Enter a time from Mon 12 Oct, 22:00:00 on.',
@@ -144,7 +156,7 @@ describe('PlantTimeInput', () => {
     const sent = vi.fn();
     render(<Harness sent={sent} withSeconds required />);
     const group = screen.getByRole('group', {
-      name: 'Split at (plant time, Europe/Istanbul) (required)',
+      name: 'Split at (required), plant time in Europe/Istanbul',
     });
     expect(group.tagName).toBe('FIELDSET');
     const date = within(group).getByRole('textbox', { name: 'Date' });
@@ -155,7 +167,9 @@ describe('PlantTimeInput', () => {
       'split-at-date',
       'split-at-time',
     ]);
-    expect(time.getAttribute('aria-required')).toBe('true');
+    // "required" is said once, in the legend: no aria-required on the boxes.
+    expect(time.hasAttribute('aria-required')).toBe(false);
+    expect(date.hasAttribute('aria-required')).toBe(false);
     // Plain text boxes, never the native pickers.
     expect([date.getAttribute('type'), time.getAttribute('type')]).toEqual(['text', 'text']);
     expect(screen.getByTestId('split-at-utc').textContent).toBe(
@@ -300,22 +314,60 @@ describe('PlantTimeInput', () => {
       />,
     );
     expect(
-      screen.getByRole('group', { name: 'Until (simulation time, Europe/Istanbul)' }),
+      screen.getByRole('group', { name: 'Until, simulation time in Europe/Istanbul' }),
     ).toBeTruthy();
     const time = screen.getByTestId<HTMLInputElement>('drift-until');
     fireEvent.change(time, { target: { value: '2026-10-12T05:37:00.123Z' } });
     expect(sent).toHaveBeenLastCalledWith('2026-10-12T05:37:00.123Z');
     expect(screen.getByTestId('drift-until-utc').textContent).toBe('= 2026-10-12 05:37:00.123 UTC');
-    // Leaving tidies it into the boxes; the value keeps its milliseconds.
+    // Leaving tidies it into the boxes without losing the milliseconds: the UTC line and the
+    // hidden value still say what is sent, and a later edit of the date keeps them.
     fireEvent.blur(time);
     expect(screen.getByTestId<HTMLInputElement>('drift-until-date').value).toBe('12/10/2026');
-    expect(time.value).toBe('08:37:00');
+    expect(time.value).toBe('08:37:00.123');
     expect(screen.getByTestId('held').textContent).toBe('2026-10-12T05:37:00.123Z');
+    expect(screen.getByTestId('drift-until-utc').textContent).toBe('= 2026-10-12 05:37:00.123 UTC');
+    expect(
+      screen.getByRole('group').querySelector<HTMLInputElement>('input[type="hidden"]')?.value,
+    ).toBe('2026-10-12T05:37:00.123Z');
+    fireEvent.change(screen.getByTestId('drift-until-date'), { target: { value: '13/10/2026' } });
+    expect(sent).toHaveBeenLastCalledWith('2026-10-13T05:37:00.123Z');
+    fireEvent.change(screen.getByTestId('drift-until-date'), { target: { value: '12/10/2026' } });
     // Emptied (the failure's optional time): null.
     fireEvent.change(screen.getByTestId('drift-until-date'), { target: { value: '' } });
     fireEvent.change(time, { target: { value: '' } });
     expect(sent).toHaveBeenLastCalledWith(null);
     expect(screen.getByTestId('held').textContent).toBe('null');
+  });
+
+  it('an optional time with a default date stays quiet when tabbed through (the failure time)', () => {
+    const sent = vi.fn();
+    render(
+      <Harness
+        sent={sent}
+        label="At"
+        name="failure-at"
+        testId="failure-at"
+        variant="console"
+        withSeconds
+        defaultDate="2026-10-12T05:00:00Z"
+      />,
+    );
+    const date = screen.getByTestId<HTMLInputElement>('failure-at-date');
+    const time = screen.getByTestId<HTMLInputElement>('failure-at');
+    expect(date.value).toBe('12/10/2026');
+    fireEvent.focus(date);
+    fireEvent.blur(date);
+    fireEvent.focus(time);
+    fireEvent.blur(time);
+    // As the console spec does: fill '' and leave.
+    fireEvent.change(time, { target: { value: '' } });
+    fireEvent.blur(time);
+    expect(time.hasAttribute('aria-invalid')).toBe(false);
+    expect(date.hasAttribute('aria-invalid')).toBe(false);
+    expect(document.querySelector('[id$="-error"]')).toBeNull();
+    expect(screen.getByTestId('held').textContent).toBe('null');
+    expect(sent).not.toHaveBeenCalled();
   });
 
   it('gives each box a 36 px (24 px minimum) target and disables both', () => {

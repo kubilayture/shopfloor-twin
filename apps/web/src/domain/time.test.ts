@@ -186,6 +186,10 @@ describe('plant-time input helpers', () => {
     expect(parsePlantClock('12:00:60')).toBeUndefined();
     expect(parsePlantClock('1405')).toBeUndefined();
     expect(parsePlantClock('2026-10-12T05:00:00Z')).toBeUndefined();
+    // Milliseconds, as the input shows an instant that has them.
+    expect(parsePlantClock('08:37:00.123')).toBe(8 * 3600 + 37 * 60 + 0.123);
+    expect(parsePlantClock('08:37:00.5')).toBe(8 * 3600 + 37 * 60 + 0.5);
+    expect(parsePlantClock('08:37.123')).toBeUndefined();
   });
 
   it('reads a whole ISO 8601 instant only with its zone', () => {
@@ -199,6 +203,13 @@ describe('plant-time input helpers', () => {
     expect(parseIsoInstant('2026-13-12T05:00:00Z')).toBeUndefined();
     expect(parseIsoInstant('2026-10-12T25:00:00Z')).toBeUndefined();
     expect(parseIsoInstant('05:00:00')).toBeUndefined();
+    // Days, seconds and offsets that do not exist (V8 would roll 30 Feb over into March).
+    expect(parseIsoInstant('2026-02-30T05:00:00Z')).toBeUndefined();
+    expect(parseIsoInstant('2026-04-31T05:00:00Z')).toBeUndefined();
+    expect(parseIsoInstant('2028-02-29T05:00:00Z')).toBe(Date.parse('2028-02-29T05:00:00Z'));
+    expect(parseIsoInstant('2026-10-12T05:00:60Z')).toBeUndefined();
+    expect(parseIsoInstant('2026-10-12T08:00:00+0300')).toBeUndefined();
+    expect(parseIsoInstant('2026-10-12T08:00:00+03:60')).toBeUndefined();
   });
 
   it('turns a plant day and clock time into the instant, across plant midnight', () => {
@@ -225,6 +236,8 @@ describe('plant-time input helpers', () => {
     expect(plantDateText('2026-10-12T20:59:59Z')).toBe('12/10/2026');
     expect(plantClockText('2026-10-12T21:30:09Z', true)).toBe('00:30:09');
     expect(plantClockText('2026-10-12T21:30:09Z', false)).toBe('00:30');
+    expect(plantClockText('2026-10-12T05:37:00.123Z', false)).toBe('08:37:00.123');
+    expect(plantClockText('2026-10-12T05:37:00.007Z', true)).toBe('08:37:00.007');
     expect(plantDayLabel('2026-10-12')).toBe('Mon 12 Oct');
   });
 
@@ -248,5 +261,31 @@ describe('plant-time input helpers', () => {
   it('shows the instant as it is sent, in UTC', () => {
     expect(utcInstantText('2026-10-12T05:00:00.000Z')).toBe('2026-10-12 05:00:00 UTC');
     expect(utcInstantText('2026-10-12T05:37:00.123Z')).toBe('2026-10-12 05:37:00.123 UTC');
+  });
+});
+
+describe('plant-time round trip (UX-1d2 review)', () => {
+  /** Instants around plant midnight (21:00 UTC), a year's end and with milliseconds. */
+  const instants = [
+    '2026-10-12T20:59:59.000Z',
+    '2026-10-12T21:00:00.000Z',
+    '2026-10-12T21:00:01.000Z',
+    '2026-10-12T21:30:00.000Z',
+    '2026-12-31T20:59:59.000Z',
+    '2026-12-31T21:00:00.000Z',
+    '2026-10-12T05:37:00.123Z',
+    ...Array.from({ length: 48 }, (_, i) =>
+      new Date(Date.parse('2026-10-12T00:00:00Z') + i * 1_800_000 + 7_000).toISOString(),
+    ),
+  ];
+
+  it('formats an instant into the boxes and parses it back to the same instant', () => {
+    for (const iso of instants) {
+      const day = parsePlantDate(plantDateText(iso));
+      const clock = parsePlantClock(plantClockText(iso, true));
+      expect(day, iso).toBeDefined();
+      expect(clock, iso).toBeDefined();
+      expect(new Date(plantInstant(day ?? '', clock ?? 0)).toISOString(), iso).toBe(iso);
+    }
   });
 });

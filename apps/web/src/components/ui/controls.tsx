@@ -80,7 +80,6 @@ export function TextInput({
           name={name}
           aria-describedby={ids.describedBy}
           aria-invalid={ids.invalid || undefined}
-          aria-required={required ? true : undefined}
           className={join(controlClass({ size }), className)}
         />
       )}
@@ -140,7 +139,6 @@ export function Textarea({
             maxLength={max}
             aria-describedby={ids.describedBy}
             aria-invalid={ids.invalid || undefined}
-            aria-required={required ? true : undefined}
             className={join(controlClass({ size }), 'w-full', className)}
           />
           {max === undefined ? null : (
@@ -198,7 +196,6 @@ export function Select({
           size={size}
           describedBy={ids.describedBy}
           invalid={ids.invalid}
-          required={required}
           className={className}
         >
           {children}
@@ -215,7 +212,6 @@ export function SelectControl({
   size = 'md',
   describedBy,
   invalid = false,
-  required,
   className,
   children,
   ...rest
@@ -225,7 +221,6 @@ export function SelectControl({
   readonly size?: ControlSize | undefined;
   readonly describedBy?: string | undefined;
   readonly invalid?: boolean | undefined;
-  readonly required?: boolean | undefined;
   readonly ref?: Ref<HTMLSelectElement> | undefined;
 }) {
   return (
@@ -236,7 +231,6 @@ export function SelectControl({
         name={name}
         aria-describedby={describedBy}
         aria-invalid={invalid || undefined}
-        aria-required={required ? true : undefined}
         className={join(
           controlClass({ size }),
           'w-full min-w-0 cursor-pointer appearance-none disabled:cursor-not-allowed',
@@ -289,7 +283,8 @@ export function NumberInput({
       required={required}
       inline={inline}
       id={id}
-      describedBy={join(unit === undefined ? undefined : unitId, describedBy) || undefined}
+      describedByFirst={unit === undefined ? undefined : unitId}
+      describedBy={describedBy}
       className={fieldClassName}
     >
       {(ids) => (
@@ -303,7 +298,6 @@ export function NumberInput({
             name={name}
             aria-describedby={ids.describedBy}
             aria-invalid={ids.invalid || undefined}
-            aria-required={required ? true : undefined}
             className={join(
               controlClass({ size }),
               'min-w-0 tabular-nums',
@@ -348,6 +342,11 @@ const CHECK_HIT: Readonly<Record<ControlSize, string>> = {
 const CHECK_BOX: Readonly<Record<ControlSize, string>> = {
   md: 'size-6',
   touch: 'size-11',
+};
+/** The hint and error start under the label text: the box plus its 4 px gap. */
+const CHECK_INDENT: Readonly<Record<ControlSize, string>> = {
+  md: 'pl-7',
+  touch: 'pl-12',
 };
 const CHECK_INPUT: Readonly<Record<ControlSize, string>> = {
   md: 'size-4',
@@ -394,12 +393,12 @@ function Check({
         <span className="pl-1">{label}</span>
       </label>
       {hint === undefined || hint === null ? null : (
-        <div className="pl-7">
+        <div className={CHECK_INDENT[size]}>
           <FieldHint id={ids.hintId}>{hint}</FieldHint>
         </div>
       )}
       {ids.invalid ? (
-        <div className="pl-7">
+        <div className={CHECK_INDENT[size]}>
           <FieldError id={ids.errorId}>{error}</FieldError>
         </div>
       ) : null}

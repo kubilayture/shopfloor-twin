@@ -34,6 +34,8 @@ export interface FieldFrameProps {
   readonly id?: string | undefined;
   /** Extra ids for `aria-describedby` after the hint and the error (a character count). */
   readonly describedBy?: string | undefined;
+  /** Ids read before the hint and the error (a number's unit: "12, min, …"). */
+  readonly describedByFirst?: string | undefined;
   /** Layout classes for the field's frame (width, margins). */
   readonly className?: string | undefined;
 }
@@ -45,12 +47,18 @@ export interface FieldProps extends FieldFrameProps {
 /** The ids of a field's parts, from its control id. */
 export function fieldIds(
   id: string,
-  { hint, error, describedBy }: Pick<FieldFrameProps, 'hint' | 'error' | 'describedBy'>,
+  {
+    hint,
+    error,
+    describedBy,
+    describedByFirst,
+  }: Pick<FieldFrameProps, 'hint' | 'error' | 'describedBy' | 'describedByFirst'>,
 ): FieldIds & { readonly hintId: string; readonly errorId: string } {
   const hintId = `${id}-hint`;
   const errorId = `${id}-error`;
   const invalid = error !== undefined && error !== '';
   const ids = [
+    describedByFirst,
     hint === undefined || hint === null ? undefined : hintId,
     invalid ? errorId : undefined,
     describedBy,
@@ -116,11 +124,12 @@ export function Field({
   inline = false,
   id: givenId,
   describedBy,
+  describedByFirst,
   className,
   children,
 }: FieldProps) {
   const generated = useId();
-  const ids = fieldIds(givenId ?? generated, { hint, error, describedBy });
+  const ids = fieldIds(givenId ?? generated, { hint, error, describedBy, describedByFirst });
   return (
     <div className={`flex max-w-full min-w-0 flex-col gap-1${className ? ` ${className}` : ''}`}>
       <div className={inline ? 'flex min-w-0 items-center gap-2' : 'contents'}>

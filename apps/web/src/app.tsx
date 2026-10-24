@@ -3,6 +3,7 @@ import { RouterProvider, type RouterHistory } from '@tanstack/react-router';
 import { useState } from 'react';
 import { shouldRetry } from './api/queries.ts';
 import { AuthEvents, bindAuthEvents } from './auth/events.ts';
+import { ToastRegion } from './components/ui/toast.tsx';
 import type { LiveClient } from './live/live-client.ts';
 import { LiveProvider } from './live/live-context.tsx';
 import { createAppRouter } from './router.tsx';
@@ -54,6 +55,8 @@ export function App({
     <QueryClientProvider client={queryClient}>
       <LiveProvider client={live}>
         <RouterProvider router={router} />
+        {/* Toasts (#317) outside the routes: one region for the whole app, the terminal too. */}
+        <ToastRegion />
       </LiveProvider>
     </QueryClientProvider>
   );

@@ -6,6 +6,7 @@ import { createUser, getUsers, resetPassword, updateUser } from '../api/identity
 import { useAuth, useCan, useUnsavedDraft } from '../auth/auth.tsx';
 import { useHeadingFocus } from '../components/heading-focus.ts';
 import { QueryError } from '../components/query-error.tsx';
+import { Forbidden } from '../components/ui/not-found.tsx';
 import {
   ROLE_LABELS,
   rolesText,
@@ -394,9 +395,11 @@ export function Users() {
         Users
       </h1>
       {!allowed ? (
-        <p role="alert" data-testid="users-forbidden" className="mt-3">
-          Only an admin manages users (permission <span className="font-mono">user:admin</span>).
-        </p>
+        <div className="mt-3">
+          <Forbidden testId="users-forbidden" permission="user:admin">
+            Only an admin manages users
+          </Forbidden>
+        </div>
       ) : (
         <>
           <p className="mt-1 text-sm text-slate-700">

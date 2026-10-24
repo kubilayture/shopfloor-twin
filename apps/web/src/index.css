@@ -433,3 +433,11 @@
     scroll-behavior: auto !important;
   }
 }
+
+/*
+ * A modal dialog holds the page still (UX-1e, #352 review L3): `showModal()` makes the page inert
+ * but lets a wheel or a touch over the backdrop scroll it.
+ */
+html:has(dialog:modal) {
+  overflow: hidden;
+}

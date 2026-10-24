@@ -33,6 +33,7 @@ import {
 import { useCan } from '../auth/auth.tsx';
 import { useHeadingFocus } from '../components/heading-focus.ts';
 import { QueryError } from '../components/query-error.tsx';
+import { Forbidden } from '../components/ui/not-found.tsx';
 import { plantTimeText } from '../domain/time.ts';
 
 // The simulation console (#237, Phase 9 plan "Simulation console", ADR-0037): the physical world
@@ -1107,10 +1108,9 @@ export function Console() {
         Simulation console
       </h1>
       {!allowed ? (
-        <p role="alert" data-testid="console-forbidden">
-          Only an admin drives the simulation (permission{' '}
-          <span className="font-mono">sim:control</span>).
-        </p>
+        <Forbidden testId="console-forbidden" permission="sim:control">
+          Only an admin drives the simulation
+        </Forbidden>
       ) : (
         <>
           <p className="text-sm text-slate-700">

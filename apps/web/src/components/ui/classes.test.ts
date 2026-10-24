@@ -129,7 +129,16 @@ function harvest(file: string): string[] {
 /** Classes the badges pass to a primitive from files that are not on the tokens yet. */
 const PASSED_IN = ['line-through'];
 
-const CLASSES = [...new Set([...FILES.flatMap(harvest), ...PASSED_IN])].sort();
+/**
+ * Literals that look like a class but are not one (UX-1e, #317): a tooltip's `side` ('top',
+ * 'bottom'), a skeleton's `shape` ('text'), the `p` element an empty state renders; and `group`,
+ * Tailwind's marker class for `group-open:`, which generates no CSS of its own.
+ */
+const NOT_CLASSES = new Set(['top', 'bottom', 'text', 'p', 'group']);
+
+const CLASSES = [...new Set([...FILES.flatMap(harvest), ...PASSED_IN])]
+  .filter((c) => !NOT_CLASSES.has(c))
+  .sort();
 
 const RAW =
   /(?:^|:)(?:bg|text|border|border-[xytrbl]|ring|outline|fill|stroke|from|to|via|divide|decoration)-(?:(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d+|white|black)(?:\/\S+)?$/;

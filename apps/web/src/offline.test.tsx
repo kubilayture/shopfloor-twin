@@ -1,6 +1,9 @@
-import { screen, waitFor } from '@testing-library/react';
+import type { Query } from '@tanstack/react-query';
+import { render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ApiError } from './api/client.ts';
 import { queryKeys } from './api/queries.ts';
+import { QueryError } from './components/query-error.tsx';
 import { formatClockSeconds } from './domain/time.ts';
 import { SCOPES, alarmConfig } from './test/alarm-fixtures.ts';
 import { EQUIPMENT, PLANT, fakeFetch, json } from './test/fixtures.ts';
@@ -49,6 +52,8 @@ describe('offline (#312)', () => {
     expect(status.textContent).toBe('Offline');
     const bar = screen.getByTestId('offline-bar');
     expect(bar.getAttribute('role')).toBe('alert');
+    // On the shell's widths and gutters (UX-1b).
+    expect(bar.firstElementChild?.className).toMatch(/max-w-360 .*px-4 .*md:px-6 xl:px-8/);
     expect(bar.textContent).toContain(
       `the figures on this page stopped updating at ${formatClockSeconds(PLANT.clock.watermark)} plant time.`,
     );
@@ -71,6 +76,19 @@ describe('offline (#312)', () => {
     });
     await screen.findByText(/Could not load the active alarms/);
     expect(screen.getAllByText(/The MES cannot be reached/).length).toBeGreaterThan(0);
+    // One alert for the outage, the bar's (#317 after #343): the failed reads are quiet lines
+    // without "Try again", not an alert each.
+    await waitFor(() => {
+      expect(screen.getAllByText(/^Could not load /).length).toBeGreaterThan(1);
+    });
+    expect(screen.getAllByRole('alert')).toEqual([screen.getByTestId('offline-bar')]);
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    expect(
+      screen
+        .getByText(/Could not load the active alarms/)
+        .closest('[data-error]')
+        ?.getAttribute('data-error'),
+    ).toBe('quiet');
     expect(app.factory.sockets).toHaveLength(1);
 
     await net.restore();
@@ -112,5 +130,109 @@ describe('offline (#312)', () => {
       'Offline: the figures on this page stopped updating when the network was lost.',
     );
     expect(screen.getByTestId('connection-status').dataset.status).toBe('stopped');
+  });
+
+  it('shows the bar when the live connection is lost with the browser online, not on one reconnect', async () => {
+    vi.stubGlobal('fetch', api);
+    const app = await renderApp('/');
+    await app.open();
+    await screen.findByTestId('state-cnc-01');
+    const status = screen.getByTestId('connection-status');
+
+    // Dropped once: one reconnect after a blip is not a loss.
+    await app.drop();
+    expect(status.dataset.status).toBe('reconnecting');
+    expect(screen.queryByTestId('offline-bar')).toBeNull();
+
+    // The reconnect fails too: the connection is lost, though the browser is online.
+    await waitFor(() => {
+      expect(app.factory.sockets).toHaveLength(2);
+    });
+    await app.drop();
+    expect(status.textContent).toBe('Reconnecting… (attempt 2)');
+    const bar = screen.getByTestId('offline-bar');
+    expect(bar.dataset.reason).toBe('connection');
+    expect(bar.getAttribute('role')).toBe('alert');
+    expect(bar.textContent).toContain(
+      `Connection lost: the figures on this page stopped updating at ${formatClockSeconds(PLANT.clock.watermark)} plant time.`,
+    );
+    expect(bar.textContent).toContain('Reconnecting to the MES');
+
+    // Back: the bar goes.
+    await waitFor(
+      () => {
+        expect(app.factory.sockets).toHaveLength(3);
+      },
+      { timeout: 5_000 },
+    );
+    await app.open();
+    expect(status.dataset.status).toBe('open');
+    expect(screen.queryByTestId('offline-bar')).toBeNull();
+  });
+
+  it('reads again what failed while the MES was unreachable once the connection is back, quietly (#352 M4)', async () => {
+    let down = false;
+    // Held answers: the reads run again with the connection back, and answer when released.
+    let release: () => void = () => undefined;
+    let held: Promise<void> | undefined;
+    const routes = async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (down) return new Response('Bad Gateway', { status: 502 });
+      if (held) await held;
+      return api(input, init);
+    };
+    vi.stubGlobal('fetch', routes);
+    const app = await renderApp('/alarms');
+    await app.open();
+    await screen.findByTestId('alarm-list-empty');
+    // The MES goes: the socket fails twice, the bar is up, and the reads fail with the proxy's 502.
+    down = true;
+    await app.drop();
+    await waitFor(() => {
+      expect(app.factory.sockets).toHaveLength(2);
+    });
+    await app.drop();
+    expect(screen.getByTestId('offline-bar').dataset.reason).toBe('connection');
+    await settle(() => {
+      void app.queryClient.refetchQueries({ type: 'active' });
+    });
+    await waitFor(() => {
+      expect(screen.getAllByText(/^Could not load /).length).toBeGreaterThan(1);
+    });
+    expect(screen.getAllByRole('alert')).toEqual([screen.getByTestId('offline-bar')]);
+
+    // Back: the bar goes, the failed reads run again at once and nothing turns into an alert,
+    // also while they are on their way.
+    down = false;
+    held = new Promise((resolve) => {
+      release = resolve;
+    });
+    const refetch = vi.spyOn(app.queryClient, 'refetchQueries');
+    await waitFor(
+      () => {
+        expect(app.factory.sockets).toHaveLength(3);
+      },
+      { timeout: 5_000 },
+    );
+    await app.open();
+    expect(screen.queryByTestId('offline-bar')).toBeNull();
+    // The bar's own call: the active reads in error, whatever their key (the live cache's
+    // invalidation after a reconnect leaves out a first connect that hung, #352 L1).
+    const failedOnly = refetch.mock.calls
+      .map(([filters]) => filters)
+      .filter((f) => f?.type === 'active' && f.predicate !== undefined);
+    const errored = { queryKey: ['live'], state: { status: 'error' } } as unknown as Query;
+    expect(failedOnly.some((f) => f?.predicate?.(errored) === true)).toBe(true);
+    expect(screen.getAllByText(/^Could not load /).length).toBeGreaterThan(1);
+    expect(screen.queryAllByRole('alert')).toEqual([]);
+    held = undefined;
+    release();
+    await waitFor(() => {
+      expect(screen.queryByText(/^Could not load /)).toBeNull();
+    });
+  });
+
+  it('keeps the errors loud on a screen without the bar (the terminal has none)', () => {
+    render(<QueryError what="the terminal" error={new ApiError('HTTP 502', 502)} />);
+    expect(screen.getByRole('alert').textContent).toContain('Could not load the terminal.');
   });
 });

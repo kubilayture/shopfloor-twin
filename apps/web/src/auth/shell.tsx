@@ -15,11 +15,11 @@ import {
   ACTIVITY_STORAGE_KEY,
   IDLE_WARNING_MS,
   KEEPALIVE_MS,
-  countdownText,
   idleDeadline,
   storeActivity,
   storedActivity,
 } from './idle.ts';
+import { IdleWarning, useLockTitle } from './idle-warning.tsx';
 import { isLogin, safeRedirect } from './redirect.ts';
 
 /**
@@ -204,70 +204,40 @@ export function IdleWatch({ session }: { readonly session: SessionDto }) {
 
   if (!warning) return null;
   return (
-    <div
-      role="alert"
-      data-testid="idle-warning"
-      data-absolute={deadline.absolute}
-      className="fixed inset-x-0 bottom-0 z-toast border-t-2 border-warn-border bg-warn-soft px-4 py-3 text-ink shadow-elevation-2 md:px-6 xl:px-8 print:hidden"
-      data-print="hidden"
-    >
-      <div className="mx-auto flex max-w-360 flex-wrap items-center justify-between gap-3 text-sm">
-        {deadline.absolute ? (
-          <p>
-            Your session reaches its 12-hour limit in{' '}
-            <span className="font-mono font-semibold tabular-nums">{countdownText(left)}</span>.
-            Save what you are working on; you will need to log in again.
-          </p>
-        ) : (
-          <p>
-            Nobody has used this screen for a while: you will be logged out in{' '}
-            <span className="font-mono font-semibold tabular-nums">{countdownText(left)}</span>.
-            Unsaved input stays on the page; you would log in again to send it.
-          </p>
-        )}
-        <div className="flex gap-2">
-          {deadline.absolute ? null : (
-            <Button
-              variant="primary"
-              data-testid="stay-signed-in"
-              onClick={() => {
-                stay.current();
-              }}
-            >
-              Stay logged in
-            </Button>
-          )}
-          <Button
-            onClick={() => {
-              void auth.logOut();
-            }}
-          >
-            Log out now
-          </Button>
-        </div>
-      </div>
-    </div>
+    <IdleWarning
+      absolute={deadline.absolute}
+      left={left}
+      onStay={() => {
+        stay.current();
+      }}
+      onLogOut={() => {
+        void auth.logOut();
+      }}
+    />
   );
 }
 
 /**
  * Over a page with unsaved input whose session is gone: log in again as the same user and carry
  * on, or give the input up and log in as someone else (a shared screen must never send one user's
- * input as another's).
+ * input as another's). The page shows through the backdrop (G-32, #317), inert, so the user sees
+ * what they log in again to send; the tab's title says what is asked.
  */
 function Relogin({ lost }: { readonly lost: LostSession }) {
   const auth = useAuth();
   const navigate = useNavigate();
   const href = useRouterState({ select: (state) => state.location.href });
   const titleId = useId();
+  useLockTitle();
   return (
     <div
       role="dialog"
       aria-modal="true"
       aria-labelledby={titleId}
       data-testid="relogin"
-      // Opaque: the page under it holds another session's input, which this cover keeps unseen.
-      className="fixed inset-0 z-lock flex items-start justify-center overflow-y-auto bg-nav px-4 py-16"
+      // See-through (G-32, #352 M1): the page stays visible and inert, so the person sees the input
+      // they log in again to send; "Log in as someone else" discards it before anyone else can.
+      className="fixed inset-0 z-lock flex items-start justify-center overflow-y-auto bg-backdrop px-4 py-16"
     >
       <div className="w-full max-w-md rounded-lg border border-line bg-surface p-6 text-ink shadow-elevation-3">
         <h1 id={titleId} className="text-xl font-bold">
@@ -286,7 +256,7 @@ function Relogin({ lost }: { readonly lost: LostSession }) {
         <button
           type="button"
           data-testid="relogin-other"
-          className="mt-4 text-sm text-link underline underline-offset-2"
+          className="mt-4 min-h-6 text-sm text-link underline underline-offset-4"
           onClick={() => {
             void auth
               .logOut()

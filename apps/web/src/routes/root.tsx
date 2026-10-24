@@ -1,7 +1,7 @@
 import { createRootRoute } from '@tanstack/react-router';
 import { AuthProvider } from '../auth/auth.tsx';
 import { Shell } from '../auth/shell.tsx';
-import { NotFound } from '../screens/root-layout.tsx';
+import { PageNotFound } from '../components/ui/not-found.tsx';
 
 /**
  * The root of every route (ADR-0020, code-based). Identity (#170) wraps it: `/login` is shown
@@ -14,5 +14,5 @@ export const rootRoute = createRootRoute({
       <Shell />
     </AuthProvider>
   ),
-  notFoundComponent: NotFound,
+  notFoundComponent: PageNotFound,
 });

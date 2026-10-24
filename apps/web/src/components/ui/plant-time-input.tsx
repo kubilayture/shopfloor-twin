@@ -134,30 +134,28 @@ export function readPlantTime(date: string, time: string, options: ReadOptions):
 const showSeconds = (instant: number, withSeconds: boolean): boolean =>
   withSeconds || instant % 60_000 !== 0;
 
-/** The boxes' texts for a value (empty for none). */
+/**
+ * The boxes' texts for a value (empty for none). With both bounds the day stays unchosen (`''`)
+ * when the time alone lands on it, so changing the time later moves the day with it (a night
+ * shift's 23:15 and 00:05).
+ */
 function textsOf(
   value: string | null,
-  {
-    withSeconds,
-    bounded,
-    defaultDate,
-  }: {
-    readonly withSeconds: boolean;
-    readonly bounded: boolean;
-    readonly defaultDate: string | undefined;
-  },
+  options: ReadOptions & { readonly defaultDate: string | undefined },
 ): { readonly date: string; readonly time: string } {
+  const bounded = options.min !== undefined && options.max !== undefined;
   const instant = value === null ? Number.NaN : Date.parse(value);
   if (!Number.isFinite(instant)) {
     return {
-      date: bounded || defaultDate === undefined ? '' : plantDateText(defaultDate),
+      date: bounded || options.defaultDate === undefined ? '' : plantDateText(options.defaultDate),
       time: '',
     };
   }
-  return {
-    date: bounded ? plantDayOf(instant) : plantDateText(instant),
-    time: plantClockText(instant, showSeconds(instant, withSeconds)),
-  };
+  const time = plantClockText(instant, showSeconds(instant, options.withSeconds));
+  if (!bounded) return { date: plantDateText(instant), time };
+  const auto = readPlantTime('', time, options);
+  const day = plantDayOf(instant);
+  return { date: auto.kind === 'ok' && auto.day === day ? '' : day, time };
 }
 
 const ZONE_TEXT: Readonly<Record<PlantTimeVariant, string>> = {
@@ -187,7 +185,7 @@ export function PlantTimeInput({
 }: PlantTimeInputProps) {
   const bounded = min !== undefined && max !== undefined;
   const options: ReadOptions = { withSeconds, variant, min, max };
-  const [texts, setTexts] = useState(() => textsOf(value, { withSeconds, bounded, defaultDate }));
+  const [texts, setTexts] = useState(() => textsOf(value, { ...options, defaultDate }));
   const [touched, setTouched] = useState(false);
   // The value last seen and last sent: a new value from the owner (a reset after a write) that is
   // not the one this input sent replaces what the boxes say.
@@ -197,7 +195,7 @@ export function PlantTimeInput({
     setSeen(value);
     if (value !== sent) {
       setSent(value);
-      setTexts(textsOf(value, { withSeconds, bounded, defaultDate }));
+      setTexts(textsOf(value, { ...options, defaultDate }));
       setTouched(false);
     }
   }
@@ -236,10 +234,11 @@ export function PlantTimeInput({
   const onBlur = (event: FocusEvent<HTMLFieldSetElement>) => {
     if (event.currentTarget.contains(event.relatedTarget)) return;
     setTouched(true);
-    // Tidy what was typed into the input's own format (an ISO instant into date and time).
+    // Tidy what was typed into the input's own format (an ISO instant into date and time); a day
+    // the bounds chose stays unchosen.
     if (reading.kind === 'ok') {
       setTexts({
-        date: bounded ? reading.day : plantDateText(reading.instant),
+        date: bounded ? texts.date : plantDateText(reading.instant),
         time: plantClockText(reading.instant, showSeconds(reading.instant, withSeconds)),
       });
     }
@@ -337,7 +336,7 @@ export function PlantTimeInput({
             className={join(
               controlClass({ size }),
               'tabular-nums',
-              variant === 'console' ? 'w-64' : size === 'touch' ? 'w-36' : 'w-28',
+              variant === 'console' ? 'w-64 max-w-full' : size === 'touch' ? 'w-36' : 'w-28',
             )}
           />
         </div>

@@ -195,6 +195,20 @@ describe('PlantTimeInput', () => {
     expect(sent).toHaveBeenLastCalledWith(null);
   });
 
+  it('with bounds and a value, moves the day with a new time, also after leaving', () => {
+    const sent = vi.fn();
+    render(<Harness sent={sent} withSeconds {...NIGHT} value="2026-10-12T21:05:30.000Z" />);
+    const day = screen.getByRole<HTMLSelectElement>('combobox', { name: 'Date' });
+    const time = screen.getByTestId<HTMLInputElement>('split-at');
+    expect([day.value, time.value]).toEqual(['2026-10-13', '00:05:30']);
+    fireEvent.change(time, { target: { value: '23:15:00' } });
+    expect(sent).toHaveBeenLastCalledWith('2026-10-12T20:15:00.000Z');
+    fireEvent.blur(time);
+    fireEvent.change(time, { target: { value: '01:00:00' } });
+    expect(sent).toHaveBeenLastCalledWith('2026-10-12T22:00:00.000Z');
+    expect(day.value).toBe('2026-10-13');
+  });
+
   it('shows its own error on leaving, on the box that is wrong, and clears it when fixed', () => {
     const sent = vi.fn();
     render(<Harness sent={sent} withSeconds {...NIGHT} />);

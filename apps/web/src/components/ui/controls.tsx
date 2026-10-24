@@ -229,7 +229,7 @@ export function SelectControl({
   readonly ref?: Ref<HTMLSelectElement> | undefined;
 }) {
   return (
-    <span className={join('relative inline-flex max-w-full', className)}>
+    <span className={join('relative inline-flex max-w-full min-w-0', className)}>
       <select
         {...rest}
         id={id}

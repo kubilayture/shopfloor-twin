@@ -29,7 +29,7 @@ export function FilterBar({
       {...data}
       role="group"
       aria-label={label}
-      className={`flex flex-wrap items-start gap-x-3 gap-y-2${className ? ` ${className}` : ''}`}
+      className={`flex flex-wrap items-center gap-x-3 gap-y-2${className ? ` ${className}` : ''}`}
     >
       {children}
       {summary === undefined || summary === null ? null : (

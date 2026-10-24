@@ -121,10 +121,9 @@ export function Field({
 }: FieldProps) {
   const generated = useId();
   const ids = fieldIds(givenId ?? generated, { hint, error, describedBy });
-  const frame = inline ? 'flex flex-col gap-1' : 'flex min-w-0 flex-col gap-1';
   return (
-    <div className={`${frame}${className ? ` ${className}` : ''}`}>
-      <div className={inline ? 'flex items-center gap-2' : 'contents'}>
+    <div className={`flex max-w-full min-w-0 flex-col gap-1${className ? ` ${className}` : ''}`}>
+      <div className={inline ? 'flex min-w-0 items-center gap-2' : 'contents'}>
         <label
           htmlFor={ids.id}
           className={`text-sm font-medium text-ink${inline ? ' whitespace-nowrap' : ''}`}

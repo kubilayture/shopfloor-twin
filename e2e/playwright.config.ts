@@ -36,6 +36,7 @@ import { WEB_SPKI_ENV, chromiumSpkiArgument } from '@shopfloor/test-kit/tls';
  * every fault.
  * The HTTPS front (P9-14, ADR-0039, checklist S4; browser/tls) runs in `orders-dispatch` (the gate's
  * reconciliation, while the simulator waits) and in `console`.
+ * No Content-Security-Policy violation on any route (#338; browser/csp) runs in `orders-dispatch`.
  * Every run holds the host-wide heavy-suite lock (#228, src/playwright-lock.ts).
  * Chromium only. On failure: a trace and a screenshot in e2e/results/<pass>/playwright/<project>.
  *
@@ -76,6 +77,7 @@ export default defineConfig({
         'console/**',
         'console-shift/**',
         'tls/**',
+        'csp/**',
         'resilience/**',
         'demo/**',
       ],
@@ -90,7 +92,7 @@ export default defineConfig({
     },
     {
       name: 'orders-dispatch',
-      testMatch: ['orders/dispatch/*.spec.ts', 'tls/*.spec.ts'],
+      testMatch: ['orders/dispatch/*.spec.ts', 'tls/*.spec.ts', 'csp/*.spec.ts'],
       outputDir: join(results, 'playwright', 'orders-dispatch'),
       use: { ...chromium },
     },

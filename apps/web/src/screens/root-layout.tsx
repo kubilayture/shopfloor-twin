@@ -88,7 +88,7 @@ function OfflineBar() {
     <div
       role="alert"
       data-testid="offline-bar"
-      className="border-b-2 border-amber-700 bg-amber-50 text-slate-900 print:hidden"
+      className="border-b-2 border-warn-border bg-warn-soft text-ink print:hidden"
       data-print="hidden"
     >
       <p className="mx-auto max-w-7xl px-4 py-2 text-sm">

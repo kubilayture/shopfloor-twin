@@ -75,7 +75,7 @@ export function sameOriginWsUrl(path: string, location: Location = window.locati
  * MES's rate limit. A lost connection is retried with exponential backoff and jitter; `busy`,
  * `rate-limited` and `unavailable` answers retry the subscriptions not yet confirmed. While the
  * browser says the network is gone (`connectionLost`) it holds no socket and tries none; it
- * connects again at once when the network returns (`connectionFound`).
+ * connects again within `initialDelayMs` (jittered) when the network returns (`connectionFound`).
  */
 export class LiveClient {
   readonly #options: Required<Omit<LiveClientOptions, 'createSocket'>> & {
@@ -164,7 +164,11 @@ export class LiveClient {
     this.#halt();
   }
 
-  /** The network is back (the browser's `online` event): reconnects at once if it was running. */
+  /**
+   * The network is back (the browser's `online` event): if it was running (or was started while
+   * offline), it connects again after a random delay below `initialDelayMs`, not after the backoff
+   * it had reached; the jitter spreads the tabs that all hear `online` at the same moment.
+   */
   connectionFound(): void {
     if (!this.#offline) return;
     this.#offline = false;
@@ -174,7 +178,14 @@ export class LiveClient {
       return;
     }
     this.#resume = undefined;
-    this.#connect(resume);
+    this.#setStatus(resume);
+    this.#reconnectTimer = setTimeout(
+      () => {
+        this.#reconnectTimer = undefined;
+        this.#connect(resume);
+      },
+      Math.round(this.#options.initialDelayMs * this.#options.random()),
+    );
   }
 
   /** Stopped: no socket, no reconnect waiting, nothing to send. */

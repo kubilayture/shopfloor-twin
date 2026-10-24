@@ -61,6 +61,9 @@ describe('offline (#312)', () => {
       });
     });
     expect(bar.textContent).toContain(formatClockSeconds(PLANT.clock.watermark));
+    // The same alert, its text unchanged: announced once per outage, not on every render.
+    expect(screen.getByTestId('offline-bar')).toBe(bar);
+    expect(screen.getAllByRole('alert')).toEqual([bar]);
 
     // A screen opened now says it cannot read, instead of "Loading…" for as long as it lasts.
     await settle(() => {
@@ -72,9 +75,11 @@ describe('offline (#312)', () => {
 
     await net.restore();
     expect(screen.queryByTestId('offline-bar')).toBeNull();
-    // Reconnects at once, not after the backoff it had reached.
-    expect(app.factory.sockets).toHaveLength(2);
+    // Reconnects within its first delay (jittered), not after the backoff it had reached.
     expect(status.dataset.status).toBe('reconnecting');
+    await waitFor(() => {
+      expect(app.factory.sockets).toHaveLength(2);
+    });
     await app.open();
     expect(status.dataset.status).toBe('open');
     expect(status.textContent).toBe('Live');

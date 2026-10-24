@@ -282,8 +282,12 @@ describe('LiveClient', () => {
     expect(client.status).toBe('stopped');
 
     client.connectionFound();
-    expect(factory.sockets).toHaveLength(2);
     expect(client.connection).toEqual({ status: 'reconnecting', attempt: 0, offline: false });
+    // After the jitter (random 0.5 of the 500 ms initial delay).
+    vi.advanceTimersByTime(249);
+    expect(factory.sockets).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(factory.sockets).toHaveLength(2);
     factory.last.open();
     expect(client.status).toBe('open');
     expect(factory.last.sent).toEqual([{ type: 'subscribe', topic: 'states' }]);
@@ -304,7 +308,8 @@ describe('LiveClient', () => {
     vi.advanceTimersByTime(60_000);
     expect(factory.sockets).toHaveLength(5);
     client.connectionFound();
-    // At once, as a first attempt: not after the backoff it had reached.
+    // Within the first delay, as a first attempt: not after the backoff it had reached.
+    vi.advanceTimersByTime(250);
     expect(factory.sockets).toHaveLength(6);
     expect(client.connection).toEqual({ status: 'reconnecting', attempt: 0, offline: false });
   });
@@ -317,8 +322,44 @@ describe('LiveClient', () => {
     expect(factory.sockets).toHaveLength(0);
     expect(client.status).toBe('stopped');
     client.connectionFound();
+    expect(client.status).toBe('connecting');
+    vi.advanceTimersByTime(250);
     expect(factory.sockets).toHaveLength(1);
     expect(client.status).toBe('connecting');
+  });
+
+  it('spreads the reconnects of tabs that hear online together, below initialDelayMs (#312)', () => {
+    const early = setup({ random: () => 0.1 });
+    const late = setup({ random: () => 0.9 });
+    for (const { client, factory } of [early, late]) {
+      client.start();
+      factory.last.open();
+      client.connectionLost();
+      client.connectionFound();
+    }
+    vi.advanceTimersByTime(50);
+    expect([early.factory.sockets.length, late.factory.sockets.length]).toEqual([2, 1]);
+    vi.advanceTimersByTime(399);
+    expect(late.factory.sockets).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(late.factory.sockets).toHaveLength(2);
+  });
+
+  it('drops a jittered reconnect when the network goes again or the client stops (#312)', () => {
+    const { client, factory } = setup();
+    client.start();
+    factory.last.open();
+    client.connectionLost();
+    client.connectionFound();
+    client.connectionLost();
+    vi.advanceTimersByTime(60_000);
+    expect(factory.sockets).toHaveLength(1);
+    expect(client.status).toBe('stopped');
+    client.connectionFound();
+    client.stop();
+    vi.advanceTimersByTime(60_000);
+    expect(factory.sockets).toHaveLength(1);
+    expect(client.status).toBe('stopped');
   });
 
   it('stays stopped when the network returns after a stop or before any start (#312)', () => {

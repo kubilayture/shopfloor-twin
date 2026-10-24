@@ -174,9 +174,15 @@ export const HEADER_CELL =
  * moves with the sticky cell.
  */
 export const STICKY_HEADER_CELL = 'sticky top-12 z-sticky group-data-scroll/frame:top-0';
+/**
+ * A header that does not stick to the page still sticks inside a scroll box: the box scrolls
+ * vertically too, and a short table's header must not scroll out of it.
+ */
+export const SCROLL_STICKY_HEADER_CELL =
+  'group-data-scroll/frame:sticky group-data-scroll/frame:top-0 group-data-scroll/frame:z-sticky';
 /** The header cell of a sticky first column, above the header cells that scroll under it. */
 const STICKY_CORNER_CELL = 'sticky left-0 top-12 z-11 group-data-scroll/frame:top-0';
-const STICKY_CORNER = 'sticky left-0 z-11';
+const STICKY_CORNER = 'sticky left-0 z-11 group-data-scroll/frame:top-0';
 const CELL_X = 'px-3';
 const HEADER_Y = 'py-2';
 
@@ -681,7 +687,7 @@ export function DataTable<Row>({
   }
 
   const sticky = stickyHeader ?? shown.length > 15;
-  const headerCell = `${HEADER_CELL} ${CELL_X} ${sticky ? STICKY_HEADER_CELL : ''}`;
+  const headerCell = `${HEADER_CELL} ${CELL_X} ${sticky ? STICKY_HEADER_CELL : SCROLL_STICKY_HEADER_CELL}`;
   const cornerCell = `${HEADER_CELL} ${CELL_X} ${sticky ? STICKY_CORNER_CELL : STICKY_CORNER}`;
   const bodyCell = `${CELL_X} align-middle`;
   const head = (

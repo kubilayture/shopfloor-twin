@@ -4,7 +4,12 @@ import { Children, type ReactNode } from 'react';
 import { HOLD_STATE_TEXT, SIGNAL_STATUS_TEXT, type QualityFailure } from '../domain/quality.ts';
 import { formatPlantTime, wallTimeText } from '../domain/time.ts';
 import { Badge, type BadgeVariant } from './ui/badge.tsx';
-import { HEADER_CELL, STICKY_HEADER_CELL, TableFrame } from './ui/data-table.tsx';
+import {
+  HEADER_CELL,
+  SCROLL_STICKY_HEADER_CELL,
+  STICKY_HEADER_CELL,
+  TableFrame,
+} from './ui/data-table.tsx';
 import type { Tone } from './ui/tokens.ts';
 
 // Shared pieces of the SPC and holds screens (#203): sections, tables, badges and messages. State
@@ -87,7 +92,7 @@ export function Table({
           // An unnamed column (the actions) may repeat the empty name.
           key={`${String(index)}-${column}`}
           scope="col"
-          className={`${HEADER_CELL} ${cell} ${sticky ? STICKY_HEADER_CELL : ''}`}
+          className={`${HEADER_CELL} ${cell} ${sticky ? STICKY_HEADER_CELL : SCROLL_STICKY_HEADER_CELL}`}
         >
           {column}
         </th>

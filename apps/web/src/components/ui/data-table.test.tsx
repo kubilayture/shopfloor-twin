@@ -148,7 +148,7 @@ describe('DataTable markup', () => {
     expect(otherTh?.className).not.toMatch(/\bleft-0\b/);
     const [stickyTd, otherTd] = screen.getAllByRole('cell');
     expect(stickyTd?.className).toMatch(/\bsticky left-0 z-1 bg-inherit\b/);
-    expect(otherTd?.className).not.toMatch(/\bsticky\b/);
+    expect(otherTd?.className).not.toMatch(/(^| )sticky( |$)/);
   });
 });
 
@@ -157,7 +157,7 @@ describe('DataTable sticky header', () => {
 
   it('sticks under the top bar on the page when more than 15 rows show, in a clipped frame', () => {
     const { rerender } = render(table({ rows: rowsOf(15) }));
-    expect(headerOf()?.className).not.toMatch(/\bsticky\b/);
+    expect(headerOf()?.className).not.toMatch(/(^| )sticky( |$)/);
     rerender(table({ rows: rowsOf(16) }));
     expect(headerOf()?.className).toMatch(/\bsticky top-12 z-sticky\b/);
     expect(headerOf()?.className).toMatch(/\bgroup-data-scroll\/frame:top-0\b/);
@@ -173,9 +173,9 @@ describe('DataTable sticky header', () => {
 
   it('follows stickyHeader when given', () => {
     const { rerender } = render(table({ rows: rowsOf(2), stickyHeader: true }));
-    expect(headerOf()?.className).toMatch(/\bsticky\b/);
+    expect(headerOf()?.className).toMatch(/(^| )sticky( |$)/);
     rerender(table({ rows: rowsOf(20), stickyHeader: false }));
-    expect(headerOf()?.className).not.toMatch(/\bsticky\b/);
+    expect(headerOf()?.className).not.toMatch(/(^| )sticky( |$)/);
   });
 
   it('becomes a bounded, focusable scroll box when bounded', () => {
@@ -188,6 +188,12 @@ describe('DataTable sticky header', () => {
     expect(frame.className).toContain('max-h-[min(70vh,720px)]');
     // Not wider than the frame: no note and no fade.
     expect(screen.queryByText('Scroll for more columns.')).toBeNull();
+    // Three rows: no sticky header on the page, but it sticks inside the box, which also
+    // scrolls vertically, so it never scrolls out of it.
+    expect(headerOf()?.className).not.toMatch(/(^| )sticky( |$)/);
+    expect(headerOf()?.className).toMatch(
+      /\bgroup-data-scroll\/frame:sticky group-data-scroll\/frame:top-0\b/,
+    );
   });
 
   it('becomes a scroll box with an edge fade and a note when the table is wider than its frame', () => {
@@ -218,7 +224,7 @@ describe('DataTable sticky header', () => {
     expect(fade?.getAttribute('aria-hidden')).toBe('true');
     expect(fade?.className).toMatch(/\bfrom-surface\b/);
     // Still sticky, now to the top of the box (the frame carries data-scroll).
-    expect(headerOf()?.className).toMatch(/\bsticky\b/);
+    expect(headerOf()?.className).toMatch(/(^| )sticky( |$)/);
 
     // Scrolled to the end: the fade goes.
     vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockReturnValue(900);

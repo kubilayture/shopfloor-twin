@@ -31,7 +31,7 @@ describe('the quality Table', () => {
     expect(table.querySelectorAll('tbody > tr > td')).toHaveLength(6);
     expect(table.querySelector('tbody')?.className).toMatch(/\bdivide-y divide-line-subtle\b/);
     // Short: no sticky header, in a frame that fits.
-    expect(headers[0]?.className).not.toMatch(/\bsticky\b/);
+    expect(headers[0]?.className).not.toMatch(/(^| )sticky( |$)/);
     expect(table.parentElement?.dataset.frame).toBe('fit');
   });
 
@@ -41,7 +41,7 @@ describe('the quality Table', () => {
         {rows(15)}
       </Table>,
     );
-    expect(screen.getAllByRole('columnheader')[0]?.className).not.toMatch(/\bsticky\b/);
+    expect(screen.getAllByRole('columnheader')[0]?.className).not.toMatch(/(^| )sticky( |$)/);
     rerender(
       <Table testId="t" caption="Units" columns={['#', 'Lot', '']}>
         {rows(16)}
@@ -62,5 +62,8 @@ describe('the quality Table', () => {
     const region = screen.getByRole('region', { name: 'Units in scope' });
     expect(region.dataset.frame).toBe('scroll');
     expect(region.className).toMatch(/\boverflow-auto\b/);
+    expect(screen.getByRole('columnheader').className).toMatch(
+      /\bgroup-data-scroll\/frame:sticky\b/,
+    );
   });
 });

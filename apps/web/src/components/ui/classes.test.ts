@@ -135,6 +135,8 @@ const PASSED_IN = ['line-through'];
  * Tailwind's marker class for `group-open:`, which generates no CSS of its own.
  */
 const NOT_CLASSES = new Set(['top', 'bottom', 'text', 'p', 'group']);
+/** UX-1d1 (#318): a header cell's `scope="col"`. */
+NOT_CLASSES.add('col');
 
 const CLASSES = [...new Set([...FILES.flatMap(harvest), ...PASSED_IN])]
   .filter((c) => !NOT_CLASSES.has(c))

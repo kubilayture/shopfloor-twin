@@ -441,3 +441,11 @@
 html:has(dialog:modal) {
   overflow: hidden;
 }
+
+/*
+ * Scrolling a control into view (focus, a skip link) keeps it clear of the sticky 48 px top bar
+ * and a table's sticky header under it (UX-1d1, #318; design system section 7, WCAG 2.4.11).
+ */
+html {
+  scroll-padding-top: 6rem;
+}

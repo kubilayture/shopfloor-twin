@@ -451,12 +451,19 @@ interface DataTableProps<Row> {
     onChange: (next: Set<string>) => void;
     label: (row: Row) => string;
     allLabel: string;
-    testId?: string;
+    selectable?: (row: Row) => boolean; // rows without a checkbox (an alarm that cannot be acknowledged)
+    testId?: string; // the select-all's ("select-all")
+    rowTestId?: (row: Row) => string; // each checkbox's ("select-${id}")
   };
   activeRowKey?: string; // the row whose detail is open: aria-selected / aria-current
   actions?: (row: Row) => React.ReactNode; // ghost sm buttons in the last column, in a row
   empty?: React.ReactNode; // an EmptyState; the header row is not shown when empty
+  loading?: string; // a table Skeleton with this label instead of the table
+  error?: ErrorStateProps; // an ErrorState instead of the table
   stickyHeader?: boolean; // default true when rows > 15
+  bounded?: boolean; // always the bounded scroll box (a long list inside a detail)
+  skipToDetails?: string; // the detail's id: a "Skip to the details" link before the table
+  announceRemoval?: (left: number) => string; // the polite status after a focused row went
   density?: 'compact' | 'default'; // 32 / 40 px rows
   narrow?: 'scroll' | 'stack'; // below md: scroll with an edge fade, or one card per row
   pageSize?: number; // client-side paging for long lists (lot units: 50)
@@ -469,8 +476,9 @@ interface DataTableProps<Row> {
 - Rows: 1 px `line-subtle` dividers, no zebra (the dividers carry the rows; zebra fights the tone bars), hover `neutral-50`, the active row `accent-subtle` with a 3 px `accent` left bar (D-03).
 - Numbers right-aligned in tabular figures. Units: durations keep their unit in every cell ("30.0 min", as the demo walkthrough asserts on the Pareto table, and because durations mix scales); a column of measured values or counts with one unit puts it in the header ("Leak rate (Pa/min)") and the cells hold numbers only.
 - **Sticky header** (G-14): `position: sticky` works only when no ancestor between the header and the scrolling viewport clips overflow. So the frame has two modes, chosen by measuring (a `ResizeObserver` on the table against its frame):
-  - the table fits its frame: the frame uses `overflow-x: clip` (not `auto`), the header sticks to the page under the top bar (`top: 48px`);
-  - the table is wider than its frame: the frame becomes a bounded scroll box (`overflow: auto`, `max-height: min(70vh, 720px)`), and the header sticks to the top of that box.
+  - the table fits its frame: the frame uses `overflow: clip` (not `auto` or `hidden`: clip makes no scroll box, and it keeps the header's fill inside the rounded corners), the header sticks to the page under the top bar (`top: 48px`);
+  - the table is wider than its frame (or `bounded`): the frame becomes a bounded scroll box (`overflow: auto`, `max-height: min(70vh, 720px)`, focusable as a named region so the keyboard scrolls it), and the header sticks to the top of that box.
+  - The header's bottom line is an inset shadow, not a border, so it moves with the sticky cells; the quality screens' `Table` (rows of their own) shares the frame and header until it is retired.
 - Row removal: when a row the focus was in disappears (an alarm acknowledged out of the Active view, a record coded out of "Only uncoded"), focus moves to the same action in the next row, else the previous row, else the table's section heading (`tabindex="-1"`); a polite status says what happened ("Alarm acknowledged; 2 left").
 - Narrow screens: `scroll` keeps the table and adds a right-edge fade and a visually hidden "Scroll for more columns" note; columns with `priority: 3` drop below `md`, `priority: 2` below `sm`; `stack` renders each row as a definition list (used for the alarm list and downtime records on phones, G-27).
 - Long lists: `pageSize` with a pager under the table ("1–50 of 180", previous and next) (T-04).
@@ -485,9 +493,12 @@ interface TabsProps {
   tabs: { id: string; label: React.ReactNode; count?: number; testId?: string }[];
   value: string;
   onChange: (id: string) => void;
-  panelId?: string; // the tabpanel's id
+  panelId?: string; // the tabpanel's id (default `${idPrefix}-panel`)
+  idPrefix?: string; // tab ids are `${idPrefix}-${id}` ("alarm-tab-active"); generated when absent
 }
 ```
+
+The panel is a `TabPanel` (`role="tabpanel"`, `tabindex="0"`, `aria-labelledby` the selected tab's id). A tab's count is also its `data-count`.
 
 WAI-ARIA tabs: `role="tablist"`, roving `tabindex`, Left/Right/Home/End move and select (automatic activation), `aria-controls` to the panel, the panel `role="tabpanel"` with `aria-labelledby`. Look: underline tabs (2 px `accent` under the selected one, text `ink` 600; others `ink-secondary`), counts as a `neutral` badge. Below `sm` the tab list scrolls sideways instead of wrapping (A-04). Today's alarm tabs (`tab-active`, `tab-acknowledged`, `tab-shelved`, `tab-history`) keep their ids.
 
@@ -771,7 +782,7 @@ The bar for every issue. The harness of UX-1g reports it with axe on every route
 | 1.4.12 / 1.4.13                                  | Text spacing overrides don't clip (no fixed heights on text); tooltips are dismissible (Escape), hoverable and persistent.                                                                                                                                                                                                                      |
 | 2.1.1 Keyboard                                   | Everything by keyboard: tabs with arrows, dialogs trap and return focus, the nav drawer, table row actions as buttons (rows are not clickable divs), the SPC chart's points through its table.                                                                                                                                                  |
 | 2.4.1 / 2.4.2 / 2.4.3                            | Skip link kept, plus "Skip to the details" before long action tables (G-33); page titles per route (G-05); focus order follows the visual order; focus moves to the new page's `h1` on navigation (kept).                                                                                                                                       |
-| 2.4.7 / 2.4.11 / 2.4.13 Focus                    | A 2 px solid ring in `focus` (`focus-on-dark` on the top bar and nav) with a 2 px offset on every interactive element, `:focus-visible` only; sticky headers and panels never cover the focused element (`scroll-padding-top: 64px`).                                                                                                           |
+| 2.4.7 / 2.4.11 / 2.4.13 Focus                    | A 2 px solid ring in `focus` (`focus-on-dark` on the top bar and nav) with a 2 px offset on every interactive element, `:focus-visible` only; sticky headers and panels never cover the focused element (`scroll-padding-top: 96px`: the 48 px top bar and a sticky table header).                                                              |
 | 2.5.3 Label in name                              | The visible label starts the accessible name ("Acknowledge" → "Acknowledge SPINDLE-OVERLOAD on Horizontal machining centre 1", as today).                                                                                                                                                                                                       |
 | 2.5.8 Target size                                | ≥ 24 × 24 px for every target on desktop (checkboxes in a 24 px hit area), ≥ 44 px on touch layouts, 56 px in the terminal.                                                                                                                                                                                                                     |
 | 3.2.2 / 3.3.1 / 3.3.3 Forms                      | No change of context on input (filters update the list, not the page); errors identified in text, tied to their field (`aria-invalid`, `aria-describedby`), with a suggestion where possible (L-01).                                                                                                                                            |

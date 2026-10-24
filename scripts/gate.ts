@@ -19,11 +19,11 @@
  * them afterwards; a hit fails the job (checklist S7, #242).
  *
  * Before the first job it takes the host-wide heavy-suite lock (#228,
- * `~/.cache/shopfloor-twin/heavy.lock`, `@shopfloor/test-kit/heavy-lock`), waiting up to
- * `HEAVY_LOCK_TIMEOUT_MS` (default 3 hours) for another heavy run to end; its jobs inherit the
- * lock through `SHOPFLOOR_HEAVY_LOCK`. Holding it, it refuses to start below 25 GiB free on the
- * host or 15 GiB in Docker's data root (exit 2, saying which). The BuildKit cache is pruned to
- * 10 GiB after the smoke's build and at the end.
+ * `~/.cache/shopfloor-twin/heavy.lock`, `@shopfloor/test-kit/heavy-lock`), waiting its turn
+ * (first come, first served, #348) up to `HEAVY_LOCK_TIMEOUT_MS` (default 3 hours); its jobs
+ * inherit the lock through `SHOPFLOOR_HEAVY_LOCK`. Holding it, it refuses to start below 25 GiB
+ * free on the host or 15 GiB in Docker's data root (exit 2, saying which). The BuildKit cache is
+ * pruned to 10 GiB after the smoke's build and at the end.
  *
  * Then it removes the project's volumes, the images it built and the env file, and prints one
  * record for the pull request's "Gate" section: the commit (and whether the tree was clean), each

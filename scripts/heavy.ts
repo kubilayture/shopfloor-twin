@@ -4,10 +4,11 @@
  * `pnpm test:reconcile`, `pnpm test:trace-perf`, `pnpm test:console` and `pnpm test:resilience`
  * start through it, and `pnpm gate` takes the same lock itself.
  *
- * - Takes `~/.cache/shopfloor-twin/heavy.lock`, waiting (and saying for whom) while another live
- *   process holds it, up to `HEAVY_LOCK_TIMEOUT_MS` (default 3 hours); a lock whose holder is gone
- *   (`ESRCH`) is removed. Under a holder (`SHOPFLOOR_HEAVY_LOCK` names its lock, as the gate's
- *   jobs do) it runs at once.
+ * - Takes `~/.cache/shopfloor-twin/heavy.lock`, waiting (and saying for whom, and its place in the
+ *   queue) while another live process holds it, up to `HEAVY_LOCK_TIMEOUT_MS` (default 3 hours);
+ *   waiters are served first come, first served (#348, a ticket in `heavy.lock.queue`); a lock
+ *   whose holder is gone (`ESRCH`) is removed. Under a holder (`SHOPFLOOR_HEAVY_LOCK` names its
+ *   lock, as the gate's jobs do) it runs at once.
  * - Once it holds the lock (not when inherited): refuses to start below 25 GiB free on the host or
  *   15 GiB in Docker's data root, saying which (exit 2).
  * - Runs the command in its own process group with `SHOPFLOOR_HEAVY_LOCK` set, so its children

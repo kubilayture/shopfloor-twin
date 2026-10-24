@@ -6,6 +6,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
@@ -18,7 +19,9 @@ import {
   DEFAULT_HEAVY_LOCK_TIMEOUT_MS,
   HEAVY_LOCK_ENV,
   HEAVY_LOCK_PATH,
+  HEAD_POLL_MS,
   HeavyLockTimeoutError,
+  TICKET_STALE_MS,
   MIN_DOCKER_FREE_BYTES,
   MIN_HOST_FREE_BYTES,
   acquireHeavyLock,
@@ -36,13 +39,26 @@ import {
   parseProcessStart,
   processLiveness,
   processStartTime,
+  queuePath,
+  queuePlace,
   readGroups,
   readHolder,
+  readQueue,
+  readTicket,
   recordGroup,
   releaseLock,
+  removeOldDrafts,
+  removeTicket,
+  retakeTicket,
+  takeTicket,
+  ticketLiveness,
+  ticketName,
+  touchTicket,
   tryTakeLock,
   type HeavyLockHolder,
   type LockProbe,
+  type QueueEntry,
+  type QueueTicket,
 } from './heavy-lock.ts';
 
 // Every test works on a lock of its own under a temporary directory: the real lock at
@@ -786,5 +802,702 @@ describe('disk checks (#228)', () => {
     );
     expect(diskProbeImage(compose)).toMatch(/^eclipse-mosquitto:[\w.-]+$/);
     expect(() => diskProbeImage('services: {}')).toThrow(/eclipse-mosquitto/);
+  });
+});
+
+describe('the queue: first come, first served (#348)', () => {
+  const queue = () => queuePath(lockPath);
+  const ticket = (pid: number, token = `q-${String(pid)}`): QueueTicket => ({
+    pid,
+    command: `wait-${String(pid)}`,
+    since: '2026-10-24T08:00:00.000Z',
+    token,
+  });
+  const backdate = (name: string, ms: number) => {
+    const at = new Date(Date.now() - ms);
+    utimesSync(join(queue(), name), at, at);
+  };
+  const deadPid = async () => {
+    const exited = spawn(process.execPath, ['-e', '']);
+    const pid = exited.pid ?? 0;
+    await new Promise((done) => exited.on('exit', done));
+    return pid;
+  };
+  const until = async (what: string, test: () => boolean, ms = 5_000) => {
+    const end = Date.now() + ms;
+    while (!test()) {
+      if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(2);
+    }
+  };
+  const tickets = () => readQueue(queue()).map((entry) => entry.name);
+
+  it('keeps the queue beside the lock, never inside it (a release removes the lock directory)', () => {
+    expect(queuePath(HEAVY_LOCK_PATH)).toBe(`${HEAVY_LOCK_PATH}.queue`);
+    expect(queuePath('/x/heavy.lock')).toBe('/x/heavy.lock.queue');
+  });
+
+  it('numbers tickets one after another, zero-padded, oldest first, each complete', () => {
+    expect(ticketName(7)).toBe('ticket-000000000007');
+    expect(ticketName(123_456_789_012)).toBe('ticket-123456789012');
+    expect(takeTicket(queue(), ticket(1))).toBe('ticket-000000000001');
+    expect(takeTicket(queue(), ticket(2))).toBe('ticket-000000000002');
+    expect(takeTicket(queue(), ticket(3))).toBe('ticket-000000000003');
+    expect(readTicket(queue(), 'ticket-000000000002')).toEqual(ticket(2));
+    // Ten sorts after nine as a number, and drafts and strangers are not tickets.
+    for (let n = 4; n <= 10; n += 1) takeTicket(queue(), ticket(n));
+    writeFileSync(join(queue(), 'draft-1.abc.tmp'), '{}');
+    writeFileSync(join(queue(), 'ticket-12'), '{}');
+    writeFileSync(join(queue(), 'notes.txt'), '');
+    const entries = readQueue(queue());
+    expect(entries.map((entry) => entry.seq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(entries.every((entry) => entry.ageMs > -1_000 && entry.ageMs < 5_000)).toBe(true);
+    // The next one follows the highest, not the count, once earlier ones are gone.
+    expect(removeTicket(queue(), 'ticket-000000000001', 'q-1')).toBe(true);
+    expect(takeTicket(queue(), ticket(11))).toBe('ticket-000000000011');
+    expect(readdirSync(queue()).filter((name) => name.startsWith('draft-'))).toEqual([
+      'draft-1.abc.tmp',
+    ]);
+  });
+
+  it('lists tickets by sequence whatever order they were made in', () => {
+    for (const seq of [10, 2, 300, 7, 1, 45]) retakeTicket(queue(), ticketName(seq), ticket(seq));
+    expect(readQueue(queue()).map((entry) => entry.seq)).toEqual([1, 2, 7, 10, 45, 300]);
+  });
+
+  it('reads no ticket from a missing, corrupt or incomplete file, and an empty queue as empty', () => {
+    expect(readQueue(queue())).toEqual([]);
+    mkdirSync(queue(), { recursive: true });
+    expect(readTicket(queue(), 'ticket-000000000001')).toBeUndefined();
+    writeFileSync(join(queue(), 'ticket-000000000001'), '{"pid": 3');
+    expect(readTicket(queue(), 'ticket-000000000001')).toBeUndefined();
+    const good = ticket(3);
+    for (const bad of [
+      { ...good, pid: 0 },
+      { ...good, pid: 1.5 },
+      { ...good, pid: '3' },
+      { ...good, command: 1 },
+      { ...good, since: undefined },
+      { ...good, token: null },
+    ]) {
+      writeFileSync(join(queue(), 'ticket-000000000001'), JSON.stringify(bad));
+      expect(readTicket(queue(), 'ticket-000000000001'), JSON.stringify(bad)).toBeUndefined();
+    }
+    writeFileSync(join(queue(), 'ticket-000000000001'), JSON.stringify(good));
+    expect(readTicket(queue(), 'ticket-000000000001')).toEqual(good);
+    expect(readQueue(queue())[0]).toMatchObject({ name: 'ticket-000000000001', seq: 1 });
+  });
+
+  it('removes a ticket only when it is still the one seen, and retakes a name only when free', () => {
+    const name = takeTicket(queue(), ticket(1));
+    expect(removeTicket(queue(), name, 'q-other')).toBe(false);
+    expect(removeTicket(queue(), name, undefined)).toBe(false);
+    expect(retakeTicket(queue(), name, ticket(2))).toBe(false);
+    expect(readTicket(queue(), name)?.token).toBe('q-1');
+    expect(removeTicket(queue(), name, 'q-1')).toBe(true);
+    expect(removeTicket(queue(), name, 'q-1')).toBe(false);
+    expect(retakeTicket(queue(), name, ticket(2))).toBe(true);
+    expect(readTicket(queue(), name)?.token).toBe('q-2');
+    // A file that is no valid ticket is removed by `undefined`.
+    writeFileSync(join(queue(), 'ticket-000000000009'), 'junk');
+    expect(removeTicket(queue(), 'ticket-000000000009', undefined)).toBe(true);
+    expect(removeTicket(queue(), 'ticket-000000000008', undefined)).toBe(false);
+    expect(readdirSync(queue())).toEqual([name]);
+  });
+
+  it('touches a ticket (the heartbeat), and says when it is gone', () => {
+    const name = takeTicket(queue(), ticket(1));
+    backdate(name, 120_000);
+    expect(readQueue(queue())[0]?.ageMs).toBeGreaterThan(100_000);
+    expect(touchTicket(queue(), name)).toBe(true);
+    expect(readQueue(queue())[0]?.ageMs).toBeLessThan(5_000);
+    expect(touchTicket(queue(), 'ticket-000000000099')).toBe(false);
+  });
+
+  it('counts a ticket dead on ESRCH, or untouched for longer than the stale time when judged', () => {
+    const entry = (ageMs: number, valid = true): QueueEntry => ({
+      name: 'ticket-000000000001',
+      seq: 1,
+      ticket: valid ? ticket(5) : undefined,
+      ageMs,
+    });
+    const live = fakeProbe({ pids: [5] });
+    expect(TICKET_STALE_MS).toBe(60_000);
+    expect(HEAD_POLL_MS).toBe(200);
+    expect(ticketLiveness(entry(0), live, 1_000, true)).toBe('alive');
+    expect(ticketLiveness(entry(0), allDead, 1_000, true)).toBe('dead');
+    expect(ticketLiveness(entry(0), allDead, 1_000, false)).toBe('dead');
+    expect(ticketLiveness(entry(1_000), live, 1_000, true)).toBe('alive');
+    expect(ticketLiveness(entry(1_001), live, 1_000, true)).toBe('dead');
+    expect(ticketLiveness(entry(1_001), live, 1_000, false)).toBe('alive');
+    // A file that is no valid ticket: only its age can tell (no PID to ask).
+    expect(ticketLiveness(entry(1_000, false), allDead, 1_000, true)).toBe('alive');
+    expect(ticketLiveness(entry(1_001, false), allDead, 1_000, true)).toBe('dead');
+    expect(ticketLiveness(entry(1_001, false), allDead, 1_000, false)).toBe('alive');
+  });
+
+  it('gives each waiter its place, removing the dead tickets ahead and behind', () => {
+    const first = takeTicket(queue(), ticket(1)); // dead
+    const second = takeTicket(queue(), ticket(2)); // alive
+    const own = takeTicket(queue(), ticket(3, 'mine'));
+    const stale = takeTicket(queue(), ticket(4)); // alive, but no heartbeat
+    takeTicket(queue(), ticket(5)); // alive
+    backdate(stale, 10_000);
+    backdate(own, 10_000); // our own ticket is never judged by ourselves
+    const probe = fakeProbe({ pids: [2, 3, 4, 5] });
+    const removed: string[] = [];
+    const seen = queuePlace(queue(), own, probe, 1_000, true, (entry) => removed.push(entry.name));
+    expect(seen.place).toBe(2);
+    expect(seen.total).toBe(3);
+    expect(seen.first?.name).toBe(second);
+    expect(removed).toEqual([first, stale]);
+    expect(tickets()).toEqual([second, own, 'ticket-000000000005']);
+    // Without judging heartbeats an old ticket stays; at the head, nobody is ahead.
+    backdate(second, 10_000);
+    expect(queuePlace(queue(), own, probe, 1_000, false)).toMatchObject({ place: 2, total: 3 });
+    touchTicket(queue(), own);
+    expect(queuePlace(queue(), second, probe, 1_000, true)).toEqual({
+      place: 1,
+      total: 3,
+      first: undefined,
+    });
+  });
+
+  it('reports only the tickets this call removed, not one another waiter removed first', () => {
+    const own = takeTicket(queue(), ticket(1, 'mine'));
+    const other = takeTicket(queue(), ticket(2));
+    const probe = fakeProbe(
+      {},
+      {
+        pid: () => {
+          rmSync(join(queue(), other)); // another waiter removes it first
+          return 'dead';
+        },
+      },
+    );
+    const removed: string[] = [];
+    expect(
+      queuePlace(queue(), own, probe, 1_000, true, (entry) => removed.push(entry.name)),
+    ).toMatchObject({ place: 1, total: 1 });
+    expect(removed).toEqual([]);
+  });
+
+  it('fails on a link error other than a taken name', () => {
+    expect(() =>
+      retakeTicket(queue(), join('no-such-dir', 'ticket-000000000001'), ticket(1)),
+    ).toThrow(/ENOENT/);
+    expect(readdirSync(queue())).toEqual([]);
+  });
+
+  it('keeps every sequence unique when many processes take tickets at once', async () => {
+    const module = resolve(import.meta.dirname, 'heavy-lock.ts');
+    const script = `
+      import { takeTicket } from ${JSON.stringify(module)};
+      await new Promise((r) => setTimeout(r, Number(process.argv[2]) - Date.now()));
+      for (let i = 0; i < 5; i += 1) {
+        takeTicket(process.argv[1], { pid: process.pid, command: 'c', since: 's', token: process.pid + '-' + i });
+      }
+    `;
+    const start = String(Date.now() + 1_500); // all start together
+    const codes = await Promise.all(
+      Array.from(
+        { length: 12 },
+        () =>
+          new Promise<number | null>((done) => {
+            const child = spawn(
+              process.execPath,
+              ['--input-type=module', '-e', script, queue(), start],
+              { stdio: 'inherit' },
+            );
+            child.on('exit', done);
+          }),
+      ),
+    );
+    expect(codes).toEqual(Array.from({ length: 12 }, () => 0));
+    const entries = readQueue(queue());
+    expect(entries.map((entry) => entry.seq)).toEqual(Array.from({ length: 60 }, (_, i) => i + 1));
+    expect(new Set(entries.map((entry) => entry.ticket?.token)).size).toBe(60);
+    expect(readdirSync(queue()).filter((name) => !name.startsWith('ticket-'))).toEqual([]);
+  }, 30_000);
+
+  it('serves three waiters in the order they came, though the later ones poll faster', async () => {
+    tryTakeLock(lockPath, holder(process.pid, 't-holder'));
+    const order: string[] = [];
+    const waiter = (name: string, ms: number) =>
+      acquireHeavyLock({
+        lockPath,
+        command: name,
+        env: {},
+        pollMs: ms,
+        headPollMs: ms,
+        timeoutMs: 10_000,
+        log,
+      }).then(async (lock) => {
+        order.push(name);
+        await sleep(30);
+        lock.release();
+      });
+    const a = waiter('a', 40);
+    await until('a ticket', () => tickets().length === 1);
+    const b = waiter('b', 10);
+    await until('b ticket', () => tickets().length === 2);
+    const c = waiter('c', 1);
+    await until('c ticket', () => tickets().length === 3);
+    await sleep(20);
+    expect(logs.some((line) => line.includes('place 3 of 3 in the queue, behind a (pid'))).toBe(
+      true,
+    );
+    releaseLock(lockPath, 't-holder');
+    await Promise.all([a, b, c]);
+    expect(order).toEqual(['a', 'b', 'c']);
+    expect(tickets()).toEqual([]);
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
+  it('serves separate processes in the order they came', async () => {
+    tryTakeLock(lockPath, holder(process.pid, 't-holder'));
+    const module = resolve(import.meta.dirname, 'heavy-lock.ts');
+    const trail = join(dir, 'trail.txt');
+    writeFileSync(trail, '');
+    const script = `
+      import { appendFileSync } from 'node:fs';
+      import { acquireHeavyLock } from ${JSON.stringify(module)};
+      const ms = Number(process.argv[3]);
+      const lock = await acquireHeavyLock({ lockPath: process.argv[1], command: process.argv[4], env: {}, pollMs: ms, headPollMs: ms, timeoutMs: 20000, log: () => {} });
+      appendFileSync(process.argv[2], process.argv[4] + '\\n');
+      await new Promise((r) => setTimeout(r, 20));
+      lock.release();
+    `;
+    const exits: Promise<number | null>[] = [];
+    for (const [name, ms] of [
+      ['a', '60'],
+      ['b', '15'],
+      ['c', '1'],
+    ] as const) {
+      const child = spawn(
+        process.execPath,
+        ['--input-type=module', '-e', script, lockPath, trail, ms, name],
+        { stdio: 'inherit' },
+      );
+      exits.push(new Promise((done) => child.on('exit', done)));
+      const count = exits.length;
+      await until(`${name}'s ticket`, () => tickets().length === count, 10_000);
+    }
+    releaseLock(lockPath, 't-holder');
+    expect(await Promise.all(exits)).toEqual([0, 0, 0]);
+    expect(readFileSync(trail, 'utf8')).toBe('a\nb\nc\n');
+    expect(tickets()).toEqual([]);
+  }, 30_000);
+
+  it('skips the ticket of a dead waiter and takes the free lock, saying so once', async () => {
+    const pid = await deadPid();
+    const dead = takeTicket(queue(), ticket(pid));
+    const lock = await acquireHeavyLock({ lockPath, command: 'x', env: {}, timeoutMs: 1_000, log });
+    expect(readHolder(lockPath)?.token).toBe(lock.holder.token);
+    expect(existsSync(join(queue(), dead))).toBe(false);
+    const removals = logs.filter((line) => line.includes('removing the queue ticket of'));
+    expect(removals).toEqual([
+      `heavy lock: removing the queue ticket of wait-${String(pid)} (pid ${String(pid)}, waiting since 2026-10-24T08:00:00.000Z) (no such process, or no heartbeat for 60000 ms)`,
+    ]);
+    lock.release();
+    expect(tickets()).toEqual([]);
+  });
+
+  it('skips a live waiter whose ticket has no heartbeat, and a file that is no ticket', async () => {
+    const stale = takeTicket(queue(), ticket(process.pid, 'other'));
+    backdate(stale, 5_000);
+    writeFileSync(join(queue(), 'ticket-000000000002'), 'junk');
+    backdate('ticket-000000000002', 5_000);
+    const lock = await acquireHeavyLock({
+      lockPath,
+      command: 'x',
+      env: {},
+      timeoutMs: 1_000,
+      ticketStaleMs: 1_000,
+      log,
+    });
+    expect(lock.inherited).toBe(false);
+    expect(tickets()).toEqual([]);
+    expect(logs.some((line) => line.includes('ticket-000000000002 (not a valid ticket)'))).toBe(
+      true,
+    );
+    lock.release();
+  });
+
+  it('waits behind a live waiter with a heartbeat even while the lock is free, then times out', async () => {
+    const ahead = takeTicket(queue(), ticket(process.pid, 'other'));
+    const error: unknown = await acquireHeavyLock({
+      lockPath,
+      command: 'x',
+      env: {},
+      timeoutMs: 60,
+      pollMs: 5,
+      log,
+    }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(HeavyLockTimeoutError);
+    expect(existsSync(lockPath)).toBe(false);
+    expect(logs).toContain(
+      `heavy lock: waiting behind wait-${String(process.pid)} (pid ${String(process.pid)}, waiting since 2026-10-24T08:00:00.000Z), place 2 of 2 in the queue (${lockPath})`,
+    );
+    // The timed-out waiter's ticket is gone; the other one stays.
+    expect(tickets()).toEqual([ahead]);
+  });
+
+  it('times out at the head of the queue, naming the holder and removing its ticket', async () => {
+    tryTakeLock(lockPath, holder(77));
+    const error: unknown = await acquireHeavyLock({
+      lockPath,
+      command: 'x',
+      env: {},
+      timeoutMs: 40,
+      pollMs: 5,
+      probe: allAlive,
+      log,
+    }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(HeavyLockTimeoutError);
+    expect((error as HeavyLockTimeoutError).holder?.token).toBe('t-77');
+    expect(logs).toContain(
+      `heavy lock: waiting for cmd-77 (pid 77, since 2026-10-18T10:00:00.000Z) (${lockPath}), place 1 of 1 in the queue`,
+    );
+    expect(tickets()).toEqual([]);
+  });
+
+  it('says the holder, the place and who is first ahead, again whenever the place changes', async () => {
+    tryTakeLock(lockPath, holder(process.pid, 't-holder'));
+    const zeroth = takeTicket(queue(), ticket(process.pid, 'zeroth'));
+    const first = takeTicket(queue(), ticket(process.pid, 'first'));
+    mkdirSync(queue(), { recursive: true });
+    writeFileSync(join(queue(), 'draft-1.left.tmp'), '{}');
+    const old = new Date(Date.now() - 120_000);
+    utimesSync(join(queue(), 'draft-1.left.tmp'), old, old);
+    const waiting = acquireHeavyLock({
+      lockPath,
+      command: 'x',
+      env: {},
+      timeoutMs: 5_000,
+      pollMs: 5,
+      log,
+    });
+    const holderText = `cmd-${String(process.pid)} (pid ${String(process.pid)}, since 2026-10-18T10:00:00.000Z)`;
+    await until('the place-3 line', () => logs.some((line) => line.includes('place 3 of 3')));
+    // Its ticket says who waits, since when, under which token; a left-over draft is gone.
+    const own = tickets()[2] ?? '';
+    expect(readTicket(queue(), own)).toEqual({
+      pid: process.pid,
+      command: 'x',
+      since: expect.stringMatching(/^\d{4}-\d\d-\d\dT/) as string,
+      token: expect.stringMatching(new RegExp(`^${String(process.pid)}-[0-9a-f]{16}$`)) as string,
+    });
+    expect(existsSync(join(queue(), 'draft-1.left.tmp'))).toBe(false);
+    const seen = readTicket(queue(), own);
+    removeTicket(queue(), zeroth, 'zeroth');
+    await until('the place-2 line', () => logs.some((line) => line.includes('place 2 of 2')));
+    expect(logs).toContain(
+      `heavy lock: waiting for ${holderText} (${lockPath}), place 2 of 2 in the queue, behind wait-${String(process.pid)} (pid ${String(process.pid)}, waiting since 2026-10-24T08:00:00.000Z)`,
+    );
+    removeTicket(queue(), first, 'first');
+    await until('the place-1 line', () => logs.some((line) => line.includes('place 1 of 1')));
+    expect(logs).toContain(
+      `heavy lock: waiting for ${holderText} (${lockPath}), place 1 of 1 in the queue`,
+    );
+    await sleep(30);
+    expect(logs.filter((line) => line.startsWith('heavy lock: waiting'))).toHaveLength(3);
+    releaseLock(lockPath, 't-holder');
+    const lock = await waiting;
+    expect(seen).toMatchObject({ token: lock.holder.token, since: lock.holder.startedAt });
+    lock.release();
+  });
+
+  it('removes a dead holder’s lock at the head of the queue, and the next waiter takes its turn', async () => {
+    const pid = await deadPid();
+    tryTakeLock(lockPath, holder(pid));
+    const order: string[] = [];
+    const waiter = (name: string) =>
+      acquireHeavyLock({ lockPath, command: name, env: {}, pollMs: 5, timeoutMs: 5_000, log }).then(
+        async (lock) => {
+          order.push(name);
+          await sleep(20);
+          lock.release();
+        },
+      );
+    const a = waiter('a');
+    const b = waiter('b');
+    await Promise.all([a, b]);
+    expect(order).toEqual(['a', 'b']);
+    expect(logs.filter((line) => line.includes(`stale lock of cmd-${String(pid)}`))).toHaveLength(
+      1,
+    );
+    expect(tickets()).toEqual([]);
+  });
+
+  it('wakes the next waiter at once on release: the head polls fast whatever its poll time', async () => {
+    tryTakeLock(lockPath, holder(process.pid, 't-holder'));
+    let tookAt = 0;
+    const waiting = acquireHeavyLock({
+      lockPath,
+      command: 'x',
+      env: {},
+      pollMs: 60_000,
+      headPollMs: 20,
+      timeoutMs: 120_000,
+      log,
+    }).then((lock) => {
+      tookAt = Date.now();
+      return lock;
+    });
+    await until('the waiting line', () => logs.some((line) => line.includes('place 1 of 1')));
+    await sleep(50);
+    const releasedAt = Date.now();
+    releaseLock(lockPath, 't-holder');
+    const lock = await waiting;
+    expect(tookAt - releasedAt).toBeLessThan(1_000);
+    lock.release();
+  });
+
+  it('becomes the head when the waiter ahead takes the lock, and takes it right after', async () => {
+    tryTakeLock(lockPath, holder(process.pid, 't-holder'));
+    const times: Record<string, number> = {};
+    const waiter = (name: string) =>
+      acquireHeavyLock({
+        lockPath,
+        command: name,
+        env: {},
+        pollMs: 60_000,
+        headPollMs: 10,
+        ticketStaleMs: 400,
+        timeoutMs: 120_000,
+        log,
+      }).then(async (lock) => {
+        times[`${name}-in`] = Date.now();
+        await sleep(40);
+        times[`${name}-out`] = Date.now();
+        lock.release();
+      });
+    const a = waiter('a');
+    const b = waiter('b');
+    await sleep(30);
+    releaseLock(lockPath, 't-holder');
+    await Promise.all([a, b]);
+    expect(times['b-in'] ?? 0).toBeGreaterThanOrEqual(times['a-out'] ?? Infinity);
+    // b polls at 60 s while behind a, but never sleeps past a quarter of the stale time (100 ms
+    // here, 15 s by default), and at the head every 10 ms: it is in at once, not a minute later.
+    expect((times['b-in'] ?? Infinity) - (times['a-out'] ?? 0)).toBeLessThan(1_000);
+  });
+
+  it('never sleeps past a quarter of the stale time, so its heartbeat keeps its ticket alive', async () => {
+    tryTakeLock(lockPath, holder(process.pid, 't-holder'));
+    const ahead = takeTicket(queue(), ticket(process.pid, 'ahead'));
+    const waiting = acquireHeavyLock({
+      lockPath,
+      command: 'x',
+      env: {},
+      pollMs: 60_000,
+      ticketStaleMs: 200,
+      timeoutMs: 10_000,
+      log,
+    });
+    await until('its ticket', () => tickets().length === 2);
+    const own = tickets()[1] ?? '';
+    // The ticket ahead has no heartbeat: it is removed within the stale time, by a waiter that
+    // would otherwise sleep a minute.
+    await until('the stale ticket removed', () => !tickets().includes(ahead), 2_000);
+    backdate(own, 1_000);
+    await until('its heartbeat', () => (readQueue(queue())[0]?.ageMs ?? Infinity) < 500, 2_000);
+    releaseLock(lockPath, 't-holder');
+    (await waiting).release();
+  });
+
+  it('does not judge heartbeats on a poll after it went without polling itself (the machine slept)', async () => {
+    tryTakeLock(lockPath, holder(process.pid, 't-holder'));
+    const ahead = takeTicket(queue(), ticket(process.pid, 'ahead'));
+    let polls = 0;
+    const probe = fakeProbe(
+      {},
+      {
+        pid: () => {
+          polls += 1;
+          return 'alive';
+        },
+      },
+    );
+    const waiting = acquireHeavyLock({
+      lockPath,
+      command: 'x',
+      env: {},
+      pollMs: 5,
+      ticketStaleMs: 200,
+      timeoutMs: 10_000,
+      probe,
+      log,
+    });
+    await until('the waiting line', () => logs.some((line) => line.includes('place 2 of 2')));
+    backdate(ahead, 10_000);
+    const before = polls;
+    const blockedUntil = Date.now() + 300; // no poll for longer than half the stale time
+    while (Date.now() < blockedUntil) {
+      // the whole process stands still, as in a sleep
+    }
+    await until('the first poll after the stall', () => polls > before);
+    expect(tickets()).toContain(ahead);
+    await until('the next poll removing it', () => !tickets().includes(ahead), 2_000);
+    releaseLock(lockPath, 't-holder');
+    (await waiting).release();
+  });
+
+  it('lets an old-version waiter (no ticket) win a release without breaking the queue', async () => {
+    tryTakeLock(lockPath, holder(process.pid, 't-holder'));
+    const waiting = acquireHeavyLock({
+      lockPath,
+      command: 'new',
+      env: {},
+      pollMs: 5,
+      timeoutMs: 5_000,
+      log,
+    });
+    await until('the waiting line', () => logs.some((line) => line.includes('place 1 of 1')));
+    const own = tickets();
+    // The old code's waiter: tryTakeLock as soon as the lock is free, in the same instant.
+    releaseLock(lockPath, 't-holder');
+    expect(tryTakeLock(lockPath, { ...holder(process.pid, 't-old'), command: 'old-code' })).toBe(
+      true,
+    );
+    await until('the new holder named', () =>
+      logs.some((line) => line.startsWith('heavy lock: waiting for old-code (pid')),
+    );
+    expect(readHolder(lockPath)?.token).toBe('t-old');
+    expect(tickets()).toEqual(own);
+    expect(logs).toContain(
+      `heavy lock: waiting for old-code (pid ${String(process.pid)}, since 2026-10-18T10:00:00.000Z) (${lockPath}), place 1 of 1 in the queue`,
+    );
+    releaseLock(lockPath, 't-old');
+    const lock = await waiting;
+    expect(readHolder(lockPath)?.token).toBe(lock.holder.token);
+    expect(tickets()).toEqual([]);
+    lock.release();
+  });
+
+  it('takes its own ticket again under the same name when it was removed, keeping its place', async () => {
+    tryTakeLock(lockPath, holder(process.pid, 't-holder'));
+    const order: string[] = [];
+    const waiter = (name: string) =>
+      acquireHeavyLock({
+        lockPath,
+        command: name,
+        env: {},
+        pollMs: 5,
+        timeoutMs: 5_000,
+        log,
+      }).then(async (lock) => {
+        order.push(name);
+        await sleep(20);
+        lock.release();
+      });
+    const a = waiter('a');
+    const b = waiter('b');
+    await until('both tickets', () => tickets().length === 2);
+    const [first] = tickets();
+    const token = readTicket(queue(), first ?? '')?.token;
+    rmSync(join(queue(), first ?? ''));
+    await until('the ticket retaken', () => readTicket(queue(), first ?? '')?.token === token);
+    expect(logs).toContain(
+      `heavy lock: this waiter's queue ticket was removed; queued again as ${first ?? ''}`,
+    );
+    releaseLock(lockPath, 't-holder');
+    await Promise.all([a, b]);
+    expect(order).toEqual(['a', 'b']);
+  });
+
+  it('queues again at the end when its ticket’s name was taken by another waiter', async () => {
+    tryTakeLock(lockPath, holder(process.pid, 't-holder'));
+    const order: string[] = [];
+    const waiter = (name: string) =>
+      acquireHeavyLock({
+        lockPath,
+        command: name,
+        env: {},
+        pollMs: 5,
+        timeoutMs: 5_000,
+        log,
+      }).then(async (lock) => {
+        order.push(name);
+        await sleep(20);
+        lock.release();
+      });
+    const a = waiter('a');
+    const b = waiter('b');
+    await until('both tickets', () => tickets().length === 2);
+    const [first] = tickets();
+    rmSync(join(queue(), first ?? ''));
+    retakeTicket(queue(), first ?? '', ticket(process.pid, 'stranger'));
+    await until('a queued again', () => tickets().length === 3);
+    expect(tickets()[2]).toBe('ticket-000000000003');
+    expect(logs).toContain(
+      "heavy lock: this waiter's queue ticket was removed; queued again as ticket-000000000003",
+    );
+    removeTicket(queue(), first ?? '', 'stranger');
+    releaseLock(lockPath, 't-holder');
+    await Promise.all([a, b]);
+    expect(order).toEqual(['b', 'a']);
+  });
+
+  it('removes drafts left by a waiter killed while taking a ticket, after a minute', () => {
+    mkdirSync(queue(), { recursive: true });
+    writeFileSync(join(queue(), 'draft-1.old.tmp'), '{}');
+    writeFileSync(join(queue(), 'draft-1.new.tmp'), '{}');
+    const old = new Date(Date.now() - 61_000);
+    utimesSync(join(queue(), 'draft-1.old.tmp'), old, old);
+    const recent = new Date(Date.now() - 59_000);
+    utimesSync(join(queue(), 'draft-1.new.tmp'), recent, recent);
+    writeFileSync(join(queue(), 'ticket-000000000001'), 'x');
+    utimesSync(join(queue(), 'ticket-000000000001'), old, old);
+    removeOldDrafts(queue());
+    expect(readdirSync(queue()).sort()).toEqual(['draft-1.new.tmp', 'ticket-000000000001']);
+    // Exactly a minute old is still young.
+    const at = new Date('2026-10-24T08:00:00.000Z');
+    utimesSync(join(queue(), 'draft-1.new.tmp'), at, at);
+    removeOldDrafts(queue(), at.getTime() + 60_000);
+    expect(existsSync(join(queue(), 'draft-1.new.tmp'))).toBe(true);
+    removeOldDrafts(queue(), at.getTime() + 60_001);
+    expect(existsSync(join(queue(), 'draft-1.new.tmp'))).toBe(false);
+    removeOldDrafts(join(dir, 'none')); // no queue yet: nothing to do
+  });
+
+  it('takes no ticket when inheriting the lock', async () => {
+    const parent = await acquireHeavyLock({ lockPath, command: 'pnpm gate', env: {}, log });
+    expect(tickets()).toEqual([]);
+    const child = await acquireHeavyLock({
+      lockPath,
+      command: 'pnpm verify',
+      env: { ...parent.env },
+      timeoutMs: 0,
+      log,
+    });
+    expect(child.inherited).toBe(true);
+    expect(existsSync(queue()) ? readdirSync(queue()) : []).toEqual([]);
+    parent.release();
+  });
+
+  it('removes its ticket when taking the lock fails with an error', async () => {
+    // The lock's parent is a file: making the staging directory fails with ENOTDIR.
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'file'), '');
+    const badLock = join(dir, 'file', 'heavy.lock');
+    // The queue sits beside it, under the same file: taking the ticket fails first.
+    await expect(
+      acquireHeavyLock({ lockPath: badLock, command: 'x', env: {}, timeoutMs: 0, log }),
+    ).rejects.toThrow();
+    const readOnlyParent = join(dir, 'ro');
+    mkdirSync(join(readOnlyParent, 'heavy.lock.queue'), { recursive: true });
+    writeFileSync(join(readOnlyParent, 'heavy.lock'), 'not a directory');
+    const error: unknown = await acquireHeavyLock({
+      lockPath: join(readOnlyParent, 'heavy.lock'),
+      command: 'x',
+      env: {},
+      timeoutMs: 0,
+      log,
+    }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(readdirSync(join(readOnlyParent, 'heavy.lock.queue'))).toEqual([]);
+    expect(statSync(join(readOnlyParent, 'heavy.lock')).isFile()).toBe(true);
   });
 });

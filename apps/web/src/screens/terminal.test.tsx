@@ -240,6 +240,7 @@ describe('the operator terminal (#177)', () => {
     // No session: the terminal's own sign-on, not the app's login.
     expect(await screen.findByRole('heading', { name: 'Sign on' })).toBeDefined();
     expect(app.history.location.pathname).toBe('/terminal/line-a1');
+    expect(screen.getByRole('banner').dataset.surface).toBe('dark');
     await signOnAs('olga');
     const login = mes.calls.find((c) => c.method === 'POST' && c.path === '/api/v1/session');
     expect(login?.body).toEqual({ username: 'olga', password: PASSWORD, kind: 'terminal' });

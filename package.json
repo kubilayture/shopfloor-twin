@@ -18,6 +18,7 @@
     "format:check": "prettier --check .",
     "check:dockerfiles": "tsc -p . && node scripts/check-dockerfiles.ts",
     "check:architecture": "node scripts/check-architecture.ts",
+    "check:ui-tokens": "node scripts/check-ui-tokens.ts",
     "prepare": "lefthook install",
     "stack:init": "sh scripts/stack-init.sh",
     "stack:up": "docker compose up -d --wait",

@@ -108,11 +108,16 @@ export function RootLayout() {
     <div className="min-h-screen bg-slate-50 text-slate-900 print:min-h-0 print:bg-white">
       <a
         href="#main"
-        className="sr-only print:hidden focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-10 focus:rounded focus:bg-white focus:px-3 focus:py-2"
+        data-surface="dark"
+        className="sr-only print:hidden focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-popover focus:rounded focus:bg-white focus:px-3 focus:py-2"
       >
         Skip to content
       </a>
-      <header className="bg-slate-900 text-white print:hidden" data-print="hidden">
+      <header
+        className="bg-slate-900 text-white print:hidden"
+        data-print="hidden"
+        data-surface="dark"
+      >
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-x-6 gap-y-2 px-4 py-3">
           <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
             <Link to="/" className="text-lg font-bold hover:underline">

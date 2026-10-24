@@ -4,6 +4,9 @@ import { Children, type ReactNode } from 'react';
 import { HOLD_STATE_TEXT, SIGNAL_STATUS_TEXT, type QualityFailure } from '../domain/quality.ts';
 import { formatPlantTime, wallTimeText } from '../domain/time.ts';
 import { Badge, type BadgeVariant } from './ui/badge.tsx';
+import { buttonClass as uiButtonClass } from './ui/button.tsx';
+import { Textarea } from './ui/controls.tsx';
+import { controlClass } from './ui/field.tsx';
 import {
   HEADER_CELL,
   SCROLL_STICKY_HEADER_CELL,
@@ -15,11 +18,11 @@ import type { Tone } from './ui/tokens.ts';
 // Shared pieces of the SPC and holds screens (#203): sections, tables, badges and messages. State
 // is always a word, never colour alone.
 
-export const inputClass = 'rounded border border-slate-500 bg-white px-2 py-1 text-sm';
-export const buttonClass =
-  'rounded border border-slate-500 bg-white px-3 py-1 text-sm font-medium hover:bg-slate-100 disabled:opacity-50';
-export const primaryClass =
-  'rounded bg-sky-800 px-3 py-1 text-sm font-semibold text-white hover:bg-sky-900 disabled:opacity-50';
+// The control and button looks of the primitives (UX-1d2, #319), kept as class strings until the
+// SPC and holds screens move onto `TextInput`, `Select` and `Button` themselves.
+export const inputClass = controlClass();
+export const buttonClass = uiButtonClass({ variant: 'secondary' });
+export const primaryClass = uiButtonClass({ variant: 'primary' });
 export const cell = 'px-2 py-1.5 align-top';
 /** Row dividers and hover on the legacy table's own rows (design system 4.5: no zebra). */
 /** The header cells' padding, as `cell`'s (`HEADER_CELL` aligns them to the bottom). */
@@ -180,7 +183,10 @@ export function FailureMessage({
   );
 }
 
-/** A comment box with its character count announced. */
+/**
+ * A comment box with its character count announced: a `Textarea` with its `CharacterCount`
+ * (design system 4.7); " (required)" in the label when it is, nothing when it is optional.
+ */
 export function CommentInput({
   id,
   label,
@@ -189,6 +195,7 @@ export function CommentInput({
   testId,
   max,
   required,
+  error,
 }: {
   readonly id: string;
   readonly label: string;
@@ -197,28 +204,22 @@ export function CommentInput({
   readonly testId: string;
   readonly max: number;
   readonly required: boolean;
+  readonly error?: string | undefined;
 }) {
   return (
-    <div className="flex flex-col gap-1">
-      <label htmlFor={id} className="text-sm font-medium">
-        {label}
-        {required ? ' (required)' : ' (optional)'}
-      </label>
-      <textarea
-        id={id}
-        data-testid={testId}
-        value={value}
-        rows={2}
-        maxLength={max}
-        aria-describedby={`${id}-count`}
-        onChange={(event) => {
-          onChange(event.target.value);
-        }}
-        className={`${inputClass} w-full`}
-      />
-      <span id={`${id}-count`} className="text-xs text-slate-700">
-        {value.length} of {max} characters
-      </span>
-    </div>
+    <Textarea
+      id={id}
+      name={testId}
+      label={label}
+      required={required}
+      error={error}
+      data-testid={testId}
+      value={value}
+      rows={2}
+      max={max}
+      onChange={(event) => {
+        onChange(event.target.value);
+      }}
+    />
   );
 }

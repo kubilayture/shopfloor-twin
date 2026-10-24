@@ -11,7 +11,14 @@ import { useEffect, useId, useRef } from 'react';
 import { getOee, getPareto, getShiftOee, listEquipment, type OeeScope } from '../api/client.ts';
 import { queryKeys } from '../api/queries.ts';
 import { EChart } from '../chart/echart.tsx';
-import { hourlyOption, paretoOption, waterfallOption } from '../chart/oee-options.ts';
+import {
+  hourlyOption,
+  hourlyReading,
+  paretoOption,
+  paretoReading,
+  waterfallOption,
+  waterfallReading,
+} from '../chart/oee-options.ts';
 import { useHeadingFocus } from '../components/heading-focus.ts';
 import { QueryError } from '../components/query-error.tsx';
 import { ShiftPicker, useShiftSelection } from '../components/shift-picker.tsx';
@@ -373,8 +380,15 @@ function HourlyChart({
     <EChart
       testId="hourly"
       title="OEE per hour"
-      description="Bar chart of OEE per hour of the shift; the table below lists every value."
-      option={rows.length > 0 ? hourlyOption(rows) : null}
+      description={`${hourlyReading(rows)}; the table below lists every value.`}
+      option={rows.some((hour) => hour.result.oee) ? hourlyOption(rows) : null}
+      empty={
+        !hours.isSuccess
+          ? undefined
+          : rows.length === 0
+            ? 'No hours with data yet.'
+            : 'No planned time in this shift.'
+      }
     >
       {hours.isError ? (
         <QueryError
@@ -425,8 +439,6 @@ function HourlyChart({
             </tbody>
           </table>
         </details>
-      ) : hours.isSuccess ? (
-        <p className="text-sm">No hours with data yet.</p>
       ) : null}
     </EChart>
   );
@@ -438,15 +450,14 @@ function WaterfallChart({ bucket }: { readonly bucket: OeeBucketDto | undefined 
     <EChart
       testId="waterfall"
       title="Loss waterfall"
-      description="Waterfall from planned busy time through each loss to fully productive time; the table below lists every step."
+      description={`${steps ? waterfallReading(steps) : 'Loss waterfall'}; the table below lists every step.`}
       option={steps ? waterfallOption(steps) : null}
+      empty={
+        !bucket
+          ? 'No data for this shift.'
+          : 'No planned busy time in this shift, so there are no losses.'
+      }
     >
-      {!bucket ? <p className="text-sm">No data for this shift.</p> : null}
-      {bucket && !steps ? (
-        <p className="text-sm">
-          {NOT_APPLICABLE}: no planned busy time in this shift, so there are no losses.
-        </p>
-      ) : null}
       {steps ? (
         <>
           {!steps.consistent ? (
@@ -583,9 +594,10 @@ function ParetoChart({
     <EChart
       testId="pareto"
       title="Downtime Pareto"
-      description="Horizontal bars of availability loss by reason, largest first, own and external; the table below lists every reason."
+      description={`${pareto.data ? paretoReading(pareto.data) : 'Availability loss by reason'}; the table below lists every reason.`}
       option={chart?.option ?? null}
       height={chart?.height ?? 200}
+      empty={pareto.data ? 'No availability loss in this shift.' : undefined}
     >
       {pareto.isPending ? <p className="text-sm">Loading the Pareto…</p> : null}
       {pareto.isError ? (
@@ -597,11 +609,7 @@ function ParetoChart({
             Own {minutesText(pareto.data.availability.own)} · external{' '}
             {minutesText(pareto.data.availability.external)}
           </p>
-          {pareto.data.reasons.length === 0 ? (
-            <p className="text-sm">No availability loss in this shift.</p>
-          ) : (
-            <ParetoTable pareto={pareto.data} />
-          )}
+          {pareto.data.reasons.length === 0 ? null : <ParetoTable pareto={pareto.data} />}
         </>
       ) : null}
     </EChart>

@@ -19,7 +19,7 @@ import {
 } from '../api/client.ts';
 import { queryKeys, useAlarmConfig } from '../api/queries.ts';
 import { EChart } from '../chart/echart.tsx';
-import { paretoOption } from '../chart/oee-options.ts';
+import { paretoOption, paretoReading } from '../chart/oee-options.ts';
 import { useHeadingFocus } from '../components/heading-focus.ts';
 import { QueryError } from '../components/query-error.tsx';
 import { ShiftPicker, shiftLabel, useShiftSelection } from '../components/shift-picker.tsx';
@@ -546,12 +546,11 @@ function DowntimeSection({
         <EChart
           testId="report-pareto-chart"
           title="Availability loss by reason"
-          description="Horizontal bars of the availability loss by reason, own and external, largest first; the table lists every value."
+          description={`${paretoReading({ reasons: downtime.reasons })}; the table lists every value.`}
           option={pareto?.option ?? null}
-          {...(pareto ? { height: pareto.height } : {})}
-        >
-          {pareto ? null : <p className="text-sm">No availability loss in this shift.</p>}
-        </EChart>
+          {...(pareto ? { height: pareto.height } : { height: 160 })}
+          empty="No availability loss in this shift."
+        />
         <div className="min-w-0">
           <h3 className="font-semibold">Pareto by reason</h3>
           <div className={tableBox}>

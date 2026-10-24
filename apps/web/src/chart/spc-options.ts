@@ -15,6 +15,7 @@ import {
 } from '../domain/numbers.ts';
 import { isGrowing } from '../domain/quality.ts';
 import { formatPlantTime } from '../domain/time.ts';
+import { CHART_SIZES, CHART_TOKENS } from './theme.ts';
 
 // One SPC chart (#203, ADR-0032): the points on plant time, the limits of the version judging each
 // point (a new version starts a new step), zones at 1σ and 2σ on I and X̄, signalling points
@@ -22,22 +23,28 @@ import { formatPlantTime } from '../domain/time.ts';
 // on I the retests as separate marks (never charted). Every value is also in the table beside the
 // chart; the tooltip is text on the canvas (`richText`, the strict CSP).
 
-const INK = '#334155';
-const GRID_LINE = '#e2e8f0';
+// Colours by role (design system section 5), as token references (theme.ts): points neutral-700
+// circles (provisional hollow), signalling points `alarm` diamonds, limits `chart-limit` dashed,
+// the centre neutral-600 solid, the zones neutral-200 dotted, retests `info` triangles. Episodes
+// are shaded at `EPISODE_OPACITY` of their colour.
 export const SPC_COLORS = {
-  point: '#0369a1',
-  provisional: '#64748b',
-  signal: '#b91c1c',
-  limit: '#b91c1c',
-  centre: '#047857',
-  zone: '#94a3b8',
-  retest: '#6d28d9',
-  episodeFinal: 'rgba(185, 28, 28, 0.12)',
+  point: CHART_TOKENS.other,
+  provisional: CHART_TOKENS.other,
+  line: CHART_TOKENS.muted,
+  signal: CHART_TOKENS.signal,
+  limit: CHART_TOKENS.limit,
+  centre: CHART_TOKENS.text,
+  zone: CHART_TOKENS.grid,
+  retest: CHART_TOKENS.info,
+  episodeFinal: CHART_TOKENS.signal,
   /** Final, its extent still growing (the tester not final through its last point). */
-  episodeGrowing: 'rgba(190, 24, 93, 0.12)',
-  episodeProvisional: 'rgba(180, 83, 9, 0.12)',
+  episodeGrowing: CHART_TOKENS.series[4],
+  episodeProvisional: CHART_TOKENS.own,
 } as const;
-const axisText = { color: INK, fontSize: 12 };
+
+/** How strongly an episode's span is shaded. */
+export const EPISODE_OPACITY = 0.12;
+const axisText = { color: CHART_TOKENS.text, fontSize: CHART_SIZES.label };
 
 /** Half the width given to an episode of one point, so its span is visible (plant ms). */
 const ONE_POINT_SPAN_MS = 20_000;
@@ -117,6 +124,7 @@ export function episodeAreas(signals: readonly SpcSignalDto[], chart: SpcChartNa
               : growing
                 ? SPC_COLORS.episodeGrowing
                 : SPC_COLORS.episodeFinal,
+          opacity: EPISODE_OPACITY,
         },
       },
       { xAxis: to },
@@ -223,14 +231,14 @@ export function spcChartOption(input: SpcChartInput): EChartsCoreOption {
   const places = pointDecimals(precision, chart);
   const zones = chart === 'I' || chart === 'Xbar';
   const sigma = (l: Limits) => (l.upper.value - l.centre.value) / 3;
-  const dashed = (name: string, data: [number, number | null][], colour: string) => ({
+  const dotted = (name: string, data: [number, number | null][], colour: string) => ({
     type: 'line',
     name,
     data,
     step: 'end',
     symbol: 'none',
     silent: true,
-    lineStyle: { color: colour, type: 'dashed', width: 1 },
+    lineStyle: { color: colour, type: 'dotted', width: 1 },
     itemStyle: { color: colour },
   });
   const series: Record<string, unknown>[] = [
@@ -238,7 +246,7 @@ export function spcChartOption(input: SpcChartInput): EChartsCoreOption {
       type: 'line',
       name: 'Points',
       data: points.map((p) => pointItem(p, precision, places)),
-      lineStyle: { color: SPC_COLORS.provisional, width: 1 },
+      lineStyle: { color: SPC_COLORS.line, width: 1 },
       itemStyle: { color: SPC_COLORS.point },
       markArea: { silent: true, label: { show: false }, data: episodeAreas(input.signals, chart) },
     },
@@ -249,7 +257,7 @@ export function spcChartOption(input: SpcChartInput): EChartsCoreOption {
       step: 'end',
       symbol: 'none',
       silent: true,
-      lineStyle: { color: SPC_COLORS.limit, width: 2 },
+      lineStyle: { color: SPC_COLORS.limit, type: 'dashed', width: 1.5 },
       itemStyle: { color: SPC_COLORS.limit },
     },
     {
@@ -259,7 +267,7 @@ export function spcChartOption(input: SpcChartInput): EChartsCoreOption {
       step: 'end',
       symbol: 'none',
       silent: true,
-      lineStyle: { color: SPC_COLORS.centre, width: 1.5 },
+      lineStyle: { color: SPC_COLORS.centre, width: 1 },
       itemStyle: { color: SPC_COLORS.centre },
     },
     {
@@ -269,28 +277,28 @@ export function spcChartOption(input: SpcChartInput): EChartsCoreOption {
       step: 'end',
       symbol: 'none',
       silent: true,
-      lineStyle: { color: SPC_COLORS.limit, width: 2 },
+      lineStyle: { color: SPC_COLORS.limit, type: 'dashed', width: 1.5 },
       itemStyle: { color: SPC_COLORS.limit },
     },
   ];
   if (zones) {
     series.push(
-      dashed(
+      dotted(
         '+2σ',
         line(points, limits, (l) => l.centre.value + 2 * sigma(l)),
         SPC_COLORS.zone,
       ),
-      dashed(
+      dotted(
         '+1σ',
         line(points, limits, (l) => l.centre.value + sigma(l)),
         SPC_COLORS.zone,
       ),
-      dashed(
+      dotted(
         '−1σ',
         line(points, limits, (l) => l.centre.value - sigma(l)),
         SPC_COLORS.zone,
       ),
-      dashed(
+      dotted(
         '−2σ',
         line(points, limits, (l) => l.centre.value - 2 * sigma(l)),
         SPC_COLORS.zone,
@@ -327,17 +335,18 @@ export function spcChartOption(input: SpcChartInput): EChartsCoreOption {
     animation: false,
     grid: { left: 56, right: 16, top: 48, bottom: 32 },
     // One row (scrolling when narrow): a wrapped second row ran into the label lane and the unit.
+    // Line samples 16 px wide (section 5).
     legend: {
       type: 'scroll',
       top: 0,
-      textStyle: axisText,
+      left: 0,
+      itemWidth: 16,
       data: series.map((s) => s.name as string).filter((n) => !n.endsWith('σ') && n !== RULE_LANE),
     },
     tooltip: { trigger: 'item', formatter: spcTooltip },
     xAxis: {
       type: 'time',
-      axisLabel: { ...axisText, hideOverlap: true },
-      splitLine: { show: false },
+      axisLabel: { hideOverlap: true },
     },
     yAxis: [
       {
@@ -349,8 +358,6 @@ export function spcChartOption(input: SpcChartInput): EChartsCoreOption {
         nameTextStyle: { ...axisText, align: 'right' },
         scale: zones,
         ...(zones ? {} : { min: 0 }),
-        axisLabel: axisText,
-        splitLine: { lineStyle: { color: GRID_LINE } },
       },
       // The label lane's axis: hidden, 0 to 1, so its marks sit on the plot's top edge.
       { type: 'value', show: false, min: 0, max: 1 },

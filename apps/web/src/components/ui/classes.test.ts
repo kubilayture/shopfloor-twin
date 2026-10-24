@@ -32,6 +32,9 @@ const FILES = [
   'screens/root-layout.tsx',
   'auth/shell.tsx',
   'components/connection-status.tsx',
+  // The chart frames (UX-1f, #320).
+  'chart/echart.tsx',
+  'chart/trend-chart.tsx',
 ];
 
 /** Utility prefixes: a literal with one of these is a class list. */

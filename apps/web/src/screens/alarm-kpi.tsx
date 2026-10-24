@@ -16,7 +16,7 @@ import {
   type AlarmScopeRef,
 } from '../api/client.ts';
 import { queryKeys, useAlarmConfig, usePlantClock } from '../api/queries.ts';
-import { alarmHourlyOption } from '../chart/alarm-options.ts';
+import { alarmHourlyOption, alarmHourlyReading } from '../chart/alarm-options.ts';
 import { EChart } from '../chart/echart.tsx';
 import { useHeadingFocus } from '../components/heading-focus.ts';
 import { QueryError } from '../components/query-error.tsx';
@@ -277,17 +277,14 @@ function BucketTable({
         <EChart
           testId="kpi-hourly"
           title={`Raises and peak per ${per}, by hour`}
-          description={`Bars per hour of raises and of the most raises in one ${per} window, with the flood threshold as a dashed line; the table below lists every value.`}
+          description={`${alarmHourlyReading(buckets, config?.kpi.floodThreshold, config?.kpi.windowMs)}; the table below lists every value.`}
           option={
             buckets.length > 0
               ? alarmHourlyOption(buckets, config?.kpi.floodThreshold, config?.kpi.windowMs)
               : null
           }
-        >
-          {buckets.length === 0 && rest.data ? (
-            <p className="text-sm">No hour with alarms in this shift.</p>
-          ) : null}
-        </EChart>
+          empty={rest.data ? 'No hour with alarms in this shift.' : undefined}
+        />
       ) : null}
       <div className="relative min-w-0 overflow-x-auto rounded-lg border border-slate-300 bg-white">
         <table

@@ -260,6 +260,11 @@ describe('OEE dashboard', () => {
     expect(within(card).getByTestId('line-oee-value').textContent).toBe('0.7500');
     expect(within(card).getByTestId('line-oee-value').dataset.fraction).toBe('3/4');
     expect(within(card).getByTestId('line-oee-value-percent').textContent).toBe('75.00 %');
+    // UX-1c (#315): the line OEE values carry their visible four decimals in data-decimal.
+    expect(within(card).getByTestId('line-oee-value-percent').dataset.decimal).toBe('0.7500');
+    const ratios = [...card.querySelectorAll<HTMLElement>('[data-fraction]')];
+    expect(ratios.length).toBeGreaterThan(1);
+    for (const ratio of ratios) expect(ratio.dataset.decimal).toBe(ratio.textContent);
     expect(within(card).getByTestId('line-oee-good').textContent).toBe('VB-100 100');
     expect(within(card).getByTestId('line-oee-planned').textContent).toBe('333.3 min');
     expect(within(card).getByTestId('line-oee-ideal').textContent).toBe('250.0 min');

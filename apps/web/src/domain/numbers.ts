@@ -109,3 +109,23 @@ export function spcValueText(
   if (steps === undefined || precision.step.num === 0n) return fixedText(v.value, places);
   return toDecimal(multiply(steps, precision.step), places);
 }
+
+/** The true minus sign (U+2212) the design system writes before a negative number (6.1). */
+export const MINUS = '\u2212';
+
+/**
+ * A number for people (design system 6.1): with `places` decimals (rounded half away from zero on
+ * its decimal value, as `fixedText`), thousands grouped with a comma from 10,000 up only (so
+ * figures under it keep their reconciled spelling: `1800.0`, `12,345`), and a true minus. `–` for
+ * no finite number.
+ */
+export function quantityText(value: number, places = 0): string {
+  const text = fixedText(value, places);
+  if (text === NO_NUMBER) return text;
+  const negative = text.startsWith('-');
+  const [whole = '', decimals] = (negative ? text.slice(1) : text).split('.');
+  const grouped = whole.length > 4 ? whole.replace(/\B(?=(\d{3})+$)/g, ',') : whole;
+  const body = decimals === undefined ? grouped : `${grouped}.${decimals}`;
+  // A value that rounds to zero is no negative number: `-0.0` reads as `0.0`.
+  return negative && /[1-9]/.test(body) ? `${MINUS}${body}` : body;
+}

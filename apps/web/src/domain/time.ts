@@ -36,6 +36,21 @@ export function formatPlantTime(time: string | number): string {
   return dateTime.format(new Date(time));
 }
 
+const dateTimeMinutes = new Intl.DateTimeFormat('en-GB', {
+  timeZone: PLANT_TIME_ZONE,
+  weekday: 'short',
+  day: '2-digit',
+  month: 'short',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+
+/** A planning time without seconds (design system 6.2: due, planned start): `Mon 12 Oct, 22:00`. */
+export function formatPlantTimeMinutes(time: string | number): string {
+  return dateTimeMinutes.format(new Date(time));
+}
+
 const plantDay = new Intl.DateTimeFormat('en-CA', {
   timeZone: PLANT_TIME_ZONE,
   year: 'numeric',
@@ -88,16 +103,41 @@ export function formatClockTime(time: string | number): string {
 
 const pad = (value: number): string => String(value).padStart(2, '0');
 
-/** A duration for people: `12 s`, `4 min 05 s`, `2 h 05 min`, `3 d 4 h`. */
-export function formatDuration(ms: number): string {
-  const seconds = Math.max(0, Math.floor(ms / 1000));
-  const minutes = Math.floor(seconds / 60);
+/**
+ * A duration for people, by one rule (design system 6.1, G-17): under a minute `45 s`; under an
+ * hour `12 min`, or `12 min 05 s` with `seconds` (only where it ticks live: time in state, a
+ * running pause); under a day `4 h 54 min`; from a day `2 d 12 h`. Whole units, rounded down, so
+ * a live figure never runs ahead. Loss totals that reconcile stay `minutesText` (one decimal).
+ */
+export function durationText(ms: number, { seconds = false }: { seconds?: boolean } = {}): string {
+  const totalSeconds = Number.isFinite(ms) ? Math.max(0, Math.floor(ms / 1000)) : 0;
+  const minutes = Math.floor(totalSeconds / 60);
   const hours = Math.floor(minutes / 60);
   const days = Math.floor(hours / 24);
   if (days > 0) return `${String(days)} d ${String(hours % 24)} h`;
   if (hours > 0) return `${String(hours)} h ${pad(minutes % 60)} min`;
-  if (minutes > 0) return `${String(minutes)} min ${pad(seconds % 60)} s`;
-  return `${String(seconds)} s`;
+  if (minutes > 0) {
+    return seconds
+      ? `${String(minutes)} min ${pad(totalSeconds % 60)} s`
+      : `${String(minutes)} min`;
+  }
+  return `${String(totalSeconds)} s`;
+}
+
+/** A live duration with its seconds under an hour: `12 s`, `4 min 05 s`, `2 h 05 min`, `3 d 4 h`. */
+export function formatDuration(ms: number): string {
+  return durationText(ms, { seconds: true });
+}
+
+/** `PT4H54M5S`: a duration for `<time dateTime>` (whole seconds, rounded down). */
+export function isoDuration(ms: number): string {
+  const totalSeconds = Number.isFinite(ms) ? Math.max(0, Math.floor(ms / 1000)) : 0;
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const rest = totalSeconds % 60;
+  return `PT${hours > 0 ? `${String(hours)}H` : ''}${minutes > 0 ? `${String(minutes)}M` : ''}${
+    rest > 0 || totalSeconds === 0 ? `${String(rest)}S` : ''
+  }`;
 }
 
 export const RANGES = {

@@ -8,17 +8,10 @@ import { plantClock, queryKeys, usePlantClock } from '../api/queries.ts';
 import { TrendChart } from '../chart/trend-chart.tsx';
 import { useHeadingFocus } from '../components/heading-focus.ts';
 import { QueryError } from '../components/query-error.tsx';
-import { StateBadge } from '../components/state-badge.tsx';
+import { StaleTag, StateBadge } from '../components/state-badge.tsx';
 import { plainText } from '../domain/numbers.ts';
 import { chartData } from '../domain/series.ts';
-import {
-  STALE_TEXT,
-  isConnectionLost,
-  newest,
-  stateStyle,
-  staleness,
-  timeInState,
-} from '../domain/states.ts';
+import { isConnectionLost, newest, stateStyle, staleness, timeInState } from '../domain/states.ts';
 import {
   formatClockTime,
   formatDuration,
@@ -481,11 +474,7 @@ function Header({
         ) : (
           <span className="text-sm">This machine has not reported yet.</span>
         )}
-        {stale ? (
-          <span className="rounded border border-amber-700 px-1.5 text-xs font-medium text-amber-900">
-            {STALE_TEXT[stale]}
-          </span>
-        ) : null}
+        {stale ? <StaleTag reason={stale} /> : null}
       </div>
     </header>
   );

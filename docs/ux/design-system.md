@@ -325,7 +325,7 @@ All live in `src/components/ui/`, are written in-house on Tailwind and the token
 ### 4.1 Button and IconButton
 
 ```ts
-type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
+type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'dangerSolid'; // dangerSolid: the confirm dialog's solid danger
 type ButtonSize = 'sm' | 'md' | 'lg' | 'touch';
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant; // default 'secondary'

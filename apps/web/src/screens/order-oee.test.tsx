@@ -84,6 +84,16 @@ describe('order OEE on the order detail (#233)', () => {
     expect(job.dataset.oee).toBe('0.6300');
     expect(job.textContent).toContain('its accepted fact');
     expect(within(section).queryByTestId('order-oee-pending')).toBeNull();
+    // UX-1c (#315): every ratio element (OEE, A, P, Q, the jobs, FPY, the order's line OEE)
+    // carries its visible four decimals in data-decimal; the headline percentages too.
+    const ratios = [...section.querySelectorAll<HTMLElement>('[data-fraction]')];
+    expect(ratios.length).toBeGreaterThanOrEqual(10);
+    for (const ratio of ratios) {
+      expect(ratio.dataset.decimal, ratio.dataset.testid).toBe(ratio.textContent);
+    }
+    expect(value('order-oee-oee-percent').dataset.decimal).toBe('0.6300');
+    expect(value('order-fpy-yield-percent').dataset.decimal).toBe('0.9000');
+    expect(value('order-line-oee-value-percent').dataset.decimal).toBe('0.1875');
   });
 
   it('marks a provisional order with its reasons and follows oee:order:<id>', async () => {

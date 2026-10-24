@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   formatClockSeconds,
   formatClockTime,
+  durationText,
   formatDuration,
   formatPlantTime,
+  formatPlantTimeMinutes,
   formatPlantTimeRelative,
+  isoDuration,
   isRangeKey,
   plantDayOf,
   plantTimeText,
@@ -109,5 +112,37 @@ describe('time formatting', () => {
     expect(isRangeKey('8h')).toBe(true);
     expect(isRangeKey('toString')).toBe(false);
     expect(isRangeKey(8)).toBe(false);
+  });
+});
+
+describe('durations and planning times (UX-1c, design system 6.1 and 6.2)', () => {
+  it('writes a duration by one rule, seconds under an hour only when asked', () => {
+    expect(durationText(45_400)).toBe('45 s');
+    expect(durationText(59_999)).toBe('59 s');
+    expect(durationText(60_000)).toBe('1 min');
+    expect(durationText(725_000)).toBe('12 min');
+    expect(durationText(725_000, { seconds: true })).toBe('12 min 05 s');
+    expect(durationText(3_599_999, { seconds: true })).toBe('59 min 59 s');
+    expect(durationText(3_600_000)).toBe('1 h 00 min');
+    expect(durationText((4 * 60 + 54) * 60_000 + 30_000)).toBe('4 h 54 min');
+    expect(durationText((4 * 60 + 54) * 60_000 + 30_000, { seconds: true })).toBe('4 h 54 min');
+    expect(durationText(86_400_000)).toBe('1 d 0 h');
+    expect(durationText((2 * 24 + 12) * 3_600_000 + 59 * 60_000)).toBe('2 d 12 h');
+    expect(durationText(-1)).toBe('0 s');
+    expect(durationText(Number.NaN)).toBe('0 s');
+    // The live form is formatDuration's, unchanged.
+    expect(formatDuration(725_000)).toBe(durationText(725_000, { seconds: true }));
+  });
+
+  it('gives a duration as ISO 8601 for <time dateTime>', () => {
+    expect(isoDuration(0)).toBe('PT0S');
+    expect(isoDuration(45_400)).toBe('PT45S');
+    expect(isoDuration(3_600_000)).toBe('PT1H');
+    expect(isoDuration(3_725_000)).toBe('PT1H2M5S');
+    expect(isoDuration(-5)).toBe('PT0S');
+  });
+
+  it('writes a planning time without seconds, in plant time', () => {
+    expect(formatPlantTimeMinutes('2026-10-12T19:00:59.000Z')).toBe('Mon 12 Oct, 22:00');
   });
 });

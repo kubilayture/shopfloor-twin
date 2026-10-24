@@ -163,7 +163,7 @@ function UserMenu() {
 }
 
 /**
- * The plant clock (`plant-clock`, its `<time dateTime>` read by the demo walkthrough). Below `md`
+ * The plant clock (`plant-clock`, its `<time dateTime>` read by the demo walkthrough). Below `lg`
  * the "Gebze plant time:" prefix is for screen readers only, below `sm` the date too.
  */
 function PlantClock() {
@@ -175,7 +175,7 @@ function PlantClock() {
       className="flex shrink-0 items-baseline gap-1 whitespace-nowrap text-sm"
       data-testid="plant-clock"
     >
-      <span className="sr-only text-nav-heading md:not-sr-only">
+      <span className="sr-only text-nav-heading lg:not-sr-only">
         {site ? `${site.name} plant time` : 'Plant time'}:{' '}
       </span>
       {clock ? (
@@ -295,11 +295,12 @@ function SideNav({
       // Closed below `xl`: off screen and out of the focus order and the accessibility tree.
       inert={!wide && !open}
       className={[
-        'fixed inset-y-0 left-0 z-nav flex w-72 max-w-[85vw] flex-col overflow-y-auto bg-nav pb-6 text-nav-ink shadow-elevation-3',
+        'fixed inset-y-0 left-0 z-nav flex w-72 max-w-[85vw] flex-col overflow-y-auto bg-nav pb-6 text-nav-ink',
         'motion-safe:transition-transform motion-safe:duration-base motion-safe:ease-standard',
         'xl:top-12 xl:w-58 xl:max-w-none xl:translate-x-0 xl:shadow-none xl:transition-none',
         'print:hidden',
-        open ? 'translate-x-0' : '-translate-x-full',
+        // The shadow only while open: a closed drawer's would show at the left edge.
+        open ? 'translate-x-0 shadow-elevation-3' : '-translate-x-full',
       ].join(' ')}
       data-print="hidden"
     >

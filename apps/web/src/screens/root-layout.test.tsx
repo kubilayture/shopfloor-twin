@@ -190,8 +190,8 @@ describe('the top bar (G-01, G-04)', () => {
     expect(time?.textContent).toBe(formatPlantTime(PLANT.clock.watermark));
     expect(time?.getAttribute('title')).toBe(time?.textContent);
     expect(time?.querySelector('span')?.className).toBe('hidden sm:inline');
-    // The prefix is for screen readers only below `md`.
-    expect(clock.querySelector('span')?.className).toMatch(/^sr-only .*md:not-sr-only/);
+    // The prefix is for screen readers only below `lg`.
+    expect(clock.querySelector('span')?.className).toMatch(/^sr-only .*lg:not-sr-only/);
   });
 });
 

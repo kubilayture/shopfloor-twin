@@ -51,6 +51,7 @@
   --color-nav-active-bar: #38bdf8;
   --color-focus: #0369a1;
   --color-focus-on-dark: #38bdf8;
+  --color-alarm-solid-hover: #991b1b;
 
   /* Shell (3.2): the same in both themes */
   --color-topbar: #0f172a;
@@ -226,6 +227,7 @@
   --color-accent-subtle: #0c2d48;
   --color-link: #7dd3fc;
   --color-focus: #38bdf8;
+  --color-alarm-solid-hover: #b91c1c;
 
   /* Tones (2.3): ink on soft, border, solid fill and the text on it */
   --color-neutral-ink: #cbd5e1;

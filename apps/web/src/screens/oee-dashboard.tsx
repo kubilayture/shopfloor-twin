@@ -86,11 +86,24 @@ function Flags({ bucket }: { readonly bucket: OeeBucketDto }) {
   );
 }
 
+/** A ratio cell of the machine table: the four decimals, raw in `data-decimal` too (UX-1c). */
+function RatioTd({ ratio }: { readonly ratio: Ratio | null }) {
+  return (
+    <td className="px-2 py-1 text-right font-mono tabular-nums" data-decimal={ratioText(ratio)}>
+      {ratioText(ratio)}
+    </td>
+  );
+}
+
 function RatioRow({ label, ratio }: { readonly label: string; readonly ratio: Ratio | null }) {
   return (
     <>
       <dt className="text-slate-700">{label}</dt>
-      <dd className="text-right font-mono tabular-nums" title={ratio?.fraction}>
+      <dd
+        className="text-right font-mono tabular-nums"
+        title={ratio?.fraction}
+        data-decimal={ratioText(ratio)}
+      >
         {ratioText(ratio)}
       </dd>
     </>
@@ -137,10 +150,19 @@ function WorkCenterCard({
           <>
             <p>
               <span className="text-sm text-slate-700">OEE </span>
-              <span className="text-3xl font-bold tabular-nums" data-testid={`oee-value-${id}`}>
+              <span
+                className="text-3xl font-bold tabular-nums"
+                data-testid={`oee-value-${id}`}
+                data-decimal={ratioText(result.oee)}
+              >
                 {percentText(result.oee)}
               </span>
-              <span className="ml-2 font-mono text-sm text-slate-700">{ratioText(result.oee)}</span>
+              <span
+                className="ml-2 font-mono text-sm text-slate-700"
+                data-decimal={ratioText(result.oee)}
+              >
+                {ratioText(result.oee)}
+              </span>
             </p>
             <dl className="grid grid-cols-[1fr_auto] gap-x-4 text-sm">
               <RatioRow label="Availability" ratio={result.availability} />
@@ -225,14 +247,10 @@ function MachineRow({
           </span>
         ) : null}
       </th>
-      <td className="px-2 py-1 text-right font-mono tabular-nums">{ratioText(result.oee)}</td>
-      <td className="px-2 py-1 text-right font-mono tabular-nums">
-        {ratioText(result.availability)}
-      </td>
-      <td className="px-2 py-1 text-right font-mono tabular-nums">
-        {ratioText(result.performance)}
-      </td>
-      <td className="px-2 py-1 text-right font-mono tabular-nums">{ratioText(result.quality)}</td>
+      <RatioTd ratio={result.oee} />
+      <RatioTd ratio={result.availability} />
+      <RatioTd ratio={result.performance} />
+      <RatioTd ratio={result.quality} />
       <td className="px-2 py-1 text-right tabular-nums">
         {result.losses ? minutesText(result.losses.availability.own.total) : NOT_APPLICABLE}
       </td>
@@ -398,7 +416,9 @@ function HourlyChart({
               {rows.map((hour) => (
                 <tr key={hour.key} data-testid={`hour-${hour.key}`}>
                   <td>{formatClockTime(hour.start)}</td>
-                  <td className="text-right font-mono">{ratioText(hour.result.oee)}</td>
+                  <td className="text-right font-mono" data-decimal={ratioText(hour.result.oee)}>
+                    {ratioText(hour.result.oee)}
+                  </td>
                   <td className="pl-2">{hour.final ? 'Final' : 'Provisional'}</td>
                 </tr>
               ))}

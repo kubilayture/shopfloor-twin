@@ -1,32 +1,104 @@
 import type { Clock, CurrentStateDto } from '@shopfloor/contracts/mes-api';
+import type { Glyph } from './tones.ts';
 
-/** How a state looks: a colour that always comes with its text label (never colour alone). */
+/**
+ * How a state looks (design system 2.4, UX-1c #315): a word, always, on the state's token colours;
+ * grey for the states a plant spends its normal time in, colour for the ones that cost output, and
+ * a glyph for most, so a state survives greyscale and colour blindness (never colour alone).
+ */
 export interface StateStyle {
   readonly label: string;
-  /** Tailwind classes for a badge or band; text and background meet WCAG AA contrast. */
+  /** Fill, text and border token utilities for the badge (WCAG AA). */
   readonly className: string;
+  /**
+   * The machine timeline's band: the state's fill with 4 px top and bottom edges in its border
+   * colour (dashed for Setup), so states with near-equal fills (Running, Off, Planned stop) stay
+   * apart on the bar, where a band has no word and no glyph.
+   */
+  readonly band: string;
+  /** The glyph before the word (`aria-hidden`); Idle has none. */
+  readonly icon?: Glyph;
 }
 
+// Each class written out in full: Tailwind finds class names in the source.
 const STYLES: Readonly<Record<string, StateStyle>> = {
-  Running: { label: 'Running', className: 'bg-emerald-700 text-white' },
-  Idle: { label: 'Idle', className: 'bg-slate-300 text-slate-950' },
-  Starved: { label: 'Starved', className: 'bg-amber-200 text-amber-950' },
-  Blocked: { label: 'Blocked', className: 'bg-orange-300 text-orange-950' },
-  Stopped: { label: 'Stopped', className: 'bg-rose-200 text-rose-950' },
-  Down: { label: 'Down', className: 'bg-red-700 text-white' },
-  Setup: { label: 'Setup', className: 'bg-sky-700 text-white' },
-  PlannedStop: { label: 'Planned stop', className: 'bg-indigo-200 text-indigo-950' },
-  Maintenance: { label: 'Maintenance', className: 'bg-violet-700 text-white' },
-  Off: { label: 'Off', className: 'bg-zinc-700 text-white' },
+  Running: {
+    label: 'Running',
+    className: 'bg-state-running-fill text-state-running-ink border-state-running-border',
+    band: 'bg-state-running-fill border-y-4 border-state-running-border',
+    icon: 'play',
+  },
+  Idle: {
+    label: 'Idle',
+    className: 'bg-state-idle-fill text-state-idle-ink border-state-idle-border',
+    band: 'bg-state-idle-fill border-y-4 border-state-idle-border',
+  },
+  Setup: {
+    label: 'Setup',
+    className: 'bg-state-setup-fill text-state-setup-ink border-state-setup-border border-dashed',
+    band: 'bg-state-setup-fill border-y-4 border-state-setup-border border-dashed',
+    icon: 'rotate',
+  },
+  PlannedStop: {
+    label: 'Planned stop',
+    className:
+      'bg-state-planned-stop-fill text-state-planned-stop-ink border-state-planned-stop-border',
+    band: 'bg-state-planned-stop-fill border-y-4 border-state-planned-stop-border',
+    icon: 'pause',
+  },
+  Maintenance: {
+    label: 'Maintenance',
+    className:
+      'bg-state-maintenance-fill text-state-maintenance-ink border-state-maintenance-border',
+    band: 'bg-state-maintenance-fill border-y-4 border-state-maintenance-border',
+    icon: 'wrench',
+  },
+  Off: {
+    label: 'Off',
+    className: 'bg-state-off-fill text-state-off-ink border-state-off-border',
+    band: 'bg-state-off-fill border-y-4 border-state-off-border',
+    icon: 'circle',
+  },
+  Starved: {
+    label: 'Starved',
+    className: 'bg-state-starved-fill text-state-starved-ink border-state-starved-border',
+    band: 'bg-state-starved-fill border-y-4 border-state-starved-border',
+    icon: 'triangle-left',
+  },
+  Blocked: {
+    label: 'Blocked',
+    className: 'bg-state-blocked-fill text-state-blocked-ink border-state-blocked-border',
+    band: 'bg-state-blocked-fill border-y-4 border-state-blocked-border',
+    icon: 'play-bar',
+  },
+  Stopped: {
+    label: 'Stopped',
+    className: 'bg-state-stopped-fill text-state-stopped-ink border-state-stopped-border',
+    band: 'bg-state-stopped-fill border-y-4 border-state-stopped-border',
+    icon: 'stop',
+  },
+  Down: {
+    label: 'Down',
+    className: 'bg-state-down-fill text-state-down-ink border-state-down-border',
+    band: 'bg-state-down-fill border-y-4 border-state-down-border',
+    icon: 'close',
+  },
 };
 
 export const NO_DATA: StateStyle = {
   label: 'No data',
-  className: 'border border-dashed border-slate-500 bg-white text-slate-700',
+  className:
+    'bg-state-no-data-fill text-state-no-data-ink border-state-no-data-border border-dashed',
+  band: 'bg-state-no-data-fill border-y-4 border-state-no-data-border border-dashed',
+  icon: 'question',
 };
 
+/** A state the web does not know yet: its raw name on the neutral tone, never a guessed colour. */
+const UNKNOWN = 'bg-neutral-soft text-neutral-ink border-neutral-border';
+const UNKNOWN_BAND = 'bg-neutral-soft border-y-4 border-neutral-border';
+
 export function stateStyle(state: string): StateStyle {
-  return STYLES[state] ?? { label: state, className: 'bg-gray-300 text-gray-950' };
+  return STYLES[state] ?? { label: state, className: UNKNOWN, band: UNKNOWN_BAND };
 }
 
 /**

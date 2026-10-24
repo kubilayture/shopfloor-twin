@@ -1,13 +1,22 @@
 import { PRIORITY_LABELS, type Priority } from '../domain/alarms.ts';
+import { BadgeFrame } from './ui/badge.tsx';
+import type { IconName } from './ui/icons.tsx';
 
-/** AA-contrast colours; the text label always says the priority (never colour alone). */
-const STYLE: Readonly<Record<Priority, string>> = {
-  high: 'border-red-800 bg-red-700 text-white',
-  medium: 'border-amber-700 bg-amber-200 text-amber-950',
-  low: 'border-sky-800 bg-sky-50 text-sky-950',
+/**
+ * An alarm priority (design system 2.5): the word, its glyph and the priority's token colours
+ * (AA contrast); `data-priority` carries the raw value. Never colour alone.
+ */
+export const PRIORITY_COLORS: Readonly<Record<Priority, string>> = {
+  high: 'bg-priority-high-fill text-priority-high-ink border-priority-high-border',
+  medium: 'bg-priority-medium-fill text-priority-medium-ink border-priority-medium-border',
+  low: 'bg-priority-low-fill text-priority-low-ink border-priority-low-border',
 };
 
-const MARK: Readonly<Record<Priority, string>> = { high: '▲▲', medium: '▲', low: '●' };
+const GLYPH: Readonly<Record<Priority, IconName>> = {
+  high: 'triangles-up',
+  medium: 'triangle-up',
+  low: 'dot',
+};
 
 export function PriorityBadge({
   priority,
@@ -17,13 +26,13 @@ export function PriorityBadge({
   readonly testId?: string;
 }) {
   return (
-    <span
+    <BadgeFrame
       data-testid={testId}
       data-priority={priority}
-      className={`inline-flex items-center gap-1 whitespace-nowrap rounded border px-1.5 text-xs font-semibold ${STYLE[priority]}`}
+      colors={PRIORITY_COLORS[priority]}
+      icon={GLYPH[priority]}
     >
-      <span aria-hidden="true">{MARK[priority]}</span>
       {PRIORITY_LABELS[priority]}
-    </span>
+    </BadgeFrame>
   );
 }

@@ -1,5 +1,19 @@
 import type { Ratio } from '@shopfloor/contracts/mes-api';
 import { NOT_APPLICABLE, percentText, ratioText, type StatusFlag } from '../domain/oee.ts';
+import { TONE_CLASS, badgeShape } from './ui/badge.tsx';
+import { Icon } from './ui/icons.tsx';
+
+/**
+ * A status flag's look (design system 2.6): final is a neutral outline with a check, provisional a
+ * neutral dashed outline, a revision `info`; what else may change (incidents, may be revised,
+ * above 1) is `warn`.
+ */
+function flagClass(flag: StatusFlag): string {
+  if (flag.key === 'final') return TONE_CLASS.neutral.outline;
+  if (flag.key === 'provisional') return TONE_CLASS.neutral.dashed;
+  if (flag.key === 'revision') return TONE_CLASS.info.outline;
+  return TONE_CLASS.warn.outline;
+}
 
 /**
  * Status flags of an order or line OEE value (#233) as a list of text badges: final or
@@ -22,17 +36,14 @@ export function StatusFlags({
             key={flag.key}
             title={flag.title}
             data-flag={flag.key}
-            className={`rounded border px-1.5 text-xs font-medium ${
-              flag.tone === 'final'
-                ? 'border-emerald-800 text-emerald-900'
-                : 'border-amber-700 text-amber-950'
-            }`}
+            className={`${badgeShape()} ${flagClass(flag)}`}
           >
+            {flag.key === 'final' ? <Icon name="check" size={12} /> : null}
             {flag.text}
           </li>
         ))}
       </ul>
-      <details className="text-xs text-slate-700" data-testid="flag-explanations">
+      <details className="text-xs text-ink-secondary" data-testid="flag-explanations">
         <summary className="cursor-pointer">What the status means</summary>
         <dl className="mt-1">
           {flags.map((flag) => (
@@ -60,7 +71,8 @@ export const NA_REASON = {
 /**
  * A ratio as the MES sends it: the four-decimal string as text (`n/a` when null), the exact
  * fraction in `data-fraction` and the tooltip, or why it is not applicable. Read by the
- * reconciliation's Playwright check.
+ * reconciliation's Playwright check. `data-decimal` holds the four-decimal string too (UX-1c,
+ * #315), so the specs can move to it before the visible text becomes a percentage.
  */
 export function RatioValue({
   ratio,
@@ -78,6 +90,7 @@ export function RatioValue({
     <span
       data-testid={testId}
       data-fraction={ratio?.fraction ?? NOT_APPLICABLE}
+      data-decimal={ratioText(ratio)}
       title={ratio ? `${ratio.fraction} exactly` : na}
       className={className}
     >
@@ -86,7 +99,7 @@ export function RatioValue({
   );
 }
 
-/** A headline ratio: the percentage large, the four decimals beside it. */
+/** A headline ratio: the percentage large (its `data-decimal` raw), the four decimals beside it. */
 export function RatioHeadline({
   label,
   ratio,
@@ -101,7 +114,11 @@ export function RatioHeadline({
   return (
     <p>
       <span className="text-sm text-slate-700">{label} </span>
-      <span className="text-3xl font-bold tabular-nums" data-testid={`${testId}-percent`}>
+      <span
+        className="text-3xl font-bold tabular-nums"
+        data-testid={`${testId}-percent`}
+        data-decimal={ratioText(ratio)}
+      >
         {percentText(ratio)}
       </span>{' '}
       <RatioValue

@@ -3,6 +3,8 @@ import { Link } from '@tanstack/react-router';
 import type { ReactNode } from 'react';
 import { HOLD_STATE_TEXT, SIGNAL_STATUS_TEXT, type QualityFailure } from '../domain/quality.ts';
 import { formatPlantTime, wallTimeText } from '../domain/time.ts';
+import { Badge, type BadgeVariant } from './ui/badge.tsx';
+import type { Tone } from './ui/tokens.ts';
 
 // Shared pieces of the SPC and holds screens (#203): sections, tables, badges and messages. State
 // is always a word, never colour alone.
@@ -85,39 +87,45 @@ export function Table({
   );
 }
 
-const STATUS_CLASS: Readonly<Record<SpcSignalDto['status'], string>> = {
-  provisional: 'border-amber-700 bg-amber-50 text-amber-950',
-  final: 'border-red-800 bg-red-50 text-red-950',
-  withdrawn: 'border-slate-500 bg-slate-100 text-slate-800',
+/** An SPC signal episode (design system 2.6): the tone, not the word, says it is a signal. */
+const SIGNAL_LOOK: Readonly<
+  Record<SpcSignalDto['status'], { readonly tone: Tone; readonly variant: BadgeVariant }>
+> = {
+  provisional: { tone: 'warn', variant: 'soft' },
+  final: { tone: 'alarm', variant: 'soft' },
+  withdrawn: { tone: 'neutral', variant: 'outline' },
 };
 
 export function SignalStatusBadge({ signal }: { readonly signal: SpcSignalDto }) {
+  const look = SIGNAL_LOOK[signal.status];
   return (
-    <span
+    <Badge
       data-testid="signal-status"
       data-status={signal.status}
-      className={`inline-block rounded border px-1.5 text-xs font-semibold ${STATUS_CLASS[signal.status]}`}
+      tone={look.tone}
+      variant={look.variant}
+      className={signal.status === 'withdrawn' ? 'line-through' : undefined}
     >
       {SIGNAL_STATUS_TEXT[signal.status]}
-    </span>
+    </Badge>
   );
 }
 
-const HOLD_CLASS: Readonly<Record<HoldState, string>> = {
-  open: 'border-red-800 bg-red-50 text-red-950',
-  released: 'border-emerald-800 bg-emerald-50 text-emerald-950',
-  rejected: 'border-slate-700 bg-slate-200 text-slate-900',
+/** A quality hold (design system 2.6): open is `alarm`, released `ok`, rejected neutral solid. */
+const HOLD_LOOK: Readonly<
+  Record<HoldState, { readonly tone: Tone; readonly variant: BadgeVariant }>
+> = {
+  open: { tone: 'alarm', variant: 'soft' },
+  released: { tone: 'ok', variant: 'soft' },
+  rejected: { tone: 'neutral', variant: 'solid' },
 };
 
 export function HoldStateBadge({ state }: { readonly state: HoldState }) {
+  const look = HOLD_LOOK[state];
   return (
-    <span
-      data-testid="hold-state"
-      data-state={state}
-      className={`inline-block rounded border px-1.5 text-xs font-semibold ${HOLD_CLASS[state]}`}
-    >
+    <Badge data-testid="hold-state" data-state={state} tone={look.tone} variant={look.variant}>
       {HOLD_STATE_TEXT[state]}
-    </span>
+    </Badge>
   );
 }
 

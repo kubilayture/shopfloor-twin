@@ -138,7 +138,11 @@ function LiveMark({ live }: { readonly live: boolean }) {
 }
 
 const RatioCell = ({ ratio }: { readonly ratio: Ratio | null }) => (
-  <td className="px-2 py-1 text-right whitespace-nowrap tabular-nums" title={ratio?.fraction}>
+  <td
+    className="px-2 py-1 text-right whitespace-nowrap tabular-nums"
+    title={ratio?.fraction}
+    data-decimal={ratioText(ratio)}
+  >
     {percentText(ratio)}
   </td>
 );
@@ -376,6 +380,7 @@ function OeeRow({
           <td
             className="px-2 py-1 text-right font-semibold whitespace-nowrap tabular-nums"
             title={result.oee?.fraction}
+            data-decimal={ratioText(result.oee)}
           >
             {percentText(result.oee)}
           </td>
@@ -901,7 +906,9 @@ function AlarmScopeCard({
             >
               {actor.equipment} <span className="font-mono text-xs">{actor.code}</span>:{' '}
               {actor.raises} raises (
-              <span title={actor.share.fraction}>{percentText(actor.share)}</span>
+              <span title={actor.share.fraction} data-decimal={ratioText(actor.share)}>
+                {percentText(actor.share)}
+              </span>
               ), {msText(actor.activeMs)} active
             </li>
           ))}

@@ -19,6 +19,7 @@ import {
   result,
 } from '../test/oee-fixtures.ts';
 import { renderApp } from '../test/render-app.tsx';
+import { expectDecimals } from '../test/decimals.ts';
 
 // jsdom has no canvas: the chart is a stub, the tables beside it carry the values.
 vi.mock('../chart/echarts-view.tsx', () => ({ EChartsView: () => null }));
@@ -120,6 +121,18 @@ describe('OEE dashboard', () => {
     expect(within(screen.getByTestId('pareto')).getByText(/CHIP-JAM/)).toBeTruthy();
     expect(await screen.findByTestId('hour-2026-10-15T04:00:00.000Z')).toBeTruthy();
     expect(screen.getByTestId('hour-2026-10-15T04:00:00.000Z').textContent).toContain('n/a');
+
+    // UX-1c (#315): every ratio element carries its raw four decimals, n/a included.
+    expect(within(cell).getByTestId('oee-value-cell-m1').dataset.decimal).toBe('0.6300');
+    expect(within(line).getByTestId('oee-value-line-a1').dataset.decimal).toBe('n/a');
+    // The machine table's availability cell, which the demo walkthrough reads (td.nth(1)).
+    const availability = screen.getByTestId('oee-machine-cnc-01').querySelectorAll('td')[1];
+    expect(availability?.dataset.decimal).toBe(availability?.textContent);
+    expect(availability?.dataset.decimal).toMatch(/^\d\.\d{4}$/);
+    expect(asm.querySelectorAll('td')[0]?.dataset.decimal).toBe('n/a');
+    const hour = screen.getByTestId('hour-2026-10-15T04:00:00.000Z').querySelectorAll('td')[1];
+    expect(hour?.dataset.decimal).toBe('n/a');
+    expect(expectDecimals(document.body).length).toBeGreaterThanOrEqual(20);
   });
 
   it('subscribes to every work center and machine and applies pushed buckets', async () => {
@@ -260,6 +273,11 @@ describe('OEE dashboard', () => {
     expect(within(card).getByTestId('line-oee-value').textContent).toBe('0.7500');
     expect(within(card).getByTestId('line-oee-value').dataset.fraction).toBe('3/4');
     expect(within(card).getByTestId('line-oee-value-percent').textContent).toBe('75.00 %');
+    // UX-1c (#315): the line OEE values carry their visible four decimals in data-decimal.
+    expect(within(card).getByTestId('line-oee-value-percent').dataset.decimal).toBe('0.7500');
+    const ratios = [...card.querySelectorAll<HTMLElement>('[data-fraction]')];
+    expect(ratios.length).toBeGreaterThan(1);
+    for (const ratio of ratios) expect(ratio.dataset.decimal).toBe(ratio.textContent);
     expect(within(card).getByTestId('line-oee-good').textContent).toBe('VB-100 100');
     expect(within(card).getByTestId('line-oee-planned').textContent).toBe('333.3 min');
     expect(within(card).getByTestId('line-oee-ideal').textContent).toBe('250.0 min');

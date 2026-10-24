@@ -3,33 +3,34 @@ import {
   COMMAND_STATE_TEXT,
   ORDER_STATUS_TEXT,
   ORDER_STATUS_TONE,
-  TONE_CLASS,
   flagTexts,
 } from '../domain/orders.ts';
+import { Badge } from './ui/badge.tsx';
 
-const badge = 'rounded border px-1.5 text-xs font-medium whitespace-nowrap';
-
+/** An order's status (design system 2.6): `data-status` raw, the word for people. */
 export function OrderStatusBadge({ order }: { readonly order: Pick<OrderDto, 'status'> }) {
   return (
-    <span
+    <Badge
       data-testid="order-status"
       data-status={order.status}
-      className={`${badge} ${TONE_CLASS[ORDER_STATUS_TONE[order.status]]}`}
+      tone={ORDER_STATUS_TONE[order.status]}
+      icon={order.status === 'completed' ? 'check' : undefined}
     >
       {ORDER_STATUS_TEXT[order.status]}
-    </span>
+    </Badge>
   );
 }
 
+/** Short, Dispatch failed, Dispatch lost: each a `warn` badge (design system 2.6). */
 export function OrderFlags({ order }: { readonly order: Pick<OrderDto, 'flags'> }) {
   const flags = flagTexts(order);
   if (flags.length === 0) return null;
   return (
     <span className="inline-flex flex-wrap gap-1" data-testid="order-flags">
       {flags.map((flag) => (
-        <span key={flag} className={`${badge} ${TONE_CLASS.warn}`}>
+        <Badge key={flag} tone="warn" icon="alert">
           {flag}
-        </span>
+        </Badge>
       ))}
     </span>
   );
@@ -38,13 +39,8 @@ export function OrderFlags({ order }: { readonly order: Pick<OrderDto, 'flags'> 
 export function CommandStateBadge({ state }: { readonly state: CommandState }) {
   const text = COMMAND_STATE_TEXT[state];
   return (
-    <span
-      data-testid="command-state"
-      data-state={state}
-      title={text.meaning}
-      className={`${badge} ${TONE_CLASS[text.tone]}`}
-    >
+    <Badge data-testid="command-state" data-state={state} title={text.meaning} tone={text.tone}>
       {text.label}
-    </span>
+    </Badge>
   );
 }

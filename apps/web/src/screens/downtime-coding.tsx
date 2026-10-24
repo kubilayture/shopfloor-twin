@@ -19,6 +19,7 @@ import {
 } from '../api/client.ts';
 import { queryKeys } from '../api/queries.ts';
 import { useHeadingFocus } from '../components/heading-focus.ts';
+import { LossBadge } from '../components/loss-badge.tsx';
 import { QueryError } from '../components/query-error.tsx';
 import { ShiftPicker, useShiftSelection } from '../components/shift-picker.tsx';
 import {
@@ -49,18 +50,6 @@ const buttonClass =
   'rounded border border-slate-700 bg-white px-3 py-1 text-sm font-medium text-slate-900 hover:bg-slate-100 disabled:opacity-60';
 const primaryClass =
   'rounded border border-sky-900 bg-sky-800 px-3 py-1 text-sm font-semibold text-white hover:bg-sky-900 disabled:opacity-60';
-
-function LossBadge({ loss }: { readonly loss: 'own' | 'external' }) {
-  return (
-    <span
-      className={`rounded px-1.5 text-xs font-semibold ${
-        loss === 'own' ? 'bg-red-700 text-white' : 'bg-amber-200 text-amber-950'
-      }`}
-    >
-      {loss === 'own' ? 'Own' : 'External'}
-    </span>
-  );
-}
 
 function ReasonSelect({
   value,
@@ -543,7 +532,7 @@ function RecordPanel({
         </dd>
         <dt className="text-slate-700">Loss</dt>
         <dd>
-          <LossBadge loss={record.loss} />
+          <LossBadge kind={record.loss} />
         </dd>
         <dt className="text-slate-700">Automatic reason</dt>
         <dd>{reasonName(reasons, record.autoReason)}</dd>
@@ -779,7 +768,7 @@ export function DowntimeCoding() {
                     {record.cause ? ` · ${record.cause}` : ''}
                   </td>
                   <td className="px-2 py-1">
-                    <LossBadge loss={record.loss} />
+                    <LossBadge kind={record.loss} />
                   </td>
                   <td className="px-2 py-1">
                     {record.uncoded ? (

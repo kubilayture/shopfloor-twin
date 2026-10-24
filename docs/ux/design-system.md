@@ -91,24 +91,24 @@ Borders are given on white; on the canvas (`#f1f5f9`) the lowest is `info` at 4.
 
 ### 2.4 Machine states
 
-ISA-101 restraint: grey for the states a plant spends its normal time in, colour for the ones that cost output. The badge always shows the word; abnormal states add a glyph so they survive greyscale and colour blindness. The timeline bands use the same fills.
+ISA-101 restraint: grey for the states a plant spends its normal time in, colour for the ones that cost output. The badge always shows the word; abnormal states add a glyph so they survive greyscale and colour blindness. The machine timeline's bands use the same fills with 4 px top and bottom edges in the state's border colour (dashed for Setup): a band has no word and no glyph, and Running, Off and Planned stop have near-equal fills, so the edges (`#334155`, `#cbd5e1`, `#64748b`) keep them apart; the table under the timeline lists every interval by name.
 
-| State        | Tone          | Badge                                                                                                                                     | Glyph               | Contrast |
-| ------------ | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | -------- |
-| Running      | neutral       | fill `#f1f5f9`, text `#0f172a`, border `#334155`                                                                                          | ▶                   | 16.30    |
-| Idle         | neutral       | fill `#e2e8f0`, text `#0f172a`                                                                                                            | none                | 14.48    |
-| Setup        | neutral       | fill `#e2e8f0`, text `#0f172a`, dashed border `#64748b`                                                                                   | ⟳                   | 14.48    |
-| Planned stop | neutral       | fill `#f8fafc`, text `#334155`, border `#64748b`                                                                                          | ‖                   | 9.90     |
-| Maintenance  | info          | solid `#1d4ed8`, text `#ffffff`                                                                                                           | wrench (SVG)        | 6.70     |
-| Off          | neutral       | fill `#f1f5f9`, text `#475569`, border `#cbd5e1`                                                                                          | ○                   | 6.92     |
-| Starved      | warn          | solid `#fcd34d`, text `#451a03`, border `#b45309`                                                                                         | ◀ (input missing)   | 10.39    |
-| Blocked      | caution       | solid `#fdba74`, text `#431407`, border `#c2410c`                                                                                         | ▶▮ (output blocked) | 9.28     |
-| Stopped      | alarm, soft   | fill `#fee2e2`, text `#7f1d1d`, border `#b91c1c`                                                                                          | ■                   | 8.20     |
-| Down         | alarm         | solid `#b91c1c`, text `#ffffff`                                                                                                           | ✕                   | 6.47     |
-| No data      | neutral       | white, dashed border `#64748b`, text `#475569`                                                                                            | ?                   | 7.58     |
-| Stale        | warn, outline | the state's own badge unchanged, beside it a tag: fill `#fffbeb`, text `#78350f`, solid border `#b45309`, the full reason as visible text | clock (SVG)         | 8.75     |
+| State        | Tone        | Badge                                                                                                                                     | Glyph               | Contrast |
+| ------------ | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | -------- |
+| Running      | neutral     | fill `#f1f5f9`, text `#0f172a`, border `#334155`                                                                                          | ▶                   | 16.30    |
+| Idle         | neutral     | fill `#e2e8f0`, text `#0f172a`                                                                                                            | none                | 14.48    |
+| Setup        | neutral     | fill `#e2e8f0`, text `#0f172a`, dashed border `#64748b`                                                                                   | ⟳                   | 14.48    |
+| Planned stop | neutral     | fill `#f8fafc`, text `#334155`, border `#64748b`                                                                                          | ‖                   | 9.90     |
+| Maintenance  | info        | solid `#1d4ed8`, text `#ffffff`                                                                                                           | wrench (SVG)        | 6.70     |
+| Off          | neutral     | fill `#f1f5f9`, text `#475569`, border `#cbd5e1`                                                                                          | ○                   | 6.92     |
+| Starved      | warn        | solid `#fcd34d`, text `#451a03`, border `#b45309`                                                                                         | ◀ (input missing)   | 10.39    |
+| Blocked      | caution     | solid `#fdba74`, text `#431407`, border `#c2410c`                                                                                         | ▶▮ (output blocked) | 9.28     |
+| Stopped      | alarm, soft | fill `#fee2e2`, text `#7f1d1d`, border `#b91c1c`                                                                                          | ■                   | 8.20     |
+| Down         | alarm       | solid `#b91c1c`, text `#ffffff`                                                                                                           | ✕                   | 6.47     |
+| No data      | neutral     | white, dashed border `#64748b`, text `#475569`                                                                                            | ?                   | 7.58     |
+| Stale        | warn, soft  | the state's own badge unchanged, beside it a tag: fill `#fffbeb`, text `#78350f`, solid border `#b45309`, the full reason as visible text | clock (SVG)         | 8.75     |
 
-**Stale** is not a machine state but a qualifier: the shown state may be out of date. The state badge keeps its own look and word; beside it a `warn` outline tag shows the **full reason as visible text**, exactly today's `STALE_TEXT` ("Stale: live connection lost", "Stale: from an earlier run"), with its test id `stale-<equipment id>` (`overview.test.tsx` lines 102 and 113 assert that text). The reason is never only in a tooltip (4.12: a tooltip is never the only place a fact lives, and touch has no hover). The tag's solid `warn` border keeps it apart from the dashed neutral borders of Setup and No data, so a stale Running never reads as a fresh one.
+**Stale** is not a machine state but a qualifier: the shown state may be out of date. The state badge keeps its own look and word; beside it a `warn` soft tag (soft fill, solid border, the `StaleTag`) shows the **full reason as visible text**, exactly today's `STALE_TEXT` ("Stale: live connection lost", "Stale: from an earlier run"), with its test id `stale-<equipment id>` (`overview.test.tsx` lines 102 and 113 assert that text). The reason is never only in a tooltip (4.12: a tooltip is never the only place a fact lives, and touch has no hover). The tag's solid `warn` border keeps it apart from the dashed neutral borders of Setup and No data, so a stale Running never reads as a fresh one.
 
 The light solid fills (Starved, Blocked, and the medium alarm priority) carry a 1 px border in their tone's border colour (5.02 and 5.18:1 on white), so their edge shows on white and on the canvas, where the fills alone are under 1.6:1. Glyphs are inline SVG icons from `src/components/ui/icons.tsx`, `aria-hidden`, 12 px in a badge. A machine card in an abnormal state also gets a 4 px left border in the state's border colour, so the overview shows the problem from across the room (G-13, O-01).
 
@@ -128,7 +128,7 @@ Every status the app shows maps to one tone, so the same word always looks the s
 
 | Domain                                           | Value → tone                                                                                                                                                                                                                                             |
 | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Finality (OEE, alarm KPIs, shift reports, trace) | Final → `neutral` outline with a check glyph; Provisional → `neutral` dashed outline; revised → `info` outline                                                                                                                                           |
+| Finality (OEE, alarm KPIs, shift reports, trace) | Final → `neutral` outline with a check glyph; Provisional → `neutral` dashed outline; revised → `info`, keeping its outline (dashed while provisional)                                                                                                   |
 | Order status                                     | Imported, Released, Closed → `neutral`; Dispatched, In progress → `info`; Completed → `neutral` with check; Cancelled → `neutral` (a decision, not a fault); Rejected (at import) → `alarm` soft; flags (Short, Dispatch failed, Dispatch lost) → `warn` |
 | Command state                                    | as today's `COMMAND_STATE_TEXT` tones, mapped good → `neutral`, bad → `alarm`, warn → `warn`, info → `info`                                                                                                                                              |
 | Quality hold                                     | Open → `alarm` soft; Released → `ok` soft; Rejected → `neutral` solid                                                                                                                                                                                    |
@@ -216,7 +216,7 @@ The tables above give the values; these are the names `src/index.css` defines (U
 | Neutral scale (2.1)   | `neutral-0` … `neutral-950` (950 = `#020617`, so no Tailwind neutral survives): the same in both themes, for the token file only; screens use the semantic names                                                         |
 | Surfaces, lines, text | `canvas`, `surface`, `surface-sunken`, `surface-hover` (= `neutral-100`: a button's hover), `line`, `line-subtle`, `line-strong`, `ink`, `ink-secondary`, `ink-inverse`                                                  |
 | Disabled (4.1)        | `disabled` (fill), `disabled-line`, `disabled-ink`                                                                                                                                                                       |
-| Accent (2.2)          | `accent` (primary fill, selected tab), `accent-hover`, `on-accent` (text on the fill), `accent-subtle`, `link`, `nav-active`, `nav-active-ink`, `nav-active-bar`, `focus`, `focus-on-dark`                               |
+| Accent (2.2)          | `accent` (primary fill, selected tab), `accent-hover`, `on-accent` (text on the fill), `accent-subtle`, `link`, `nav-active`, `nav-active-ink`, `nav-active-bar`, `focus`, `focus-on-dark`, `alarm-solid-hover` (4.1)    |
 | Shell (3.2)           | `topbar`, `topbar-ink`, `nav`, `nav-ink`, `nav-heading`, `nav-hover` (`#334155`, nav text 8.40): the same in both themes                                                                                                 |
 | Tones (2.3)           | `<tone>-ink`, `<tone>-soft`, `<tone>-border`, `<tone>-solid`, `<tone>-on-solid` for `neutral`, `info`, `ok`, `warn`, `caution`, `alarm`                                                                                  |
 | Machine states (2.4)  | `state-<state>-fill`, `-ink`, `-border` for `running`, `idle`, `setup`, `planned-stop`, `maintenance`, `off`, `starved`, `blocked`, `stopped`, `down`, `no-data`; a state without a border in 2.4 has its fill as border |
@@ -325,7 +325,7 @@ All live in `src/components/ui/`, are written in-house on Tailwind and the token
 ### 4.1 Button and IconButton
 
 ```ts
-type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
+type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'dangerSolid'; // dangerSolid: the confirm dialog's solid danger
 type ButtonSize = 'sm' | 'md' | 'lg' | 'touch';
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant; // default 'secondary'
@@ -340,12 +340,13 @@ interface IconButtonProps extends Omit<ButtonProps, 'icon' | 'children'> {
 }
 ```
 
-| Variant     | Rest                                                                                            | Hover                 | Use                                                                                                                              |
-| ----------- | ----------------------------------------------------------------------------------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `primary`   | fill `accent`, text white (7.56)                                                                | `accent-hover` (9.46) | The one main action of a page, form or dialog                                                                                    |
-| `secondary` | white, border `neutral-500`, text `ink`                                                         | fill `neutral-100`    | Every other action                                                                                                               |
-| `ghost`     | no border, text `accent`                                                                        | fill `neutral-100`    | Low-weight actions in tables and toolbars                                                                                        |
-| `danger`    | white, border `#b91c1c`, text `#991b1b`; in a confirm dialog solid `#b91c1c`, text white (6.47) | fill `#fef2f2`        | Irreversible or destructive: Disable, Reset password, Close, Cancel order, Block, Take offline, Break tool, Retract, End version |
+| Variant       | Rest                                                                                            | Hover                                                           | Use                                                                                                                              |
+| ------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `primary`     | fill `accent`, text white (7.56)                                                                | `accent-hover` (9.46)                                           | The one main action of a page, form or dialog                                                                                    |
+| `secondary`   | white, border `neutral-500`, text `ink`                                                         | fill `neutral-100`                                              | Every other action                                                                                                               |
+| `ghost`       | no border, text `accent`                                                                        | fill `neutral-100`                                              | Low-weight actions in tables and toolbars                                                                                        |
+| `danger`      | white, border `#b91c1c`, text `#991b1b`; in a confirm dialog solid `#b91c1c`, text white (6.47) | fill `#fef2f2`                                                  | Irreversible or destructive: Disable, Reset password, Close, Cancel order, Block, Take offline, Break tool, Retract, End version |
+| `dangerSolid` | fill `alarm-solid` `#b91c1c`, text `alarm-on-solid` white (6.47; dark `#dc2626`, 4.83)          | fill `alarm-solid-hover` `#991b1b` (8.31; dark `#b91c1c`, 6.47) | The confirm button of a destructive `ConfirmDialog` (4.9)                                                                        |
 
 | Size    | Height | Padding x | Text  |
 | ------- | ------ | --------- | ----- |
@@ -355,7 +356,7 @@ interface IconButtonProps extends Omit<ButtonProps, 'icon' | 'children'> {
 | `touch` | 56 px  | 20 px     | 18 px |
 
 - **Disabled** (G-10): fill `neutral-100`, border `neutral-300`, text `neutral-600` (6.92 on `neutral-100`; the tokens `disabled`, `disabled-line`, `disabled-ink`, also for disabled form controls, 4.7), `cursor: not-allowed`, no hover; never opacity. The same look for every variant, so a disabled primary never reads as enabled. When the reason is not obvious, a hint beside it says why ("Select alarms to acknowledge them").
-- **Loading:** the label stays, a 14 px spinner replaces the icon, the button is disabled and `aria-busy="true"`; `prefers-reduced-motion` shows a static ellipsis instead of the spin.
+- **Loading:** the label stays, a 14 px spinner replaces the icon, the button looks disabled and is `aria-busy="true"` and `aria-disabled="true"`: clicks, Enter and form submits are ignored, but it is not natively `disabled`, so the keyboard focus stays on it (a natively disabled button drops focus to the page, which would also escape a dialog's focus trap); `prefers-reduced-motion` shows a static ellipsis instead of the spin.
 - **Focus:** 2 px `focus` ring, 2 px offset (section 7).
 - Buttons in a row: primary last (right), 8 px apart. Row actions in tables are `ghost` `sm`, side by side, never stacked (A-02).
 
@@ -397,12 +398,12 @@ interface CardProps {
   status?: React.ReactNode; // a badge beside the title (finality)
   tone?: Tone; // a 4 px left bar in the tone's border colour, for abnormal items only
   padding?: 'compact' | 'default'; // 16 / 20 px
-  as?: 'section' | 'article' | 'div';
+  as?: 'section' | 'article' | 'div'; // default 'div': a named group; 'section' is a landmark
   children: React.ReactNode;
 }
 ```
 
-White surface, 1 px `line` border, `radius-lg`, elevation 0. Card grids: 16 px gap, equal heights per row only where the cards are peers (machine cards), otherwise natural height (E-05).
+White surface, 1 px `line` border, `radius-lg`, elevation 0. Role by `as`: a `div` (the default) with a title is a named `role="group"` (a generic `div` may not carry a name), so a grid of KPI tiles does not flood the landmark list; `section` is a region landmark and `article` an article, both named by the heading; untitled cards are not named. Card grids: 16 px gap, equal heights per row only where the cards are peers (machine cards), otherwise natural height (E-05).
 
 ### 4.4 KpiTile and Stat
 
@@ -720,7 +721,7 @@ Waterfall (E-06): every step is drawn as a positive bar from its base, losses la
 - **Ratios** (OEE, A, P, Q, yield) show as a percentage with the precision `percentText` gives today (two decimals): "83.04 %". The four-decimal value (`0.8304`) leaves the visible text and moves to a new raw attribute, `data-decimal`, beside the exact `data-fraction` (`83/100`) and the `title`; it also stays in the shift report's JSON (E-02, R-02). Today the tests read the **text** as well as `data-fraction`: `e2e/browser/orders/oee/1-order-line-oee.spec.ts` (`ratio()`, lines 27–31, its decimal compared by `orders-pass.ts`'s `checkOeeScreen`) and `demo/walkthrough.spec.ts` (lines 483–485, `/^0\.\d{4}$/` and `'1.0000'`). So `data-decimal` is added to every ratio element (`RatioValue`, `RatioHeadline`, the order OEE and FPY values, the line OEE values) first, and the issue that changes the text moves those specs to `data-decimal` in the same pull request (UX-3 the walkthrough, UX-6b `ratio()`).
 - **Percent sign** with a space before it ("83.04 %"), as today.
 - **Units** after the value with a space ("93.1 min", "3.245 Pa/min", "60 blanks"). In tables, durations keep the unit in each cell ("30.0 min"; the demo asserts that text in the Pareto table); a column of measured values or counts with one unit names it in the header and its cells hold numbers only (4.5).
-- **Precision:** a measured value with its characteristic's precision (`domain/numbers.ts`, #295); loss minutes with one decimal, rounded half up as the MES does; counts as integers. Thousands with a comma ("1,800.0 min") from 10,000 up only, so figures under it keep their reconciled spelling.
+- **Precision:** a measured value with its characteristic's precision (`domain/numbers.ts`, #295); loss minutes with one decimal, rounded half up as the MES does; counts as integers. Thousands with a comma ("12,345 pieces", "18,000.0 min") from 10,000 up only, so "1800.0 min" stays as it is, so figures under it keep their reconciled spelling.
 - **Signs:** a true minus (U+2212) directly before the number ("−93.1"); "+" only for deltas.
 - **Durations** (one function, G-17): under a minute "45 s"; under an hour "12 min" (with seconds, "12 min 05 s", only where it ticks live: time in state, a running pause); under a day "4 h 54 min"; from a day "2 d 12 h". Loss totals that reconcile stay in minutes with one decimal.
 
@@ -815,6 +816,7 @@ The bar for every issue. The harness of UX-1g reports it with axe on every route
   | `ink-inverse`                              | `#0b1220`                                                                      | –                                                |
   | `ink-secondary` on `canvas`                | –                                                                              | 7.30                                             |
   | `accent-hover`                             | `#7dd3fc`                                                                      | `on-accent` on it 11.23                          |
+  | `alarm-solid-hover`                        | `#b91c1c`                                                                      | white on it 6.47                                 |
   | `accent-subtle`                            | `#0c2d48`                                                                      | `ink` on it 11.47                                |
   | `neutral` tone                             | ink `#cbd5e1` on soft `#1e293b`; border `#64748b`; solid `#475569`             | 9.85; border 3.66; white on solid 7.58           |
   | `info` tone                                | solid `#2563eb`                                                                | white 5.17                                       |

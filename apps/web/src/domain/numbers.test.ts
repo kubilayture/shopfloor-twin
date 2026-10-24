@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  MINUS,
+  quantityText,
   MAX_DECIMALS,
   NO_NUMBER,
   decimalFraction,
@@ -114,5 +116,20 @@ describe('number text (#295)', () => {
     const none = spcPrecision(0);
     expect(none.reading).toBe(MAX_DECIMALS);
     expect(spcValueText({ value: LEAK, steps: '3381/1' }, none, 3)).toBe('3.381');
+  });
+});
+
+describe('quantityText (UX-1c, design system 6.1)', () => {
+  it('groups thousands from 10,000 up only, with a true minus', () => {
+    expect(quantityText(60)).toBe('60');
+    expect(quantityText(9999)).toBe('9999');
+    expect(quantityText(1800, 1)).toBe('1800.0');
+    expect(quantityText(10_000)).toBe('10,000');
+    expect(quantityText(1_234_567.255, 2)).toBe('1,234,567.26');
+    expect(quantityText(-93.15, 1)).toBe(`${MINUS}93.2`);
+    expect(quantityText(-12_345)).toBe(`${MINUS}12,345`);
+    expect(quantityText(-0.04, 1)).toBe('0.0');
+    expect(quantityText(Number.NaN)).toBe('–');
+    expect(MINUS).toBe('\u2212');
   });
 });

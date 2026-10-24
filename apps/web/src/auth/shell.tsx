@@ -3,6 +3,10 @@ import { Navigate, Outlet, useNavigate, useRouterState } from '@tanstack/react-r
 import { useEffect, useId, useRef, useState } from 'react';
 import { serverClockOffsetMs } from '../api/client.ts';
 import { logout } from '../api/identity.ts';
+import { Button } from '../components/ui/button.tsx';
+import { Callout } from '../components/ui/callout.tsx';
+import { PRODUCT_NAME, useRouteTitle } from '../components/ui/use-page-title.ts';
+import { routeTitle } from '../routes/titles.ts';
 import { LoginForm } from '../screens/login.tsx';
 import { RootLayout } from '../screens/root-layout.tsx';
 import { useAuth, type LostSession } from './auth.tsx';
@@ -18,9 +22,6 @@ import {
 } from './idle.ts';
 import { isLogin, safeRedirect } from './redirect.ts';
 
-const buttonClass =
-  'rounded border border-slate-700 bg-white px-3 py-1 text-sm font-medium text-slate-900 hover:bg-slate-100 disabled:opacity-60';
-
 /**
  * Every route but `/login` needs a session whose password needs no change (#170): without one the
  * app goes to `/login` and comes back to the page afterwards. A session lost while the page holds
@@ -29,6 +30,8 @@ const buttonClass =
  * operators on itself and never keeps one operator's page for the next.
  */
 export function Shell() {
+  // Every route names the document (G-05), the standalone ones too.
+  useRouteTitle(useRouterState({ select: (state) => routeTitle(state.matches) }));
   // By the matched route, not the location: during a navigation the location changes before the
   // matches, and the outlet must never render a protected screen without the check.
   const standalone = useRouterState({
@@ -68,27 +71,40 @@ function Protected() {
   );
 }
 
+/**
+ * While the session is read: the top bar with the product name only (nothing of the signed-in
+ * shell before the session is known), and the check or why it failed in `main`.
+ */
 function SessionPending({ error }: { readonly error: unknown }) {
   const auth = useAuth();
   return (
-    <main className="mx-auto max-w-md px-4 py-16 text-slate-900">
-      {error ? (
-        <div role="alert" className="rounded border border-red-800 bg-red-50 p-3 text-sm">
-          <p>The MES cannot be reached to check your session.</p>
-          <button
-            type="button"
-            className={`${buttonClass} mt-2`}
-            onClick={() => {
-              void auth.refresh().catch(() => undefined);
-            }}
+    <div className="min-h-screen bg-canvas text-ink">
+      <header className="flex h-12 items-center bg-topbar px-4 text-topbar-ink" data-surface="dark">
+        <span className="text-base font-semibold">{PRODUCT_NAME}</span>
+      </header>
+      <main id="main" tabIndex={-1} className="mx-auto max-w-md px-4 py-16">
+        {error ? (
+          <Callout
+            tone="alarm"
+            role="alert"
+            title="The MES cannot be reached to check your session."
           >
-            Try again
-          </button>
-        </div>
-      ) : (
-        <p role="status">Checking your session…</p>
-      )}
-    </main>
+            <Button
+              className="mt-1"
+              onClick={() => {
+                void auth.refresh().catch(() => undefined);
+              }}
+            >
+              Try again
+            </Button>
+          </Callout>
+        ) : (
+          <p role="status" className="text-sm text-ink-secondary">
+            Checking your session…
+          </p>
+        )}
+      </main>
+    </div>
   );
 }
 
@@ -192,9 +208,10 @@ export function IdleWatch({ session }: { readonly session: SessionDto }) {
       role="alert"
       data-testid="idle-warning"
       data-absolute={deadline.absolute}
-      className="fixed inset-x-0 bottom-0 z-40 border-t-2 border-amber-700 bg-amber-50 p-4 text-slate-900 print:hidden"
+      className="fixed inset-x-0 bottom-0 z-toast border-t-2 border-warn-border bg-warn-soft px-4 py-3 text-ink shadow-elevation-2 md:px-6 xl:px-8 print:hidden"
+      data-print="hidden"
     >
-      <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3">
+      <div className="mx-auto flex max-w-360 flex-wrap items-center justify-between gap-3 text-sm">
         {deadline.absolute ? (
           <p>
             Your session reaches its 12-hour limit in{' '}
@@ -210,26 +227,23 @@ export function IdleWatch({ session }: { readonly session: SessionDto }) {
         )}
         <div className="flex gap-2">
           {deadline.absolute ? null : (
-            <button
-              type="button"
+            <Button
+              variant="primary"
               data-testid="stay-signed-in"
-              className={buttonClass}
               onClick={() => {
                 stay.current();
               }}
             >
               Stay logged in
-            </button>
+            </Button>
           )}
-          <button
-            type="button"
-            className={buttonClass}
+          <Button
             onClick={() => {
               void auth.logOut();
             }}
           >
             Log out now
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -252,13 +266,14 @@ function Relogin({ lost }: { readonly lost: LostSession }) {
       aria-modal="true"
       aria-labelledby={titleId}
       data-testid="relogin"
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-800 px-4 py-16"
+      // Opaque: the page under it holds another session's input, which this cover keeps unseen.
+      className="fixed inset-0 z-lock flex items-start justify-center overflow-y-auto bg-nav px-4 py-16"
     >
-      <div className="w-full max-w-md rounded bg-white p-6 text-slate-900 shadow-lg">
+      <div className="w-full max-w-md rounded-lg border border-line bg-surface p-6 text-ink shadow-elevation-3">
         <h1 id={titleId} className="text-xl font-bold">
           {lost.reason === 'idle' ? 'Logged out after a while without use' : 'Your session ended'}
         </h1>
-        <p className="mt-2 text-sm">
+        <p className="mt-2 text-sm text-ink-secondary">
           What you entered on this page is kept. Log in again as{' '}
           <span className="font-semibold">{lost.username}</span> to carry on, then send it.
         </p>
@@ -271,7 +286,7 @@ function Relogin({ lost }: { readonly lost: LostSession }) {
         <button
           type="button"
           data-testid="relogin-other"
-          className="mt-4 text-sm text-sky-800 underline"
+          className="mt-4 text-sm text-link underline underline-offset-2"
           onClick={() => {
             void auth
               .logOut()

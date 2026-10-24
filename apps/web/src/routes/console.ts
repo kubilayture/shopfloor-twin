@@ -7,6 +7,7 @@ import { rootRoute } from './root.tsx';
 export const consoleRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/console',
+  staticData: { title: 'Simulation console' },
   component: Console,
 });
 

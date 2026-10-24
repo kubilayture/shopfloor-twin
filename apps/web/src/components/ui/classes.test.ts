@@ -17,7 +17,7 @@ const SRC = join(import.meta.dirname, '..', '..');
 const CSS_PATH = join(SRC, 'index.css');
 const css = readFileSync(CSS_PATH, 'utf8');
 
-/** The primitives, the domain badges and the state palette: drawn on the tokens only. */
+/** The primitives, the domain badges, the state palette and the shell: drawn on the tokens only. */
 const FILES = [
   ...readdirSync(join(SRC, 'components/ui'))
     .filter((f) => f.endsWith('.tsx') && !f.endsWith('.test.tsx') && f !== 'icons.tsx')
@@ -28,6 +28,10 @@ const FILES = [
   'components/finality-badge.tsx',
   'components/loss-badge.tsx',
   'domain/states.ts',
+  // The shell (UX-1b, #316).
+  'screens/root-layout.tsx',
+  'auth/shell.tsx',
+  'components/connection-status.tsx',
 ];
 
 /** Utility prefixes: a literal with one of these is a class list. */

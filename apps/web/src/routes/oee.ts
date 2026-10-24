@@ -20,6 +20,7 @@ export const oeeRoute = createRoute({
     shift: matching(search.shift, SHIFT_KEY),
     focus: matching(search.focus, ID),
   }),
+  staticData: { title: 'OEE' },
   component: OeeDashboard,
 });
 
@@ -37,6 +38,7 @@ export const downtimeRoute = createRoute({
     record: matching(search.record, RECORD_ID),
     uncoded: search.uncoded === true || search.uncoded === 'true' ? true : undefined,
   }),
+  staticData: { title: 'Downtime coding' },
   component: DowntimeCoding,
 });
 

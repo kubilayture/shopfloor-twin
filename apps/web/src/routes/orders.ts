@@ -19,12 +19,14 @@ export const orderListRoute = createRoute({
       ? (search.status as OrderFilter)
       : undefined,
   }),
+  staticData: { title: 'Production orders' },
   component: OrderList,
 });
 
 export const orderDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/orders/$id',
+  staticData: { title: ({ id }) => `Order ${id ?? ''}` },
   component: OrderDetailRoute,
 });
 

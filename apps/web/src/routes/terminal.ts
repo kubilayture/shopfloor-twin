@@ -8,12 +8,14 @@ import { rootRoute } from './root.tsx';
 export const terminalPickerRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/terminal',
+  staticData: { title: 'Operator terminal' },
   component: TerminalPicker,
 });
 
 export const terminalRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/terminal/$workCenter',
+  staticData: { title: ({ workCenter }) => `Terminal ${workCenter ?? ''}` },
   component: TerminalScreen,
 });
 

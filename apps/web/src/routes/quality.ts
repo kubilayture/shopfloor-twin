@@ -23,6 +23,7 @@ const isoOrUndefined = (value: unknown): string | undefined =>
 export const spcListRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/quality/spc',
+  staticData: { title: 'SPC charts' },
   component: SpcList,
 });
 
@@ -34,6 +35,7 @@ export const spcChartRoute = createRoute({
     from: isoOrUndefined(search.from),
     to: isoOrUndefined(search.to),
   }),
+  staticData: { title: ({ characteristic }) => `Characteristic ${characteristic ?? ''}` },
   component: SpcChartRoute,
 });
 
@@ -58,6 +60,7 @@ export const holdListRoute = createRoute({
     kind: text(search.kind),
     id: text(search.id),
   }),
+  staticData: { title: 'Quality holds' },
   component: HoldList,
 });
 
@@ -80,12 +83,14 @@ export const holdOpenRoute = createRoute({
       signal: Number.isSafeInteger(signal) && signal > 0 ? signal : undefined,
     };
   },
+  staticData: { title: 'Open a quality hold' },
   component: HoldOpen,
 });
 
 export const holdDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/quality/holds/$id',
+  staticData: { title: ({ id }) => `Hold ${id ?? ''}` },
   component: HoldDetailRoute,
 });
 

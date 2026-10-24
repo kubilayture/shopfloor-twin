@@ -27,6 +27,7 @@ export const alarmsRoute = createRoute({
       : undefined,
     alarm: matching(search.alarm, OCCURRENCE_ID),
   }),
+  staticData: { title: 'Alarms' },
   component: AlarmList,
 });
 
@@ -45,6 +46,7 @@ export const alarmKpiRoute = createRoute({
     focus: matching(search.focus, SCOPE_KEY),
     bucket: search.bucket === 'hour' || search.bucket === 'shift' ? search.bucket : undefined,
   }),
+  staticData: { title: 'Alarm KPIs' },
   component: AlarmKpi,
 });
 

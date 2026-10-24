@@ -25,6 +25,7 @@ export const traceSearchRoute = createRoute({
   validateSearch: (search: Record<string, unknown>): TraceSearchParams => ({
     q: validQuery(search.q),
   }),
+  staticData: { title: 'Traceability' },
   component: TraceSearch,
 });
 
@@ -34,18 +35,21 @@ export const traceSerialRoute = createRoute({
   validateSearch: (search: Record<string, unknown>): SerialSearch => ({
     unit: matching(search.unit, UNIT_KEY),
   }),
+  staticData: { title: ({ serial }) => `Serial ${serial ?? ''}` },
   component: TraceSerialRoute,
 });
 
 export const traceLotRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/trace/lots/$lot',
+  staticData: { title: ({ lot }) => `Lot ${lot ?? ''}` },
   component: TraceLotRoute,
 });
 
 export const traceCartonRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/trace/cartons/$carton',
+  staticData: { title: ({ carton }) => `Carton ${carton ?? ''}` },
   component: TraceCartonRoute,
 });
 

@@ -1,3 +1,5 @@
+import { TONES, type Tone } from '../../domain/tones.ts';
+
 /**
  * The design tokens of the web app (UX-1a, #314; `docs/ux/design-system.md` sections 2 and 8) as
  * data. `src/index.css` defines each one in Tailwind's `@theme`, so it is a CSS variable
@@ -71,6 +73,8 @@ const ACCENT: readonly ColorToken[] = [
   color('nav-active-bar', '#38bdf8'),
   color('focus', '#0369a1', '#38bdf8'),
   color('focus-on-dark', '#38bdf8'),
+  // The solid danger button's hover (4.1, UX-1c): one step darker than `alarm-solid`.
+  color('alarm-solid-hover', '#991b1b', '#b91c1c'),
 ];
 
 /** The shell's dark chrome (3.2): the same in both themes. */
@@ -83,8 +87,7 @@ const SHELL: readonly ColorToken[] = [
   color('nav-hover', '#334155'),
 ];
 
-export const TONES = ['neutral', 'info', 'ok', 'warn', 'caution', 'alarm'] as const;
-export type Tone = (typeof TONES)[number];
+export { TONES, type Tone };
 
 /** One tone's five colours (2.3): ink on soft, border, solid fill and the text on it. */
 interface TonePalette {

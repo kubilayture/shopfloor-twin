@@ -129,7 +129,8 @@ describe('durations and planning times (UX-1c, design system 6.1 and 6.2)', () =
     expect(durationText(86_400_000)).toBe('1 d 0 h');
     expect(durationText((2 * 24 + 12) * 3_600_000 + 59 * 60_000)).toBe('2 d 12 h');
     expect(durationText(-1)).toBe('0 s');
-    expect(durationText(Number.NaN)).toBe('0 s');
+    expect(durationText(Number.NaN)).toBe('–');
+    expect(durationText(Number.POSITIVE_INFINITY)).toBe('–');
     // The live form is formatDuration's, unchanged.
     expect(formatDuration(725_000)).toBe(durationText(725_000, { seconds: true }));
   });

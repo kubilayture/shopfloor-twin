@@ -12,7 +12,7 @@ const classesOf = (element: Element): string[] => element.className.split(/\s+/)
 
 /** UX-1c (#315): design system 4.3, 4.4, 4.13 and 3.4. */
 describe('Card', () => {
-  it('is a region named by its heading, with status beside the title and actions', () => {
+  it('is a named group by default (no landmark), with status beside the title and actions', () => {
     render(
       <Card
         title="Line OEE"
@@ -24,8 +24,11 @@ describe('Card', () => {
         <p>body</p>
       </Card>,
     );
-    const card = screen.getByRole('region', { name: 'Line OEE' });
-    expect(card.tagName).toBe('SECTION');
+    const card = screen.getByRole('group', { name: 'Line OEE' });
+    expect(card.tagName).toBe('DIV');
+    // A generic div is never named on its own (ARIA 1.2): the name rides on role="group".
+    expect(card.getAttribute('role')).toBe('group');
+    expect(screen.queryByRole('region')).toBeNull();
     expect(card.dataset.testid).toBe('line-oee-card');
     const heading = within(card).getByRole('heading', { level: 2, name: 'Line OEE' });
     expect(heading.nextElementSibling?.textContent).toBe('Final');
@@ -43,18 +46,41 @@ describe('Card', () => {
         x
       </Card>,
     );
-    const card = screen.getByTestId('c');
-    expect(card.tagName).toBe('ARTICLE');
+    const card = screen.getByRole('article', { name: 'CNC-01' });
+    expect(card.dataset.testid).toBe('c');
+    expect(card.hasAttribute('role')).toBe(false);
     expect(within(card).getByRole('heading', { level: 3, name: 'CNC-01' })).toBeTruthy();
     expect(classesOf(card)).toEqual(
       expect.arrayContaining(['p-4', 'border-l-4', 'border-l-alarm-border']),
     );
   });
 
-  it('without a title has no heading and no name', () => {
-    render(<Card testId="c">content</Card>);
+  it('is a region landmark only when asked to be a section', () => {
+    render(
+      <Card title="Shift A" as="section" testId="c">
+        x
+      </Card>,
+    );
+    const card = screen.getByRole('region', { name: 'Shift A' });
+    expect(card.tagName).toBe('SECTION');
+    expect(card.hasAttribute('role')).toBe(false);
+  });
+
+  it('without a title has no heading, no role and no name, whatever its element', () => {
+    render(
+      <>
+        <Card testId="c">content</Card>
+        <Card testId="s" as="section">
+          more
+        </Card>
+      </>,
+    );
+    for (const id of ['c', 's']) {
+      const element = screen.getByTestId(id);
+      expect(element.hasAttribute('aria-labelledby')).toBe(false);
+      expect(element.hasAttribute('role')).toBe(false);
+    }
     const card = screen.getByTestId('c');
-    expect(card.hasAttribute('aria-labelledby')).toBe(false);
     expect(within(card).queryByRole('heading')).toBeNull();
     expect(card.textContent).toBe('content');
   });
@@ -134,7 +160,9 @@ describe('KpiTile', () => {
         details={['a', 'b', 'c', 'd', 'e'].map((label) => ({ label, value: '1' }))}
       />,
     );
-    const tile = screen.getByRole('region', { name: 'Alarm load' });
+    // A group, not a landmark: a grid of tiles does not flood the landmark list.
+    const tile = screen.getByRole('group', { name: 'Alarm load' });
+    expect(screen.queryByRole('region')).toBeNull();
     expect(tile.dataset.testid).toBe('kpi');
     expect(classesOf(screen.getByTestId('head'))).toContain('text-3xl');
     const terms = within(tile)

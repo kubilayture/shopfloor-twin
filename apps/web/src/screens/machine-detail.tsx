@@ -85,7 +85,7 @@ function Timeline({ bands, window }: { bands: readonly Band[]; window: Window })
             key={`${String(band.epoch)}-${String(band.start)}-${band.state}`}
             data-state={band.state}
             title={`${stateStyle(band.state).label}${band.cause ? ` (${band.cause})` : ''}: ${formatPlantTime(band.start)} – ${formatPlantTime(band.end)}`}
-            className={`absolute inset-y-0 ${stateStyle(band.state).className}`}
+            className={`absolute inset-y-0 ${stateStyle(band.state).band}`}
             style={{ left: `${String(band.left)}%`, width: `${String(band.width)}%` }}
           />
         ))}

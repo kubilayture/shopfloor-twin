@@ -12,8 +12,8 @@ import {
   type OrderStatus,
 } from '@shopfloor/contracts/mes-api';
 import { ApiError } from '../api/client.ts';
-import type { Tone } from '../components/ui/tokens.ts';
 import { holdIdsIn } from './quality.ts';
+import type { Tone } from './tones.ts';
 import { writeFailure, type WriteFailure } from './writes.ts';
 
 // What the orders screens (#176) show and decide, as pure functions: labels, the newest of a

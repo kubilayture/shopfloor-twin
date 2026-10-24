@@ -298,6 +298,7 @@ const LIGHT_PAIRS: readonly Pair[] = [
   ['nav-ink', 'nav-hover', 'light', 8.4, TEXT],
   ['on-accent', 'accent', 'light', 7.56, TEXT],
   ['on-accent', 'accent-hover', 'light', 9.46, TEXT],
+  ['alarm-on-solid', 'alarm-solid-hover', 'light', 8.31, TEXT],
   ['link', 'surface', 'light', 7.56, TEXT],
   ['disabled-ink', 'disabled', 'light', 6.92, TEXT],
   ['ink-secondary', 'surface', 'light', 7.58, TEXT],
@@ -317,6 +318,7 @@ const LIGHT_PAIRS: readonly Pair[] = [
 /** Design system section 8 (dark): the stated pairs, then the ones UX-1a added to its table. */
 const DARK_PAIRS: readonly Pair[] = [
   ['ink', 'canvas', 'dark', 15.19, TEXT],
+  ['alarm-on-solid', 'alarm-solid-hover', 'dark', 6.47, TEXT],
   ['ink', 'surface', 'dark', 14.12, TEXT],
   ['ink-secondary', 'surface', 'dark', 6.79, TEXT],
   ['line-strong', 'surface', 'dark', 3.66, NON_TEXT],

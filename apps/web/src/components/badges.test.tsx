@@ -2,7 +2,7 @@ import type { CommandState, OrderStatus, SpcSignalDto } from '@shopfloor/contrac
 import { render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { COMMAND_STATE_TEXT, ORDER_STATUS_TEXT } from '../domain/orders.ts';
-import { STALE_TEXT } from '../domain/states.ts';
+import { STALE_TEXT, stateStyle } from '../domain/states.ts';
 import { FinalityBadge } from './finality-badge.tsx';
 import { LossBadge } from './loss-badge.tsx';
 import { NA_REASON, RatioHeadline, RatioValue, StatusFlags } from './oee-ui.tsx';
@@ -74,6 +74,29 @@ describe('Badge', () => {
     );
   });
 
+  it('passes id, aria-* and a ref through, and adds a className after its own', () => {
+    let node: HTMLSpanElement | null = null;
+    render(
+      <Badge
+        tone="warn"
+        id="why"
+        aria-label="Short by 3"
+        className="ml-2"
+        ref={(element) => {
+          node = element;
+        }}
+      >
+        Short
+      </Badge>,
+    );
+    const badge = screen.getByText('Short');
+    expect(node).toBe(badge);
+    expect(badge.id).toBe('why');
+    expect(badge.getAttribute('aria-label')).toBe('Short by 3');
+    expect(classesOf(badge).at(-1)).toBe('ml-2');
+    expect(badge.className).not.toMatch(/undefined|\s{2}/);
+  });
+
   it('has no title attribute unless given one', () => {
     render(<Badge tone="neutral">Closed</Badge>);
     expect(screen.getByText('Closed').hasAttribute('title')).toBe(false);
@@ -122,6 +145,28 @@ describe('StateBadge', () => {
     );
     rerender(<StateBadge state="Running" testId="s" />);
     expect(classesOf(screen.getByTestId('s'))).not.toContain('border-dashed');
+  });
+
+  it('gives every state a timeline band of its own (fill and edges), Setup dashed', () => {
+    const bands = cases.map(([state]) => stateStyle(state).band);
+    expect(new Set(bands).size).toBe(bands.length);
+    for (const [state, , , key] of cases) {
+      expect(stateStyle(state).band.split(' '), state).toEqual(
+        expect.arrayContaining([
+          `bg-state-${key}-fill`,
+          'border-y-4',
+          `border-state-${key}-border`,
+        ]),
+      );
+    }
+    // Running, Off and Planned stop have near-equal fills: their edges differ.
+    const edge = (state: string) =>
+      stateStyle(state)
+        .band.split(' ')
+        .find((c) => c.startsWith('border-state-'));
+    expect(new Set([edge('Running'), edge('Off'), edge('PlannedStop')]).size).toBe(3);
+    expect(stateStyle('Setup').band).toContain('border-dashed');
+    expect(stateStyle('Running').band).not.toContain('border-dashed');
   });
 
   it('shows an unknown state by its raw name in the neutral tone', () => {
@@ -333,6 +378,12 @@ describe('FinalityBadge', () => {
     expect(badge.textContent).toBe('Final · revision 2 · 1 incident');
     expect(classesOf(badge)).toEqual(
       expect.arrayContaining(['text-info-ink', 'border-info-border']),
+    );
+    // Provisional and revised: info, still dashed (it may change again).
+    rerender(<FinalityBadge final={false} revision={1} testId="f" />);
+    expect(screen.getByTestId('f').textContent).toBe('Provisional · revision 1');
+    expect(classesOf(screen.getByTestId('f'))).toEqual(
+      expect.arrayContaining(['text-info-ink', 'border-dashed']),
     );
     rerender(<FinalityBadge final={false} incidents={3} testId="f" />);
     expect(screen.getByTestId('f').textContent).toBe('Provisional · 3 incidents');

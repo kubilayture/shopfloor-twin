@@ -7,6 +7,7 @@ import { renderApp } from '../test/render-app.tsx';
 import { auditEntry, note, report, shiftRecord } from '../test/shift-fixtures.ts';
 import { memoryStorage, shiftMes, shiftState } from '../test/shift-mes.ts';
 import { liveKeys, type LiveShifts } from '../live/live-cache.ts';
+import { expectDecimals } from '../test/decimals.ts';
 
 vi.mock('../chart/echarts-view.tsx', () => ({ EChartsView: () => null }));
 
@@ -116,6 +117,17 @@ describe('shift report', () => {
     expect(measure(line, 'peak10')).toBe('n/a');
     expect(measure(line, 'unacknowledged')).toBe('n/a');
     expect(screen.getByTestId('notes-empty')).toBeTruthy();
+
+    // UX-1c (#315): every ratio element carries its raw four decimals, n/a included.
+    expect(within(cnc).getByText('63.00 %').dataset.decimal).toBe('0.6300');
+    expect(
+      [...wsh.querySelectorAll<HTMLElement>('[data-decimal]')].map((e) => e.dataset.decimal),
+    ).toContain('n/a');
+    const share = within(plant)
+      .getByTestId('report-bad-actor-plant-cnc-01-COOLANT-PRESSURE')
+      .querySelector<HTMLElement>('[data-decimal]');
+    expect(share?.dataset.decimal).toMatch(/^\d\.\d{4}$/);
+    expect(expectDecimals(document.body).length).toBeGreaterThanOrEqual(8);
   });
 
   it('shows a final report and a banner when it changed after final', async () => {

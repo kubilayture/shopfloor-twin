@@ -2,8 +2,8 @@ import { Badge } from './ui/badge.tsx';
 
 /**
  * The finality of a section's figures, shown once per scope in its header (design system 2.6,
- * E-03): Final is a neutral outline with a check, Provisional a neutral dashed outline, a figure
- * revised after it was final an `info` outline. Revisions and written-off incidents follow the
+ * E-03): Final is a neutral outline with a check, Provisional a neutral dashed outline; a revised
+ * figure takes the `info` tone and keeps its outline, dashed while provisional. Revisions and written-off incidents follow the
  * word ("Final · revision 2 · 1 incident"). `data-finality` carries `final` or `provisional`.
  * The per-row flags with their explanations stay `StatusFlags` (`oee-ui.tsx`).
  */
@@ -29,7 +29,7 @@ export function FinalityBadge({
       data-testid={testId}
       data-finality={final ? 'final' : 'provisional'}
       tone={revised ? 'info' : 'neutral'}
-      variant={final || revised ? 'outline' : 'dashed'}
+      variant={final ? 'outline' : 'dashed'}
       icon={final ? 'check' : undefined}
       title={title}
     >

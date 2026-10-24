@@ -107,10 +107,13 @@ const pad = (value: number): string => String(value).padStart(2, '0');
  * A duration for people, by one rule (design system 6.1, G-17): under a minute `45 s`; under an
  * hour `12 min`, or `12 min 05 s` with `seconds` (only where it ticks live: time in state, a
  * running pause); under a day `4 h 54 min`; from a day `2 d 12 h`. Whole units, rounded down, so
- * a live figure never runs ahead. Loss totals that reconcile stay `minutesText` (one decimal).
+ * a live figure never runs ahead; a negative one (clock skew) is `0 s`. Loss totals that reconcile
+ * stay `minutesText` (one decimal).
  */
 export function durationText(ms: number, { seconds = false }: { seconds?: boolean } = {}): string {
-  const totalSeconds = Number.isFinite(ms) ? Math.max(0, Math.floor(ms / 1000)) : 0;
+  // No finite number: the dash of `domain/numbers.ts` (`Duration` shows `Missing` instead).
+  if (!Number.isFinite(ms)) return '–';
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60);
   const hours = Math.floor(minutes / 60);
   const days = Math.floor(hours / 24);

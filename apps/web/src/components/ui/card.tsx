@@ -3,9 +3,14 @@ import type { Tone } from './tokens.ts';
 
 /**
  * A card (UX-1c, #315; design system 4.3): a white surface with a 1 px `line` border and
- * `radius-lg`, no shadow, for a group of facts or a chart. With a title it is a region labelled
- * by its heading (`h2` or `h3`); `status` puts a badge (the finality) beside the title, `actions`
- * top right. `tone` adds a 4 px left bar in the tone's border colour, for abnormal items only.
+ * `radius-lg`, no shadow, for a group of facts or a chart. `status` puts a badge (the finality)
+ * beside the title, `actions` top right. `tone` adds a 4 px left bar in the tone's border colour,
+ * for abnormal items only.
+ *
+ * Its role, by `as`: a `div` (the default) with a title is a named group (`role="group"`), so a
+ * grid of KPI cards does not flood the landmark list; `section` is a region landmark and
+ * `article` an article, each named by its heading, for a card that is a page section or a
+ * self-contained item (a machine card). Without a title none is named.
  */
 
 /** Written out in full: Tailwind finds class names in the source. */
@@ -40,7 +45,7 @@ export function Card({
   status,
   tone,
   padding = 'default',
-  as: Element = 'section',
+  as: Element = 'div',
   testId,
   className,
   children,
@@ -51,7 +56,11 @@ export function Card({
   return (
     <Element
       data-testid={testId}
-      aria-labelledby={title === undefined ? undefined : headingId}
+      {...(title === undefined
+        ? {}
+        : Element === 'div'
+          ? { role: 'group', 'aria-labelledby': headingId }
+          : { 'aria-labelledby': headingId })}
       className={[
         'rounded-lg border border-line bg-surface text-ink',
         padding === 'compact' ? 'p-4' : 'p-5',

@@ -50,16 +50,35 @@ describe('Button', () => {
 
   it('draws each variant from the tokens', () => {
     const expected: Record<ButtonVariant, string[]> = {
-      primary: ['bg-accent', 'text-on-accent', 'enabled:hover:bg-accent-hover', 'font-semibold'],
-      secondary: ['bg-surface', 'border-line-strong', 'enabled:hover:bg-surface-hover'],
-      ghost: ['border-transparent', 'text-accent', 'enabled:hover:bg-surface-hover'],
+      primary: [
+        'bg-accent',
+        'text-on-accent',
+        'enabled:not-aria-disabled:hover:bg-accent-hover',
+        'font-semibold',
+      ],
+      secondary: [
+        'bg-surface',
+        'border-line-strong',
+        'enabled:not-aria-disabled:hover:bg-surface-hover',
+      ],
+      ghost: [
+        'border-transparent',
+        'text-accent',
+        'enabled:not-aria-disabled:hover:bg-surface-hover',
+      ],
       danger: [
         'bg-surface',
         'border-alarm-border',
         'text-alarm-ink',
-        'enabled:hover:bg-alarm-soft',
+        'enabled:not-aria-disabled:hover:bg-alarm-soft',
       ],
-      dangerSolid: ['bg-alarm-solid', 'text-alarm-on-solid', 'font-semibold'],
+      // Its hover is a token pair of the design system: white on alarm-solid-hover, AA both themes.
+      dangerSolid: [
+        'bg-alarm-solid',
+        'text-alarm-on-solid',
+        'font-semibold',
+        'enabled:not-aria-disabled:hover:bg-alarm-solid-hover',
+      ],
     };
     for (const variant of VARIANTS) {
       const classes = buttonClass({ variant }).split(' ');
@@ -131,7 +150,7 @@ describe('Button', () => {
     expect(button.textContent).toBe('Print');
   });
 
-  it('loading: keeps the label as its name, shows a spinner instead of the icon, busy and disabled', () => {
+  it('loading: keeps the label as its name, shows a spinner instead of the icon, busy, inert to clicks', () => {
     const onClick = vi.fn();
     const { rerender } = render(
       <Button icon="check" loading onClick={onClick}>
@@ -140,7 +159,18 @@ describe('Button', () => {
     );
     const button = screen.getByRole<HTMLButtonElement>('button', { name: 'Save coding' });
     expect(button.getAttribute('aria-busy')).toBe('true');
-    expect(button.disabled).toBe(true);
+    expect(button.getAttribute('aria-disabled')).toBe('true');
+    // Not natively disabled: it keeps the keyboard focus (see the next test).
+    expect(button.disabled).toBe(false);
+    // The disabled look, by aria-disabled: never opacity, no hover.
+    expect(classesOf(button)).toEqual(
+      expect.arrayContaining([
+        'aria-disabled:bg-disabled',
+        'aria-disabled:border-disabled-line',
+        'aria-disabled:text-disabled-ink',
+        'aria-disabled:cursor-not-allowed',
+      ]),
+    );
     expect(button.querySelector('svg[data-icon="spinner"]')).not.toBeNull();
     expect(button.querySelector('svg[data-icon="check"]')).toBeNull();
     // Reduced motion: a still ellipsis instead of the turning arc, both decorative.
@@ -158,16 +188,66 @@ describe('Button', () => {
       </Button>,
     );
     expect(button.hasAttribute('aria-busy')).toBe(false);
-    expect(button.disabled).toBe(false);
+    expect(button.hasAttribute('aria-disabled')).toBe(false);
     expect(button.querySelector('[data-spinner]')).toBeNull();
     expect(button.querySelector('svg[data-icon="check"]')).not.toBeNull();
     fireEvent.click(button);
     expect(onClick).toHaveBeenCalledTimes(1);
   });
 
-  it('a loading button stays disabled even when told disabled={false}', () => {
+  it('keeps the focus when it starts loading, and ignores Enter and clicks until it is done', () => {
+    const onClick = vi.fn();
+    const { rerender } = render(
+      <Button onClick={onClick} data-testid="save">
+        Save coding
+      </Button>,
+    );
+    const button = screen.getByTestId('save');
+    button.focus();
+    fireEvent.click(button);
+    expect(onClick).toHaveBeenCalledTimes(1);
+    rerender(
+      <Button onClick={onClick} data-testid="save" loading>
+        Save coding
+      </Button>,
+    );
+    expect(document.activeElement).toBe(button);
+    fireEvent.keyDown(button, { key: 'Enter' });
+    fireEvent.click(button);
+    expect(onClick).toHaveBeenCalledTimes(1);
+    rerender(
+      <Button onClick={onClick} data-testid="save">
+        Save coding
+      </Button>,
+    );
+    expect(document.activeElement).toBe(button);
+  });
+
+  it('a loading submit button does not submit its form', () => {
+    const onSubmit = vi.fn((event: { preventDefault: () => void }) => {
+      event.preventDefault();
+    });
+    const { rerender } = render(
+      <form onSubmit={onSubmit}>
+        <Button type="submit" loading>
+          Release
+        </Button>
+      </form>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Release' }));
+    expect(onSubmit).not.toHaveBeenCalled();
+    rerender(
+      <form onSubmit={onSubmit}>
+        <Button type="submit">Release</Button>
+      </form>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Release' }));
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  it('a disabled button that is also loading stays natively disabled', () => {
     render(
-      <Button loading disabled={false}>
+      <Button loading disabled>
         Release
       </Button>,
     );
@@ -197,6 +277,15 @@ describe('IconButton', () => {
     render(<IconButton icon="download" label="Download CSV" loading />);
     const button = screen.getByRole<HTMLButtonElement>('button', { name: 'Download CSV' });
     expect(button.getAttribute('aria-busy')).toBe('true');
-    expect(button.disabled).toBe(true);
+    expect(button.getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('refuses an empty or blank label', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    // @ts-expect-error -- a literal empty label is a type error: an unnamed button
+    expect(() => render(<IconButton icon="close" label="" />)).toThrow(/needs a label/);
+    const blank = ['  '].join('');
+    expect(() => render(<IconButton icon="close" label={blank} />)).toThrow(/needs a label/);
+    vi.restoreAllMocks();
   });
 });

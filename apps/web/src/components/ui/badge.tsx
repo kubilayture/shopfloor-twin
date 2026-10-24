@@ -1,6 +1,6 @@
-import type { HTMLAttributes, ReactNode } from 'react';
+import type { HTMLAttributes, ReactNode, Ref } from 'react';
 import { Icon, type IconName } from './icons.tsx';
-import type { Tone } from './tokens.ts';
+import type { Tone } from '../../domain/tones.ts';
 
 /**
  * The one badge (UX-1c, #315; design system 4.2): every status in the app is a word in a small
@@ -75,18 +75,29 @@ export function badgeShape(size: BadgeSize = 'sm'): string {
 /** `data-*` attributes pass through, so a domain badge keeps the ones its tests read. */
 export type DataAttributes = Readonly<Record<`data-${string}`, string | undefined>>;
 
-export interface BadgeFrameProps extends DataAttributes {
+export interface BadgeFrameProps
+  extends
+    Omit<HTMLAttributes<HTMLSpanElement>, 'color' | 'children' | 'className'>,
+    DataAttributes {
   /** Fill, text and border colour classes (token utilities only). */
   readonly colors: string;
   readonly size?: BadgeSize;
   readonly icon?: IconName | undefined;
   /** Tooltip, also the accessible description: a supplement, never the only place of a fact. */
   readonly title?: string | undefined;
+  /**
+   * For layout and the few text decorations a status needs (`line-through`); never colours,
+   * sizes or padding: those come from the props, so nothing competes with the badge's own classes.
+   */
   readonly className?: string | undefined;
+  readonly ref?: Ref<HTMLSpanElement>;
   readonly children: ReactNode;
 }
 
-/** A badge with colours given by the caller: the machine-state and priority badges use it. */
+/**
+ * A badge with colours given by the caller: the machine-state and priority badges use it. Every
+ * other attribute (`id`, `aria-*`, `data-*`, a ref) passes through to the `<span>`.
+ */
 export function BadgeFrame({
   colors,
   size = 'sm',
@@ -94,14 +105,13 @@ export function BadgeFrame({
   title,
   className,
   children,
-  ...data
+  ...rest
 }: BadgeFrameProps) {
-  const props: HTMLAttributes<HTMLSpanElement> = title === undefined ? {} : { title };
   return (
     <span
-      {...data}
-      {...props}
-      className={`${badgeShape(size)} ${colors}${className ? ` ${className}` : ''}`}
+      {...rest}
+      {...(title === undefined ? {} : { title })}
+      className={[badgeShape(size), colors, className].filter(Boolean).join(' ')}
     >
       {icon ? <Icon name={icon} size={ICON_SIZE[size]} /> : null}
       {children}

@@ -39,6 +39,32 @@ describe('Duration', () => {
   });
 });
 
+describe('no finite number (design system 6.3)', () => {
+  it('Duration and Quantity show Missing with the reason, never "0 s" or a dash with a unit', () => {
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      const { unmount } = render(
+        <>
+          <Duration ms={value} testId="d" missing="Not reported" />
+          <Quantity value={value} unit="min" testId="q" />
+        </>,
+      );
+      const duration = screen.getByTestId('d');
+      expect(duration.dataset.missing).toBe('');
+      expect(duration.querySelector('[aria-hidden="true"]')?.textContent).toBe('—');
+      expect(duration.getAttribute('title')).toBe('Not reported');
+      const quantity = screen.getByTestId('q');
+      expect(quantity.textContent).toBe('—No value');
+      expect(quantity.textContent).not.toMatch(/min|–|0 s/);
+      unmount();
+    }
+  });
+
+  it('a negative duration (clock skew) reads 0 s, as the live time in state always has', () => {
+    render(<Duration ms={-500} testId="d" />);
+    expect(screen.getByTestId('d').textContent).toBe('0 s');
+  });
+});
+
 describe('PlantTime', () => {
   const at = '2026-10-12T04:15:00.000Z'; // Mon 12 Oct, 07:15:00 in Istanbul
 

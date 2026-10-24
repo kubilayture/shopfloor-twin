@@ -18,6 +18,9 @@ import {
  * `toLocaleString`.
  */
 
+/** The reason a formatter gives when it is handed no finite number and no reason. */
+export const NO_VALUE = 'No value';
+
 interface TestIdProps {
   readonly testId?: string | undefined;
   readonly className?: string | undefined;
@@ -50,9 +53,17 @@ export function Missing({ reason, testId, className }: { readonly reason: string
 export function Duration({
   ms,
   seconds = false,
+  missing = NO_VALUE,
   testId,
   className,
-}: { readonly ms: number; readonly seconds?: boolean } & TestIdProps) {
+}: {
+  readonly ms: number;
+  readonly seconds?: boolean;
+  /** Why there is no value, for a non-finite `ms` (`Missing`'s reason). */
+  readonly missing?: string;
+} & TestIdProps) {
+  if (!Number.isFinite(ms))
+    return <Missing reason={missing} testId={testId} className={className} />;
   return (
     <time
       dateTime={isoDuration(ms)}
@@ -195,13 +206,19 @@ export function Quantity({
   value,
   unit,
   places = 0,
+  missing = NO_VALUE,
   testId,
   className,
 }: {
   readonly value: number;
   readonly unit?: string;
   readonly places?: number;
+  /** Why there is no value, for a non-finite `value` (`Missing`'s reason). */
+  readonly missing?: string;
 } & TestIdProps) {
+  if (!Number.isFinite(value)) {
+    return <Missing reason={missing} testId={testId} className={className} />;
+  }
   return (
     <span
       data-testid={testId}

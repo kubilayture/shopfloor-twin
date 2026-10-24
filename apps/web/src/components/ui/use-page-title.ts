@@ -22,8 +22,29 @@ export function documentTitle(page: string | undefined): string {
 const screenTitles: { readonly title: string }[] = [];
 let routeTitle: string | undefined;
 
+/** Full titles that cover the page's own while held (the re-login cover, UX-1e #317). */
+const locks: { readonly title: string }[] = [];
+
 function apply(): void {
-  document.title = documentTitle(screenTitles.at(-1)?.title ?? routeTitle);
+  document.title = locks.at(-1)?.title ?? documentTitle(screenTitles.at(-1)?.title ?? routeTitle);
+}
+
+/**
+ * Holds the document title at `title` (a full title) while mounted, whatever the page under it
+ * sets meanwhile; the page's own title comes back when it is released. For a cover over a kept
+ * page, such as the re-login: "Log in again · ShopFloor Twin" (G-32).
+ */
+export function useTitleLock(title: string): void {
+  useEffect(() => {
+    const entry = { title };
+    locks.push(entry);
+    apply();
+    return () => {
+      const at = locks.indexOf(entry);
+      if (at >= 0) locks.splice(at, 1);
+      apply();
+    };
+  }, [title]);
 }
 
 /**

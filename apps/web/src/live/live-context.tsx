@@ -9,7 +9,14 @@ import {
   type TerminalViewDto,
 } from '@shopfloor/contracts/mes-api';
 import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query';
-import { createContext, use, useEffect, useSyncExternalStore, type ReactNode } from 'react';
+import {
+  createContext,
+  use,
+  useEffect,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react';
 import {
   holdOrderOee,
   liveKeys,
@@ -70,6 +77,58 @@ export function useLiveClient(): LiveClient {
 }
 
 export type LiveConnection = LiveConnectionState;
+
+/**
+ * Reconnecting this long counts as lost even before a second attempt failed: behind the stack's
+ * nginx a handshake to a stopped MES hangs until its 60 s timeout, so the attempt count alone
+ * would show nothing for a minute.
+ */
+export const LOST_AFTER_MS = 5_000;
+
+/**
+ * The connection counts as lost (design system 4.11; #317 after #343): the browser is offline,
+ * or the socket failed to come back at least once since it was last open (attempt 2 onwards, as
+ * the header counts them). Connecting or reconnecting for `LOST_AFTER_MS` counts too
+ * (`useConnectionLost`).
+ * A single quick reconnect, after a blip or right after the network returns, is not a loss.
+ */
+export function isConnectionLost(connection: LiveConnectionState): boolean {
+  return connection.offline || (connection.status === 'reconnecting' && connection.attempt >= 2);
+}
+
+const NO_CLIENT = () => () => undefined;
+const IDLE: LiveConnectionState = { status: 'stopped', attempt: 0, offline: false };
+
+/**
+ * Whether the connection is lost: `isConnectionLost`, or connecting or reconnecting for
+ * `LOST_AFTER_MS` since the client started to (one clock for every caller, so the bar and the error views agree). False
+ * outside a `LiveProvider`, so a view that only adapts to it (the error view) works anywhere.
+ */
+export function useConnectionLost(): boolean {
+  const client = use(LiveContext);
+  const connection = useSyncExternalStore(
+    client ? (listener) => client.onStatus(listener) : NO_CLIENT,
+    client ? () => client.connection : () => IDLE,
+  );
+  // A first connect that hangs counts as much as a reconnect that does (#352 review L1).
+  const reconnecting = connection.status === 'reconnecting' || connection.status === 'connecting';
+  const since = client?.statusSince ?? 0;
+  // The `since` of the reconnect that has lasted `LOST_AFTER_MS`: set by a timer, never in render.
+  const [late, setLate] = useState<number | null>(null);
+  useEffect(() => {
+    if (!reconnecting) return undefined;
+    const timer = setTimeout(
+      () => {
+        setLate(since);
+      },
+      Math.max(0, since + LOST_AFTER_MS - Date.now()),
+    );
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [reconnecting, since]);
+  return isConnectionLost(connection) || (reconnecting && late === since);
+}
 
 export function useLiveConnection(): LiveConnection {
   const client = useLiveClient();

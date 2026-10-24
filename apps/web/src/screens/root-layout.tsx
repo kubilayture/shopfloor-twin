@@ -10,15 +10,16 @@ import {
   useSyncExternalStore,
   type RefObject,
 } from 'react';
-import { requestHeadingFocus, useHeadingFocus } from '../components/heading-focus.ts';
+import { requestHeadingFocus } from '../components/heading-focus.ts';
 import { Icon } from '../components/ui/icons.tsx';
 import { PRODUCT_NAME } from '../components/ui/use-page-title.ts';
 import { usePlantClock } from '../api/queries.ts';
 import { useAuth } from '../auth/auth.tsx';
 import { rolesText } from '../domain/identity.ts';
 import { ConnectionStatus } from '../components/connection-status.tsx';
-import { formatClockSeconds, formatPlantTime } from '../domain/time.ts';
-import { useLiveConnection, useLiveSubscription } from '../live/live-context.tsx';
+import { OfflineBar } from '../components/offline-bar.tsx';
+import { formatPlantTime } from '../domain/time.ts';
+import { useLiveSubscription } from '../live/live-context.tsx';
 
 /**
  * The app shell (UX-1b, #316; design system 3.2): a 48 px top bar, the side nav grouped by job
@@ -197,46 +198,6 @@ function PlantClock() {
         <span>no data yet</span>
       )}
     </p>
-  );
-}
-
-/**
- * While the browser is offline (#312): says since when the figures stopped updating, as the plant
- * clock read when the network went, and goes when the network returns. Writes fail meanwhile
- * where each form shows a refused one, and are not sent later by themselves.
- */
-function OfflineBar() {
-  const { offline } = useLiveConnection();
-  const { clock } = usePlantClock();
-  // The plant clock when the network went, kept while offline whatever arrives late.
-  const [since, setSince] = useState<{ readonly at: string | null } | null>(null);
-  if (offline && since === null) setSince({ at: clock?.watermark ?? null });
-  if (!offline && since !== null) setSince(null);
-  if (!offline) return null;
-  const at = since ? since.at : (clock?.watermark ?? null);
-  return (
-    <div
-      role="alert"
-      data-testid="offline-bar"
-      className="border-b-2 border-warn-border bg-warn-soft text-ink print:hidden"
-      data-print="hidden"
-    >
-      <p className="mx-auto max-w-360 px-4 py-2 text-sm md:px-6 xl:px-8">
-        <span className="font-semibold">Offline:</span>{' '}
-        {at === null ? (
-          'the figures on this page stopped updating when the network was lost.'
-        ) : (
-          <>
-            the figures on this page stopped updating at{' '}
-            <time dateTime={at} className="font-mono tabular-nums">
-              {formatClockSeconds(at)}
-            </time>{' '}
-            plant time.
-          </>
-        )}{' '}
-        They update again when the network is back; what you send meanwhile is not saved.
-      </p>
-    </div>
   );
 }
 
@@ -508,21 +469,5 @@ export function RootLayout() {
         </main>
       </div>
     </div>
-  );
-}
-
-export function NotFound() {
-  const heading = useHeadingFocus<HTMLHeadingElement>();
-  return (
-    <section>
-      <h1 ref={heading} tabIndex={-1} className="text-2xl font-bold">
-        Page not found
-      </h1>
-      <p className="mt-2">
-        <Link to="/" className="text-link underline">
-          Back to the plant overview
-        </Link>
-      </p>
-    </section>
   );
 }

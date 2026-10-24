@@ -1,4 +1,15 @@
-/** A failed read with what the MES said (problem details) and a way to try again. */
+import { useState } from 'react';
+import { useOfflineBarShown } from './offline-bar.tsx';
+import { ErrorState, isNetworkError } from './ui/error-state.tsx';
+
+/**
+ * A failed read with what the MES said (problem details) and a way to try again when that can
+ * help: the screens' one error view, on `ErrorState` since UX-1e (#317). A failure to reach the
+ * MES while the shell's offline bar is up is quiet (one line, not announced): the bar is the one
+ * alert. It stays quiet until its read runs again (the bar has every failed read run again when
+ * the connection is back), so the lines do not all turn into alerts at that moment (#352 review
+ * M4); a read that fails again with the connection back is loud.
+ */
 export function QueryError({
   what,
   error,
@@ -8,20 +19,11 @@ export function QueryError({
   error: unknown;
   onRetry?: () => void;
 }) {
-  const detail = error instanceof Error ? error.message : 'Unknown error';
-  return (
-    <div role="alert" className="rounded border border-red-700 bg-red-50 p-3 text-red-950">
-      <p className="font-semibold">Could not load {what}.</p>
-      <p className="text-sm">{detail}</p>
-      {onRetry ? (
-        <button
-          type="button"
-          onClick={onRetry}
-          className="mt-2 rounded border border-red-800 bg-white px-3 py-1 text-sm font-medium text-red-900 hover:bg-red-100"
-        >
-          Try again
-        </button>
-      ) : null}
-    </div>
-  );
+  const barShown = useOfflineBarShown();
+  const unreachable = isNetworkError(error);
+  // The error object that was shown quietly: a new one comes only with the next attempt.
+  const [quietFor, setQuietFor] = useState<unknown>(undefined);
+  if (barShown && unreachable && quietFor !== error) setQuietFor(error);
+  const quiet = unreachable && (barShown || quietFor === error);
+  return <ErrorState what={what} error={error} onRetry={onRetry} quiet={quiet} />;
 }

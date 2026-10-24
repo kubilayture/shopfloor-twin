@@ -31,7 +31,7 @@ import {
   scopeKey,
   windowLabel,
 } from '../domain/alarms.ts';
-import { NOT_APPLICABLE, percentText, pickBucket } from '../domain/oee.ts';
+import { NOT_APPLICABLE, percentText, pickBucket, ratioText } from '../domain/oee.ts';
 import { formatClockTime, formatPlantTime } from '../domain/time.ts';
 import { useLiveAlarmKpi, useLiveAlarms, useLiveSubscriptions } from '../live/live-context.tsx';
 
@@ -529,7 +529,11 @@ function BadActorTable({
                   {actor.equipment} <span className="font-mono text-xs">{actor.code}</span>
                 </td>
                 <td className="px-2 py-1 text-right tabular-nums">{actor.raises}</td>
-                <td className="px-2 py-1 text-right" title={actor.share.fraction}>
+                <td
+                  className="px-2 py-1 text-right"
+                  title={actor.share.fraction}
+                  data-decimal={ratioText(actor.share)}
+                >
                   {percentText(actor.share)}
                 </td>
                 <td className="px-2 py-1 text-right">{msText(actor.activeMs)}</td>

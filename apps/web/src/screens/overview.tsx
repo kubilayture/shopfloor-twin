@@ -7,7 +7,7 @@ import { useHeadingFocus } from '../components/heading-focus.ts';
 import { QueryError } from '../components/query-error.tsx';
 import { StateBadge } from '../components/state-badge.tsx';
 import { groupEquipment } from '../domain/plant.ts';
-import { STALE_TEXT, isConnectionLost, newest, staleness, timeInState } from '../domain/states.ts';
+import { isConnectionLost, newest, staleness, timeInState } from '../domain/states.ts';
 import { formatDuration, formatPlantTime } from '../domain/time.ts';
 import { useLiveConnection, useLiveStates } from '../live/live-context.tsx';
 
@@ -45,15 +45,12 @@ function MachineCard({
           <span className="font-mono">{equipment.id}</span> · {equipment.operation}
         </p>
         <div className="flex flex-wrap items-center gap-2">
-          <StateBadge state={current?.state} testId={`state-${equipment.id}`} />
-          {stale ? (
-            <span
-              data-testid={`stale-${equipment.id}`}
-              className="rounded border border-amber-700 px-1.5 text-xs font-medium text-amber-900"
-            >
-              {STALE_TEXT[stale]}
-            </span>
-          ) : null}
+          <StateBadge
+            state={current?.state}
+            testId={`state-${equipment.id}`}
+            stale={stale}
+            staleTestId={`stale-${equipment.id}`}
+          />
           {current?.seq === null ? (
             <span
               title="Known from the device's start-up state only; no state change seen yet"

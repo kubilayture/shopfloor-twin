@@ -13,6 +13,7 @@ import {
 } from '@shopfloor/contracts/mes-api';
 import { ApiError } from '../api/client.ts';
 import { holdIdsIn } from './quality.ts';
+import type { Tone } from './tones.ts';
 import { writeFailure, type WriteFailure } from './writes.ts';
 
 // What the orders screens (#176) show and decide, as pure functions: labels, the newest of a
@@ -41,16 +42,19 @@ export function filterStatuses(filter: OrderFilter | undefined): OrderStatus[] {
   return [filter];
 }
 
-export type Tone = 'neutral' | 'info' | 'good' | 'warn' | 'bad';
-
+/**
+ * An order's status as one of the design system's tones (2.6): normal steps are `neutral`, the
+ * ones where work is under way `info`; a cancellation is a decision, not a fault; only an order
+ * rejected at import is `alarm`. Completed adds a check glyph (`OrderStatusBadge`).
+ */
 export const ORDER_STATUS_TONE: Readonly<Record<OrderStatus, Tone>> = {
   imported: 'neutral',
-  rejected: 'bad',
-  released: 'info',
+  rejected: 'alarm',
+  released: 'neutral',
   dispatched: 'info',
   'in-progress': 'info',
-  completed: 'good',
-  closed: 'good',
+  completed: 'neutral',
+  closed: 'neutral',
   cancelled: 'neutral',
 };
 
@@ -74,10 +78,10 @@ export const COMMAND_STATE_TEXT: Readonly<
     label: 'Failed',
     meaning:
       'No final answer by the expiry of its first unanswered delivery plus the margin: an incident. Not final; a re-dispatch waits until it is settled.',
-    tone: 'bad',
+    tone: 'alarm',
   },
-  accepted: { label: 'Accepted', meaning: 'The job exists on the device.', tone: 'good' },
-  rejected: { label: 'Rejected', meaning: 'The device refused the job: no job.', tone: 'bad' },
+  accepted: { label: 'Accepted', meaning: 'The job exists on the device.', tone: 'neutral' },
+  rejected: { label: 'Rejected', meaning: 'The device refused the job: no job.', tone: 'alarm' },
   expired: {
     label: 'Expired',
     meaning: 'Every delivery expired before the device accepted it: no job.',
@@ -98,7 +102,7 @@ export const COMMAND_STATE_TEXT: Readonly<
     label: 'Conflict',
     meaning:
       'The device holds another job under this command id: an incident, not settled until its run ends.',
-    tone: 'bad',
+    tone: 'alarm',
   },
   abandoned: {
     label: 'Abandoned',
@@ -113,14 +117,6 @@ export const RESULT_TEXT: Readonly<Record<CommandResultDto['result'], string>> =
   rejected: 'Rejected',
   expired: 'Expired',
   unknown: 'Unknown (settling)',
-};
-
-export const TONE_CLASS: Readonly<Record<Tone, string>> = {
-  neutral: 'border-slate-500 text-slate-800',
-  info: 'border-sky-800 text-sky-900',
-  good: 'border-emerald-800 text-emerald-900',
-  warn: 'border-amber-700 text-amber-950',
-  bad: 'border-red-800 text-red-900',
 };
 
 /** The order flags for people, in a fixed order. */

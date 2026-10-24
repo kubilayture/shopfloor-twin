@@ -12,6 +12,7 @@ import {
 import { EQUIPMENT, PLANT, json, problem } from '../test/fixtures.ts';
 import { CURRENT_SHIFT, SHIFT, SHIFT_END, SHIFT_START, requestUrl } from '../test/oee-fixtures.ts';
 import { renderApp } from '../test/render-app.tsx';
+import { expectDecimals } from '../test/decimals.ts';
 
 /** The chart options drawn (jsdom has no canvas): the threshold line is checked on them. */
 const charts = vi.hoisted(() => ({ options: [] as unknown[] }));
@@ -191,6 +192,9 @@ describe('alarm KPI page', () => {
     expect(floods.textContent).toContain('In flood');
     const actor = await screen.findByTestId('bad-actor-cnc-01-COOLANT-PRESSURE');
     expect(actor.textContent).toContain('85.71 %');
+    // UX-1c (#315): the share's raw four decimals.
+    expect(within(actor).getByText('85.71 %').dataset.decimal).toBe('0.8571');
+    expect(expectDecimals(document.body).length).toBeGreaterThanOrEqual(1);
     expect(actor.textContent).toContain('10.0 min');
 
     const operator = screen.getByTestId('kpi-operator');

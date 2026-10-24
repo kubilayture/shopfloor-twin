@@ -70,6 +70,16 @@ test('the terminal shows the order counts within 2 s of the cycles; an operator 
   await expect(page.getByTestId('connection-status')).toHaveAttribute('data-status', 'open', {
     timeout: 30_000,
   });
+  // A reload while signed on: the terminal route starts the live client itself (#311), so the
+  // status comes back to "Live" without a new sign-on.
+  await page.reload();
+  await expect(page.getByTestId('terminal-user')).toHaveText(operator.username, {
+    timeout: 30_000,
+  });
+  await expect(page.getByTestId('connection-status')).toHaveAttribute('data-status', 'open', {
+    timeout: 30_000,
+  });
+  await expect(page.getByTestId('connection-status')).toHaveText('Live');
   // The current order, in progress here, with its Line A1 operations.
   await expect(page.getByTestId(`terminal-order-${orderId}`)).toBeVisible({ timeout: 30_000 });
   await expect(page.getByTestId(`terminal-order-status-${orderId}`)).toHaveText('in-progress');

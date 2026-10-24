@@ -42,6 +42,8 @@ function terminalMes(
     roles?: Role[];
     /** Sessions the MES issues end this soon after the login (the idle timeout), if given. */
     idleMs?: number;
+    /** The plant clock's watermark, if the plant has one. */
+    watermark?: string;
   } = {},
 ) {
   let nextActivity = 500;
@@ -111,8 +113,8 @@ function terminalMes(
     if (path === '/api/v1/plant')
       return json({
         site: { id: 'gebze', name: 'Gebze', enterprise: { id: 'o', name: 'O' } },
-        clock: null,
-        epochs: [],
+        clock: options.watermark ? { epoch: 1, watermark: options.watermark } : null,
+        epochs: options.watermark ? [{ epoch: 1, watermark: options.watermark }] : [],
       });
     if (path === '/api/v1/terminal/line-a1') return json(view);
     if (path === '/api/v1/scrap-reasons') {
@@ -482,6 +484,94 @@ describe('the operator terminal (#177)', () => {
     expect((await screen.findByTestId('terminal-desk-session')).textContent).toMatch(
       /ayse is logged in at a desk/,
     );
+  });
+
+  it('shows the plant clock and no connection state before sign-on, also with a desk session (#311)', async () => {
+    const desk = sessionOf(['operator'], { username: 'ayse' });
+    const mes = terminalMes({ session: desk, watermark: '2026-10-15T06:20:00.000Z' });
+    vi.stubGlobal('fetch', mes.fetch);
+    // As in the browser, where this route never starts the live client for a desk session: the
+    // client stays stopped, and the header must not call that "Offline".
+    const app = await renderApp('/terminal/line-a1', { session: desk, live: 'stopped' });
+    await screen.findByTestId('terminal-desk-session');
+    await waitFor(() => {
+      expect(screen.getByTestId('terminal-clock').textContent).toMatch(/^Plant time /);
+    });
+    expect(app.live.status).toBe('stopped');
+    expect(screen.queryByTestId('connection-status')).toBeNull();
+    expect(screen.queryByText('Offline')).toBeNull();
+    expect(screen.queryByText('Live')).toBeNull();
+  });
+
+  it('shows no connection state on the sign-on page without a session, and "Live" once signed on (#311)', async () => {
+    const mes = terminalMes();
+    vi.stubGlobal('fetch', mes.fetch);
+    const app = await renderApp('/terminal/line-a1', { session: 'fetch' });
+    await screen.findByRole('heading', { name: 'Sign on' });
+    expect(screen.getByTestId('terminal-clock').textContent).toBe('No plant time yet');
+    expect(screen.queryByTestId('connection-status')).toBeNull();
+    await signOnAs('olga');
+    await app.open();
+    const status = screen.getByTestId('connection-status');
+    expect(status.dataset.status).toBe('open');
+    expect(status.textContent).toBe('Live');
+  });
+
+  it('starts the live client for a terminal opened or reloaded while signed on, and stops it at sign-off (#311)', async () => {
+    const held = { ...sessionOf(['operator'], { username: 'olga', kind: 'terminal' }) };
+    const signedOn = { ...held, user: { ...held.user, id: IDS.olga ?? 0 } };
+    const mes = terminalMes({ session: signedOn });
+    vi.stubGlobal('fetch', mes.fetch);
+    // A reload: the session is read from the MES, and nothing has started the client yet.
+    const app = await renderApp('/terminal/line-a1', { session: 'fetch', live: 'stopped' });
+    await screen.findByTestId('terminal-title');
+    await waitFor(() => {
+      expect(app.factory.sockets).toHaveLength(1);
+    });
+    await app.open();
+    const status = screen.getByTestId('connection-status');
+    expect(status.dataset.status).toBe('open');
+    expect(status.textContent).toBe('Live');
+    expect(app.factory.last.sent).toContainEqual({ type: 'subscribe', topic: 'terminal:line-a1' });
+    // Started once: a running client is not started again.
+    expect(app.factory.sockets).toHaveLength(1);
+    // Sign-off ends the session and stops the client; the sign-on page shows no state.
+    fireEvent.click(screen.getByTestId('terminal-sign-off'));
+    await screen.findByRole('heading', { name: 'Sign on' });
+    expect(app.live.status).toBe('stopped');
+    expect(screen.queryByTestId('connection-status')).toBeNull();
+    expect(app.factory.sockets).toHaveLength(1);
+  });
+
+  it('shows no connection state and starts no client for a terminal session that must change its password (#311)', async () => {
+    const held = sessionOf(['operator'], {
+      username: 'olga',
+      kind: 'terminal',
+      mustChangePassword: true,
+    });
+    const mes = terminalMes({ session: held, watermark: '2026-10-15T06:20:00.000Z' });
+    vi.stubGlobal('fetch', mes.fetch);
+    const app = await renderApp('/terminal/line-a1', { session: 'fetch', live: 'stopped' });
+    await waitFor(() => {
+      expect(screen.getByTestId('terminal-clock').textContent).toMatch(/^Plant time /);
+    });
+    expect(screen.queryByTestId('connection-status')).toBeNull();
+    expect(screen.queryByText('Offline')).toBeNull();
+    expect(app.live.status).toBe('stopped');
+    expect(app.factory.sockets).toHaveLength(0);
+  });
+
+  it('shows a lost connection after sign-on as reconnecting (#311)', async () => {
+    const mes = terminalMes();
+    vi.stubGlobal('fetch', mes.fetch);
+    const app = await renderApp('/terminal/line-a1', { session: 'fetch' });
+    await signOnAs('olga');
+    await app.open();
+    expect(screen.getByTestId('connection-status').dataset.status).toBe('open');
+    await app.drop();
+    const status = screen.getByTestId('connection-status');
+    expect(status.dataset.status).toBe('reconnecting');
+    expect(status.textContent).toBe('Reconnecting…');
   });
 
   it('says why a sign-on was refused when no shift is running', async () => {

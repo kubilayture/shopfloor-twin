@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### Fixed
+
+- The terminal's sign-on page no longer says "Offline", and a reloaded terminal is live again (#311, UX-B3, audit X-03). The header shows the live connection's state only for a signed-on terminal session. Before sign-on this route never starts the live client, so a desk session in the same browser read as a red "Offline"; the page now shows the work center and the plant clock only, and "Live" once signed on as before. A terminal opened or reloaded while signed on now starts the live client itself, as the desk shell does: before, nothing on that route started it, so the header said "Offline" and no updates arrived until the next sign-on. Starting is idempotent; sign-off and a session's end stop it as before (`apps/web/src/screens/terminal.tsx`). Tests: with a desk session and a stopped client the sign-on page shows the plant clock and no `connection-status`; none either without a session or for a terminal session that must change its password (no client started); a signed-on terminal read with a stopped client starts it once, reads "Live" and stops it at sign-off; a dropped connection after sign-on reads "Reconnecting…". `renderApp` can leave the live client stopped (`live: 'stopped'`). Browser: `orders/live/terminal-live.spec.ts` reloads after sign-on and waits for `data-status="open"`.
+
 ### Changed
 
 - README: points to release 1.0.0 and the final report, and names the Phase 10 report as the latest (it still said Phase 9; R10-14 (12)). The quick-start block is unchanged.

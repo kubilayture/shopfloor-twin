@@ -182,7 +182,9 @@
   --shadow-elevation-1: 0 1px 2px rgb(15 23 42 / 0.06);
   --shadow-elevation-2: 0 4px 12px rgb(15 23 42 / 0.12);
   --shadow-elevation-3: 0 12px 32px rgb(15 23 42 / 0.24);
+  --z-sticky-column: 1;
   --z-sticky: 10;
+  --z-sticky-corner: 11;
   --z-topbar: 20;
   --z-nav: 30;
   --z-popover: 40;
@@ -303,8 +305,16 @@
   syntax: '*';
   inherits: false;
 }
+@utility z-sticky-column {
+  z-index: var(--z-sticky-column);
+}
+
 @utility z-sticky {
   z-index: var(--z-sticky);
+}
+
+@utility z-sticky-corner {
+  z-index: var(--z-sticky-corner);
 }
 
 @utility z-topbar {

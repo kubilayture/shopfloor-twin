@@ -22,6 +22,8 @@ export const primaryClass =
   'rounded bg-sky-800 px-3 py-1 text-sm font-semibold text-white hover:bg-sky-900 disabled:opacity-50';
 export const cell = 'px-2 py-1.5 align-top';
 /** Row dividers and hover on the legacy table's own rows (design system 4.5: no zebra). */
+/** The header cells' padding, as `cell`'s (`HEADER_CELL` aligns them to the bottom). */
+const LEGACY_HEADER_PAD = 'px-2 py-1.5';
 const LEGACY_BODY = 'divide-y divide-line-subtle *:hover:bg-surface-sunken';
 
 export const timeOf = (value: string | null): ReactNode =>
@@ -92,7 +94,7 @@ export function Table({
           // An unnamed column (the actions) may repeat the empty name.
           key={`${String(index)}-${column}`}
           scope="col"
-          className={`${HEADER_CELL} ${cell} ${sticky ? STICKY_HEADER_CELL : SCROLL_STICKY_HEADER_CELL}`}
+          className={`${HEADER_CELL} ${LEGACY_HEADER_PAD} ${sticky ? STICKY_HEADER_CELL : SCROLL_STICKY_HEADER_CELL}`}
         >
           {column}
         </th>

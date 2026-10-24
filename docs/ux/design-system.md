@@ -195,15 +195,17 @@ Vertical rhythm on a page: page header, 24 px, filter bar, 16 px, first section;
 | 2         | border `line` + `0 4px 12px rgb(15 23 42 / 0.12)`                   | Menus, tooltips, popovers           |
 | 3         | `0 12px 32px rgb(15 23 42 / 0.24)` + backdrop `rgb(15 23 42 / 0.5)` | Dialogs, the nav drawer             |
 
-| z-index token | Value | Layer                                                                    |
-| ------------- | ----- | ------------------------------------------------------------------------ |
-| `z-sticky`    | 10    | Sticky table headers, sticky detail panels                               |
-| `z-topbar`    | 20    | The top bar                                                              |
-| `z-nav`       | 30    | The nav drawer and its backdrop                                          |
-| `z-popover`   | 40    | Menus, tooltips                                                          |
-| `z-toast`     | 50    | Toasts; the idle warning (today `z-40`)                                  |
-| `z-dialog`    | 60    | Dialogs (native `<dialog>` uses the top layer; this is for the fallback) |
-| `z-lock`      | 70    | The re-login cover (today `z-50`): above everything                      |
+| z-index token     | Value | Layer                                                                    |
+| ----------------- | ----- | ------------------------------------------------------------------------ |
+| `z-sticky-column` | 1     | A table's sticky first column, over the cells it scrolls over            |
+| `z-sticky`        | 10    | Sticky table headers, sticky detail panels                               |
+| `z-sticky-corner` | 11    | The header cell of a sticky first column, over the other header cells    |
+| `z-topbar`        | 20    | The top bar                                                              |
+| `z-nav`           | 30    | The nav drawer and its backdrop                                          |
+| `z-popover`       | 40    | Menus, tooltips                                                          |
+| `z-toast`         | 50    | Toasts; the idle warning (today `z-40`)                                  |
+| `z-dialog`        | 60    | Dialogs (native `<dialog>` uses the top layer; this is for the fallback) |
+| `z-lock`          | 70    | The re-login cover (today `z-50`): above everything                      |
 
 Motion: `--duration-fast: 120ms` (hover, press), `--duration-base: 200ms` (drawer, dialog, panel), easing `cubic-bezier(0.2, 0, 0, 1)`. Nothing animates a value the plant reports (no tweened numbers, no chart animation; ECharts `animation: false`). The existing `prefers-reduced-motion` rule stays and also stops the connection dot's pulse.
 
@@ -477,12 +479,12 @@ interface DataTableProps<Row> {
 - Numbers right-aligned in tabular figures. Units: durations keep their unit in every cell ("30.0 min", as the demo walkthrough asserts on the Pareto table, and because durations mix scales); a column of measured values or counts with one unit puts it in the header ("Leak rate (Pa/min)") and the cells hold numbers only.
 - **Sticky header** (G-14): `position: sticky` works only when no ancestor between the header and the scrolling viewport clips overflow. So the frame has two modes, chosen by measuring (a `ResizeObserver` on the table against its frame):
   - the table fits its frame: the frame uses `overflow: clip` (not `auto` or `hidden`: clip makes no scroll box, and it keeps the header's fill inside the rounded corners), the header sticks to the page under the top bar (`top: 48px`);
-  - the table is wider than its frame (or `bounded`): the frame becomes a bounded scroll box (`overflow: auto`, `max-height: min(70vh, 720px)`, focusable as a named region so the keyboard scrolls it), and the header sticks to the top of that box at any row count (the box scrolls vertically too, so even a short table's header must not scroll out of it).
+  - the table is wider than its frame (or `bounded`): the frame becomes a bounded scroll box (`overflow: auto`, `max-height: min(70vh, 720px)`, focusable as a region named by the caption, so the keyboard scrolls it, but only when it actually overflows; with a scroll padding of 48 px so a focused row control never sits under its sticky header), and the header sticks to the top of that box at any row count (the box scrolls vertically too, so even a short table's header must not scroll out of it).
   - The header's bottom line is an inset shadow, not a border, so it moves with the sticky cells; the quality screens' `Table` (rows of their own) shares the frame and header until it is retired.
-- Row removal: when a row the focus was in disappears (an alarm acknowledged out of the Active view, a record coded out of "Only uncoded"), focus moves to the same action in the next row, else the previous row, else the table's section heading (`tabindex="-1"`); a polite status says what happened ("Alarm acknowledged; 2 left").
+- Row removal: when a row the focus was in disappears (an alarm acknowledged out of the Active view, a record coded out of "Only uncoded"), focus moves to the same action in the next row (the same cell and place in it, so a row without a checkbox does not shift its actions), else the previous row, else the table's section heading (`tabindex="-1"`); a polite status says what happened ("Alarm acknowledged; 2 left").
 - Narrow screens: `scroll` keeps the table and adds a right-edge fade and a visually hidden "Scroll for more columns" note; columns with `priority: 3` drop below `md`, `priority: 2` below `sm`; `stack` renders each row as a definition list (used for the alarm list and downtime records on phones, G-27).
-- Long lists: `pageSize` with a pager under the table ("1–50 of 180", previous and next) (T-04).
-- Selection: a checkbox column with a 24 × 24 px hit area (G-30), a select-all in the header that sets the native `indeterminate` property when some rows are selected (screen readers announce "mixed" from it; no `aria-checked` on a native checkbox). The bulk button keeps today's label with the count in brackets, "Acknowledge selected (3)", which `final/alarm-actions.spec.ts` reads.
+- Long lists: `pageSize` with a pager under the table ("1–50 of 180", previous and next) (T-04). The range is not a live region (a live list would announce every count change); a page change by the user is announced through the table's polite status ("Rows 51–100 of 180").
+- Selection: a checkbox column with a 24 × 24 px hit area (G-30), a select-all in the header over the rows shown (the current page, never rows the user cannot see) that sets the native `indeterminate` property when some of them are selected (screen readers announce "mixed" from it; no `aria-checked` on a native checkbox). The bulk button keeps today's label with the count in brackets, "Acknowledge selected (3)", which `final/alarm-actions.spec.ts` reads.
 - Keyboard (G-33): a table whose rows each carry an action (downtime "Code", alarm "Acknowledge") is preceded by a "Skip to the details" link when a detail panel follows it, so a keyboard user does not tab through 90 buttons.
 
 ### 4.6 Tabs

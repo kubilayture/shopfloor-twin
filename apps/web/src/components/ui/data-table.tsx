@@ -1,5 +1,5 @@
 import {
-  useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -160,8 +160,12 @@ const FRAME = 'rounded-lg border border-line bg-surface';
  * header sticks to the page.
  */
 const FRAME_FIT = 'overflow-clip';
-/** The frame when the table is wider (or `bounded`): a bounded scroll box the header sticks in. */
-const FRAME_SCROLL = 'overflow-auto';
+/**
+ * The frame when the table is wider (or `bounded`): a bounded scroll box the header sticks in. Its
+ * scroll padding keeps a focused row control clear of that header (WCAG 2.4.11): the page's own
+ * `scroll-padding-top` does not reach inside the box. 48 px: a header row of two lines.
+ */
+const FRAME_SCROLL = 'overflow-auto scroll-pt-12';
 const FRAME_SCROLL_HEIGHT = 'max-h-[min(70vh,720px)]';
 
 /** The header row's cells: sunken, small, secondary ink, a 1 px `line` under them. */
@@ -181,8 +185,8 @@ export const STICKY_HEADER_CELL = 'sticky top-12 z-sticky group-data-scroll/fram
 export const SCROLL_STICKY_HEADER_CELL =
   'group-data-scroll/frame:sticky group-data-scroll/frame:top-0 group-data-scroll/frame:z-sticky';
 /** The header cell of a sticky first column, above the header cells that scroll under it. */
-const STICKY_CORNER_CELL = 'sticky left-0 top-12 z-11 group-data-scroll/frame:top-0';
-const STICKY_CORNER = 'sticky left-0 z-11 group-data-scroll/frame:top-0';
+const STICKY_CORNER_CELL = 'sticky left-0 top-12 z-sticky-corner group-data-scroll/frame:top-0';
+const STICKY_CORNER = 'sticky left-0 z-sticky-corner group-data-scroll/frame:top-0';
 const CELL_X = 'px-3';
 const HEADER_Y = 'py-2';
 
@@ -206,21 +210,30 @@ function useNarrow(): boolean {
   return useSyncExternalStore(subscribeNarrow, isNarrow, () => false);
 }
 
+interface Overflow {
+  /** The table is wider than its frame. */
+  readonly wide: boolean;
+  /** The frame's content is taller than the frame (a bounded box that scrolls vertically). */
+  readonly tall: boolean;
+}
+
 /**
- * Whether the table is wider than its frame, measured whenever either is resized. Without
- * `ResizeObserver` (jsdom) the table counts as fitting.
+ * Whether the table is wider than its frame, and whether the frame scrolls vertically, measured
+ * whenever either is resized. Without `ResizeObserver` (jsdom) neither.
  */
 function useOverflow(
   frame: RefObject<HTMLDivElement | null>,
   table: RefObject<HTMLTableElement | null>,
-): boolean {
-  const [over, setOver] = useState(false);
+): Overflow {
+  const [wide, setWide] = useState(false);
+  const [tall, setTall] = useState(false);
   useLayoutEffect(() => {
     const box = frame.current;
     const content = table.current;
     if (!box || !content || typeof ResizeObserver !== 'function') return undefined;
     const measure = () => {
-      setOver(content.getBoundingClientRect().width > box.clientWidth + 1);
+      setWide(content.getBoundingClientRect().width > box.clientWidth + 1);
+      setTall(box.scrollHeight > box.clientHeight + 1);
     };
     measure();
     const observer = new ResizeObserver(measure);
@@ -230,7 +243,7 @@ function useOverflow(
       observer.disconnect();
     };
   }, [frame, table]);
-  return over;
+  return { wide, tall };
 }
 
 export interface TableFrameProps {
@@ -261,8 +274,12 @@ export function TableFrame({
 }: TableFrameProps) {
   const frame = useRef<HTMLDivElement>(null);
   const table = useRef<HTMLTableElement>(null);
-  const over = useOverflow(frame, table);
+  const captionId = useId();
+  const { wide: over, tall } = useOverflow(frame, table);
   const scroll = bounded || over;
+  // A tab stop and a named region only when the box really scrolls: a bounded box that holds
+  // everything is neither (no empty Tab stop, no landmark noise).
+  const scrolls = over || (bounded && tall);
   const [atEnd, setAtEnd] = useState(false);
   const onScroll = () => {
     const box = frame.current;
@@ -275,8 +292,8 @@ export function TableFrame({
         ref={frame}
         data-scroll={scroll ? '' : undefined}
         data-frame={scroll ? 'scroll' : 'fit'}
-        // A scroll box takes the focus so the keyboard can scroll it (WCAG 2.1.1).
-        {...(scroll ? { tabIndex: 0, role: 'region', 'aria-label': caption } : {})}
+        // A box that scrolls takes the focus so the keyboard can scroll it (WCAG 2.1.1).
+        {...(scrolls ? { tabIndex: 0, role: 'region', 'aria-labelledby': captionId } : {})}
         onScroll={over ? onScroll : undefined}
         className={`group/frame ${FRAME} ${scroll ? `${FRAME_SCROLL} ${FRAME_SCROLL_HEIGHT}` : FRAME_FIT}`}
       >
@@ -286,7 +303,9 @@ export function TableFrame({
           data-testid={testId}
           {...(count === undefined ? {} : { 'data-count': String(count) })}
         >
-          <caption className="sr-only">{caption}</caption>
+          <caption id={captionId} className="sr-only">
+            {caption}
+          </caption>
           <thead>
             <tr>{head}</tr>
           </thead>
@@ -310,9 +329,21 @@ const FOCUSABLE =
 
 interface FocusSpot {
   readonly key: string;
-  /** The control's place among the row's focusable controls. */
+  /** The cell the control is in (`data-cell`: `select`, `actions` or `c-<column key>`). */
+  readonly cell: string | undefined;
+  /** The control's place among the focusable controls of that cell. */
   readonly index: number;
 }
+
+function cellOf(row: HTMLElement, cell: string): HTMLElement | undefined {
+  return [...row.querySelectorAll<HTMLElement>('[data-cell]')].find(
+    (element) => element.dataset.cell === cell,
+  );
+}
+
+const controlsIn = (element: HTMLElement): HTMLElement[] => [
+  ...element.querySelectorAll<HTMLElement>(FOCUSABLE),
+];
 
 function rowElement(root: HTMLElement, key: string): HTMLElement | undefined {
   return [...root.querySelectorAll<HTMLElement>('[data-row-key]')].find(
@@ -336,6 +367,7 @@ function sectionHeading(element: HTMLElement): HTMLElement | null {
 function useFocusAfterRemoval(
   root: RefObject<HTMLElement | null>,
   keys: readonly string[],
+  total: number,
   announce: ((left: number) => string) | undefined,
   setStatus: (text: string) => void,
 ) {
@@ -360,11 +392,15 @@ function useFocusAfterRemoval(
       .find((key) => remaining.has(key));
     const target = after ?? prior;
     const row = target === undefined ? undefined : rowElement(container, target);
-    const controls = row ? [...row.querySelectorAll<HTMLElement>(FOCUSABLE)] : [];
-    const control = controls[Math.min(was.index, controls.length - 1)];
+    // The same control: the same cell, the same place in it (a row without a checkbox does not
+    // shift its actions); else the row's first control; else the section heading.
+    const cell = row && was.cell !== undefined ? cellOf(row, was.cell) : undefined;
+    const inCell = cell ? controlsIn(cell) : [];
+    const control =
+      inCell[Math.min(was.index, inCell.length - 1)] ?? (row ? controlsIn(row)[0] : undefined);
     (control ?? sectionHeading(container))?.focus();
-    if (announce) setStatus(announce(keys.length));
-  }, [keys, root, announce, setStatus]);
+    if (announce) setStatus(announce(total));
+  }, [keys, total, root, announce, setStatus]);
 
   const onFocus = (event: FocusEvent<HTMLElement>) => {
     const target = event.target;
@@ -374,8 +410,9 @@ function useFocusAfterRemoval(
       spot.current = null;
       return;
     }
-    const index = [...row.querySelectorAll<HTMLElement>(FOCUSABLE)].indexOf(target);
-    spot.current = { key, index: Math.max(index, 0) };
+    const cell = target.closest<HTMLElement>('[data-cell]');
+    const index = cell ? controlsIn(cell).indexOf(target) : -1;
+    spot.current = { key, cell: cell?.dataset.cell, index: Math.max(index, 0) };
   };
 
   const onBlur = (event: FocusEvent<HTMLElement>) => {
@@ -414,9 +451,11 @@ function Check({
   readonly onChange: (checked: boolean) => void;
 }) {
   const ref = useRef<HTMLInputElement>(null);
-  useEffect(() => {
+  // Every render: a click on a mixed box clears `indeterminate` natively, and an owner that keeps
+  // the selection re-renders with the same prop.
+  useLayoutEffect(() => {
     if (ref.current) ref.current.indeterminate = indeterminate;
-  }, [indeterminate]);
+  });
   return (
     <label className="inline-flex size-6 cursor-pointer items-center justify-center has-disabled:cursor-not-allowed">
       <input
@@ -427,6 +466,8 @@ function Check({
         checked={checked}
         disabled={disabled}
         onChange={(event) => {
+          // The click cleared it; an owner that keeps the selection does not re-render.
+          event.target.indeterminate = indeterminate;
           onChange(event.target.checked);
         }}
         className="size-4 cursor-[inherit] accent-accent"
@@ -451,7 +492,14 @@ function cellClass<Row>(column: Column<Row>): string {
 }
 
 /** The sticky first column: on top of the cells it scrolls over, in its row's background. */
-const STICKY_COLUMN = 'sticky left-0 z-1';
+const STICKY_COLUMN = 'sticky left-0 z-sticky-column';
+
+/** "1–50 of 180": the rows of `page`. */
+function rangeText(page: number, size: number, total: number): string {
+  const first = page * size + 1;
+  const last = Math.min(total, (page + 1) * size);
+  return `${quantityText(first)}–${quantityText(last)} of ${quantityText(total)}`;
+}
 
 /** The pager under a paged table: "1–50 of 180", Previous, Next. */
 function Pager({
@@ -469,16 +517,14 @@ function Pager({
   readonly total: number;
   readonly onPage: (page: number) => void;
 }) {
-  const first = page * size + 1;
-  const last = Math.min(total, (page + 1) * size);
   return (
     <nav
       aria-label={`${caption}: pages`}
       className="mt-2 flex flex-wrap items-center justify-end gap-2 text-sm text-ink-secondary"
     >
-      <p aria-live="polite" className="tabular-nums">
-        {quantityText(first)}–{quantityText(last)} of {quantityText(total)}
-      </p>
+      {/* Not a live region: a live list would announce every count change; a page change by the
+          user is announced through the table's status. */}
+      <p className="tabular-nums">{rangeText(page, size, total)}</p>
       <Button
         size="sm"
         icon="chevron-left"
@@ -536,10 +582,10 @@ export function DataTable<Row>({
   const shown =
     pageSize === undefined ? rows : rows.slice(current * pageSize, (current + 1) * pageSize);
   const keys = shown.map(rowKey);
-  const focus = useFocusAfterRemoval(root, keys, announceRemoval, setStatus);
+  const focus = useFocusAfterRemoval(root, keys, rows.length, announceRemoval, setStatus);
 
   const statusRegion =
-    announceRemoval === undefined ? null : (
+    announceRemoval === undefined && pageSize === undefined ? null : (
       <p role="status" className="sr-only">
         {status}
       </p>
@@ -558,8 +604,9 @@ export function DataTable<Row>({
     );
   }
 
+  // The select-all covers the rows shown (the current page), never rows the user cannot see.
   const selectable = selection
-    ? rows.filter((row) => selection.selectable?.(row) ?? true).map(rowKey)
+    ? shown.filter((row) => selection.selectable?.(row) ?? true).map(rowKey)
     : [];
   const chosen = selection ? selectable.filter((key) => selection.selected.has(key)) : [];
   const all = selectable.length > 0 && chosen.length === selectable.length;
@@ -623,7 +670,10 @@ export function DataTable<Row>({
         pages={pages}
         size={pageSize}
         total={rows.length}
-        onPage={setPage}
+        onPage={(next) => {
+          setPage(next);
+          setStatus(`Rows ${rangeText(next, pageSize, rows.length)}`);
+        }}
       />
     );
 
@@ -656,7 +706,11 @@ export function DataTable<Row>({
                 aria-current={active ? 'true' : undefined}
                 className={`flex gap-2 p-3 ${active ? `bg-accent-subtle ${ACTIVE_BAR}` : tone ? TONE_BAR[tone] : ''}`}
               >
-                {selection ? <div className="-ml-1 shrink-0">{rowCheck(row)}</div> : null}
+                {selection ? (
+                  <div data-cell="select" className="-ml-1 shrink-0">
+                    {rowCheck(row)}
+                  </div>
+                ) : null}
                 <div className="min-w-0 flex-1">
                   <dl className="grid grid-cols-[minmax(6rem,auto)_1fr] gap-x-3 gap-y-1 text-sm">
                     {columns.map((column) => (
@@ -665,6 +719,7 @@ export function DataTable<Row>({
                           {column.header}
                         </dt>
                         <dd
+                          data-cell={`c-${column.key}`}
                           className={`min-w-0 ${column.numeric ? 'tabular-nums' : ''} ${(column.nowrap ?? column.numeric) ? 'whitespace-nowrap' : ''}`}
                         >
                           {column.cell(row)}
@@ -673,7 +728,9 @@ export function DataTable<Row>({
                     ))}
                   </dl>
                   {actions ? (
-                    <div className="mt-2 flex flex-wrap items-center gap-2">{actions(row)}</div>
+                    <div data-cell="actions" className="mt-2 flex flex-wrap items-center gap-2">
+                      {actions(row)}
+                    </div>
                   ) : null}
                 </div>
               </li>
@@ -734,18 +791,21 @@ export function DataTable<Row>({
               className={`border-t border-line-subtle first:border-t-0 ${active ? 'bg-accent-subtle' : 'bg-surface hover:bg-surface-sunken'}`}
             >
               {selection ? (
-                <td className={`${bodyCell} w-10 py-0 ${bar}`}>{rowCheck(row)}</td>
+                <td data-cell="select" className={`${bodyCell} w-10 py-0 ${bar}`}>
+                  {rowCheck(row)}
+                </td>
               ) : null}
               {columns.map((column, index) => (
                 <td
                   key={column.key}
+                  data-cell={`c-${column.key}`}
                   className={`${bodyCell} ${DENSITY[density]} ${cellClass(column)} ${column.sticky ? `${STICKY_COLUMN} bg-inherit` : ''} ${!selection && index === 0 ? bar : ''}`}
                 >
                   {column.cell(row)}
                 </td>
               ))}
               {actions ? (
-                <td className={`${bodyCell} whitespace-nowrap py-1`}>
+                <td data-cell="actions" className={`${bodyCell} whitespace-nowrap py-1`}>
                   <div className="flex flex-nowrap items-center justify-end gap-1">
                     {actions(row)}
                   </div>

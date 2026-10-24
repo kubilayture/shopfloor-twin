@@ -28,6 +28,9 @@ describe('the quality Table', () => {
     expect(headers.map((th) => th.textContent)).toEqual(['#', 'Lot', '']);
     expect(headers.every((th) => th.getAttribute('scope') === 'col')).toBe(true);
     expect(headers[0]?.className).toMatch(/\bbg-surface-sunken\b/);
+    // One vertical alignment: the header's bottom, not `cell`'s top as well.
+    expect(headers[0]?.className).toMatch(/\balign-bottom\b/);
+    expect(headers[0]?.className).not.toMatch(/\balign-top\b/);
     expect(table.querySelectorAll('tbody > tr > td')).toHaveLength(6);
     expect(table.querySelector('tbody')?.className).toMatch(/\bdivide-y divide-line-subtle\b/);
     // Short: no sticky header, in a frame that fits.
@@ -59,9 +62,11 @@ describe('the quality Table', () => {
         </tr>
       </Table>,
     );
-    const region = screen.getByRole('region', { name: 'Units in scope' });
-    expect(region.dataset.frame).toBe('scroll');
-    expect(region.className).toMatch(/\boverflow-auto\b/);
+    const frame = screen.getByRole('table').parentElement;
+    expect(frame?.dataset.frame).toBe('scroll');
+    expect(frame?.className).toMatch(/\boverflow-auto scroll-pt-12\b/);
+    // One row: nothing scrolls, so no tab stop and no region.
+    expect(screen.queryByRole('region')).toBeNull();
     expect(screen.getByRole('columnheader').className).toMatch(
       /\bgroup-data-scroll\/frame:sticky\b/,
     );

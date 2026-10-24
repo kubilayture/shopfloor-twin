@@ -51,6 +51,29 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/** A layout for the frame's measurements: a `ResizeObserver` and the sizes it reads. */
+function stubResize(size: {
+  readonly tableWidth: number;
+  readonly frameWidth: number;
+  readonly scrollHeight: number;
+  readonly clientHeight: number;
+}) {
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe = vi.fn();
+      disconnect = vi.fn();
+      unobserve = vi.fn();
+    },
+  );
+  vi.spyOn(HTMLTableElement.prototype, 'getBoundingClientRect').mockReturnValue({
+    width: size.tableWidth,
+  } as DOMRect);
+  vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(size.frameWidth);
+  vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(size.scrollHeight);
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(size.clientHeight);
+}
+
 describe('DataTable markup', () => {
   it('is a real table with a hidden caption, column headers, row test ids, data-* and data-count', () => {
     render(table({ rows: rowsOf(3) }));
@@ -144,10 +167,10 @@ describe('DataTable markup', () => {
     ];
     render(table({ rows: rowsOf(1), columns }));
     const [stickyTh, otherTh] = screen.getAllByRole('columnheader');
-    expect(stickyTh?.className).toMatch(/\bsticky left-0 z-11\b/);
+    expect(stickyTh?.className).toMatch(/\bsticky left-0 z-sticky-corner\b/);
     expect(otherTh?.className).not.toMatch(/\bleft-0\b/);
     const [stickyTd, otherTd] = screen.getAllByRole('cell');
-    expect(stickyTd?.className).toMatch(/\bsticky left-0 z-1 bg-inherit\b/);
+    expect(stickyTd?.className).toMatch(/\bsticky left-0 z-sticky-column bg-inherit\b/);
     expect(otherTd?.className).not.toMatch(/(^| )sticky( |$)/);
   });
 });
@@ -178,14 +201,18 @@ describe('DataTable sticky header', () => {
     expect(headerOf()?.className).not.toMatch(/(^| )sticky( |$)/);
   });
 
-  it('becomes a bounded, focusable scroll box when bounded', () => {
+  it('becomes a bounded scroll box, but no tab stop or region while nothing overflows', () => {
     render(table({ rows: rowsOf(3), bounded: true }));
-    const frame = screen.getByRole('region', { name: 'Active alarms, newest first' });
-    expect(frame.dataset.frame).toBe('scroll');
-    expect(frame.hasAttribute('data-scroll')).toBe(true);
-    expect(frame.tabIndex).toBe(0);
-    expect(frame.className).toMatch(/\boverflow-auto\b/);
-    expect(frame.className).toContain('max-h-[min(70vh,720px)]');
+    const frame = screen.getByTestId('alarm-table').parentElement;
+    expect(frame?.dataset.frame).toBe('scroll');
+    expect(frame?.hasAttribute('data-scroll')).toBe(true);
+    expect(frame?.className).toMatch(/\boverflow-auto\b/);
+    expect(frame?.className).toContain('max-h-[min(70vh,720px)]');
+    // Its scroll padding keeps a focused row clear of the sticky header inside it.
+    expect(frame?.className).toMatch(/\bscroll-pt-12\b/);
+    expect(frame?.hasAttribute('tabindex')).toBe(false);
+    expect(frame?.hasAttribute('role')).toBe(false);
+    expect(screen.queryByRole('region')).toBeNull();
     // Not wider than the frame: no note and no fade.
     expect(screen.queryByText('Scroll for more columns.')).toBeNull();
     // Three rows: no sticky header on the page, but it sticks inside the box, which also
@@ -194,6 +221,19 @@ describe('DataTable sticky header', () => {
     expect(headerOf()?.className).toMatch(
       /\bgroup-data-scroll\/frame:sticky group-data-scroll\/frame:top-0\b/,
     );
+  });
+
+  it('is a focusable region named by its caption once the bounded box overflows', () => {
+    stubResize({ tableWidth: 600, frameWidth: 600, scrollHeight: 1200, clientHeight: 500 });
+    render(table({ rows: rowsOf(40), bounded: true }));
+    const frame = screen.getByRole('region', { name: 'Active alarms, newest first' });
+    expect(frame.dataset.frame).toBe('scroll');
+    expect(frame.tabIndex).toBe(0);
+    const caption = screen.getByRole('table').querySelector('caption');
+    expect(frame.getAttribute('aria-labelledby')).toBe(caption?.id);
+    expect(frame.hasAttribute('aria-label')).toBe(false);
+    // Taller, not wider: no sideways note or fade.
+    expect(screen.queryByText('Scroll for more columns.')).toBeNull();
   });
 
   it('becomes a scroll box with an edge fade and a note when the table is wider than its frame', () => {
@@ -305,6 +345,47 @@ describe('DataTable selection', () => {
     expect(all().indeterminate).toBe(false);
   });
 
+  it('selects only the rows of the page shown', () => {
+    const onChange = vi.fn();
+    render(
+      table({
+        rows: rowsOf(5),
+        pageSize: 2,
+        selection: {
+          selected: new Set(),
+          onChange,
+          label: (row) => `Select ${row.code}`,
+          allLabel: 'Select all',
+          testId: 'select-all',
+        },
+      }),
+    );
+    fireEvent.click(all());
+    expect([...(onChange.mock.calls[0]?.[0] as Set<string>)]).toEqual(['a1', 'a2']);
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    fireEvent.click(all());
+    expect([...(onChange.mock.calls[1]?.[0] as Set<string>)]).toEqual(['a3', 'a4']);
+  });
+
+  it('keeps the select-all mixed when the owner keeps the selection after a click', () => {
+    render(
+      table({
+        rows: rowsOf(3),
+        selection: {
+          selected: new Set(['a1']),
+          onChange: () => undefined,
+          label: (row) => `Select ${row.code}`,
+          allLabel: 'Select all',
+          testId: 'select-all',
+        },
+      }),
+    );
+    expect(all().indeterminate).toBe(true);
+    fireEvent.click(all());
+    expect(all().checked).toBe(false);
+    expect(all().indeterminate).toBe(true);
+  });
+
   it('disables the select-all when no row can be selected', () => {
     render(
       table({
@@ -411,6 +492,104 @@ describe('DataTable row actions and focus', () => {
     });
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Details CODE-2' }));
     expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('finds the same action in a next row whatever its checkbox', () => {
+    function Mixed() {
+      const [rows, setRows] = useState(() => [alarm(1, 'acknowledged'), alarm(2)]);
+      return table({
+        rows,
+        selection: {
+          selected: new Set(),
+          onChange: () => undefined,
+          label: (row) => `Select ${row.code}`,
+          allLabel: 'Select all',
+          selectable: (row) => row.state === 'unacknowledged',
+        },
+        actions: (row) => (
+          <>
+            <Button size="sm">Details {row.code}</Button>
+            <Button
+              size="sm"
+              onClick={() => {
+                setRows((all) => all.filter((r) => r.id !== row.id));
+              }}
+            >
+              Remove {row.code}
+            </Button>
+          </>
+        ),
+      });
+    }
+    render(<Mixed />);
+    // The first row has no checkbox: "Details" is its first control. The next row's first
+    // control is its checkbox; the same control is still "Details".
+    const details = screen.getByRole('button', { name: 'Details CODE-1' });
+    details.focus();
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: 'Remove CODE-1' }));
+    });
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Details CODE-2' }));
+  });
+
+  it('takes the first control of the next row when it lacks the same one', () => {
+    function NoCheck() {
+      const [rows, setRows] = useState(() => [alarm(1), alarm(2, 'acknowledged')]);
+      return table({
+        rows,
+        selection: {
+          selected: new Set(),
+          onChange: () => undefined,
+          label: (row) => `Select ${row.code}`,
+          allLabel: 'Select all',
+          selectable: (row) => row.state === 'unacknowledged',
+        },
+        actions: (row) => (
+          <Button
+            size="sm"
+            onClick={() => {
+              setRows((all) => all.filter((r) => r.id !== row.id));
+            }}
+          >
+            Remove {row.code}
+          </Button>
+        ),
+      });
+    }
+    render(<NoCheck />);
+    // The focus is on the first row's checkbox; the next row has none.
+    screen.getByRole('checkbox', { name: 'Select CODE-1' }).focus();
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: 'Remove CODE-1' }));
+    });
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Remove CODE-2' }));
+  });
+
+  it('counts every row, not the page, in the removal status', () => {
+    function Paged() {
+      const [rows, setRows] = useState(() => rowsOf(4));
+      return table({
+        rows,
+        pageSize: 2,
+        announceRemoval: (left) => `Alarm acknowledged; ${String(left)} left`,
+        actions: (row) => (
+          <Button
+            size="sm"
+            data-testid={`ack-${row.id}`}
+            onClick={() => {
+              setRows((all) => all.filter((r) => r.id !== row.id));
+            }}
+          >
+            Acknowledge {row.code}
+          </Button>
+        ),
+      });
+    }
+    render(<Paged />);
+    screen.getByTestId('ack-a1').focus();
+    fireEvent.click(screen.getByTestId('ack-a1'));
+    expect(document.activeElement).toBe(screen.getByTestId('ack-a2'));
+    expect(screen.getByRole('status').textContent).toBe('Alarm acknowledged; 3 left');
   });
 
   it('does not take the focus back from where the user moved it', () => {
@@ -532,6 +711,19 @@ describe('DataTable paging', () => {
     expect(next).toHaveProperty('disabled', true);
     fireEvent.click(previous);
     expect(within(pager).getByText('51–100 of 120')).toBeTruthy();
+  });
+
+  it('announces a page change by the user, and never a count change by itself', () => {
+    const { rerender } = render(table({ rows: rowsOf(120), pageSize: 50 }));
+    const range = screen.getByText('1–50 of 120');
+    expect(range.hasAttribute('aria-live')).toBe(false);
+    expect(range.closest('[aria-live]')).toBeNull();
+    expect(screen.getByRole('status').textContent).toBe('');
+    rerender(table({ rows: rowsOf(121), pageSize: 50 }));
+    expect(screen.getByText('1–50 of 121')).toBeTruthy();
+    expect(screen.getByRole('status').textContent).toBe('');
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    expect(screen.getByRole('status').textContent).toBe('Rows 51–100 of 121');
   });
 
   it('has no pager for one page, and stays on the last page when rows go', () => {

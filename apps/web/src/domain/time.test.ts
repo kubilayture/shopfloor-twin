@@ -9,8 +9,18 @@ import {
   formatPlantTimeRelative,
   isoDuration,
   isRangeKey,
+  parseIsoInstant,
+  parsePlantClock,
+  parsePlantDate,
+  plantClockText,
+  plantDateText,
+  plantDayLabel,
   plantDayOf,
+  plantDaysBetween,
+  plantInstant,
+  plantOffsetMs,
   plantTimeText,
+  utcInstantText,
   wallTimeText,
 } from './time.ts';
 
@@ -145,5 +155,98 @@ describe('durations and planning times (UX-1c, design system 6.1 and 6.2)', () =
 
   it('writes a planning time without seconds, in plant time', () => {
     expect(formatPlantTimeMinutes('2026-10-12T19:00:59.000Z')).toBe('Mon 12 Oct, 22:00');
+  });
+});
+
+/** UX-1d2 (#319): the plant-time input's parsing and formatting (design system 4.8). */
+describe('plant-time input helpers', () => {
+  it('reads a typed date as a plant day, in the input format and a few others', () => {
+    expect(parsePlantDate('12/10/2026')).toBe('2026-10-12');
+    expect(parsePlantDate(' 2/3/2026 ')).toBe('2026-03-02');
+    expect(parsePlantDate('12.10.2026')).toBe('2026-10-12');
+    expect(parsePlantDate('12-10-2026')).toBe('2026-10-12');
+    expect(parsePlantDate('2026-10-12')).toBe('2026-10-12');
+    // No such day, month first, two-digit years and words are refused.
+    expect(parsePlantDate('31/02/2026')).toBeUndefined();
+    expect(parsePlantDate('12/13/2026')).toBeUndefined();
+    expect(parsePlantDate('00/10/2026')).toBeUndefined();
+    expect(parsePlantDate('12/10/26')).toBeUndefined();
+    expect(parsePlantDate('today')).toBeUndefined();
+    expect(parsePlantDate('')).toBeUndefined();
+  });
+
+  it('reads a clock time with or without seconds', () => {
+    expect(parsePlantClock('14:05')).toBe(14 * 3600 + 5 * 60);
+    expect(parsePlantClock('14:05:09')).toBe(14 * 3600 + 5 * 60 + 9);
+    expect(parsePlantClock('7:30')).toBe(7 * 3600 + 30 * 60);
+    expect(parsePlantClock('00:00:00')).toBe(0);
+    expect(parsePlantClock('23:59:59')).toBe(86_399);
+    expect(parsePlantClock('24:00')).toBeUndefined();
+    expect(parsePlantClock('12:60')).toBeUndefined();
+    expect(parsePlantClock('12:00:60')).toBeUndefined();
+    expect(parsePlantClock('1405')).toBeUndefined();
+    expect(parsePlantClock('2026-10-12T05:00:00Z')).toBeUndefined();
+  });
+
+  it('reads a whole ISO 8601 instant only with its zone', () => {
+    expect(parseIsoInstant('2026-10-12T05:00:00Z')).toBe(Date.parse('2026-10-12T05:00:00Z'));
+    expect(parseIsoInstant('2026-10-12T05:37:00.123Z')).toBe(
+      Date.parse('2026-10-12T05:37:00.123Z'),
+    );
+    expect(parseIsoInstant('2026-10-12T08:00+03:00')).toBe(Date.parse('2026-10-12T05:00:00Z'));
+    expect(parseIsoInstant('2026-10-12T05:00:00')).toBeUndefined();
+    expect(parseIsoInstant('2026-10-12')).toBeUndefined();
+    expect(parseIsoInstant('2026-13-12T05:00:00Z')).toBeUndefined();
+    expect(parseIsoInstant('2026-10-12T25:00:00Z')).toBeUndefined();
+    expect(parseIsoInstant('05:00:00')).toBeUndefined();
+  });
+
+  it('turns a plant day and clock time into the instant, across plant midnight', () => {
+    // Istanbul is UTC+3: plant midnight is 21:00 UTC the day before.
+    expect(plantOffsetMs(Date.parse('2026-10-12T05:00:00Z'))).toBe(3 * 3_600_000);
+    expect(new Date(plantInstant('2026-10-12', 8 * 3600)).toISOString()).toBe(
+      '2026-10-12T05:00:00.000Z',
+    );
+    expect(new Date(plantInstant('2026-10-13', 0)).toISOString()).toBe('2026-10-12T21:00:00.000Z');
+    expect(new Date(plantInstant('2026-10-13', 30 * 60)).toISOString()).toBe(
+      '2026-10-12T21:30:00.000Z',
+    );
+    expect(new Date(plantInstant('2026-10-12', 86_399)).toISOString()).toBe(
+      '2026-10-12T20:59:59.000Z',
+    );
+    // A month's and a year's end.
+    expect(new Date(plantInstant('2027-01-01', 3600)).toISOString()).toBe(
+      '2026-12-31T22:00:00.000Z',
+    );
+  });
+
+  it('writes an instant back as the boxes show it, in plant time', () => {
+    expect(plantDateText('2026-10-12T21:30:00Z')).toBe('13/10/2026');
+    expect(plantDateText('2026-10-12T20:59:59Z')).toBe('12/10/2026');
+    expect(plantClockText('2026-10-12T21:30:09Z', true)).toBe('00:30:09');
+    expect(plantClockText('2026-10-12T21:30:09Z', false)).toBe('00:30');
+    expect(plantDayLabel('2026-10-12')).toBe('Mon 12 Oct');
+  });
+
+  it('lists the plant days a range covers', () => {
+    // 22:00 to 06:00 plant time: two days.
+    expect(plantDaysBetween('2026-10-12T19:00:00Z', '2026-10-13T03:00:00Z')).toEqual([
+      '2026-10-12',
+      '2026-10-13',
+    ]);
+    expect(plantDaysBetween('2026-10-12T03:00:00Z', '2026-10-12T11:00:00Z')).toEqual([
+      '2026-10-12',
+    ]);
+    // 20:59:59 UTC is still the 12th in the plant; 21:00 is the 13th.
+    expect(plantDaysBetween('2026-10-12T20:59:59Z', '2026-10-12T21:00:00Z')).toEqual([
+      '2026-10-12',
+      '2026-10-13',
+    ]);
+    expect(plantDaysBetween('2026-10-13T03:00:00Z', '2026-10-12T03:00:00Z')).toEqual([]);
+  });
+
+  it('shows the instant as it is sent, in UTC', () => {
+    expect(utcInstantText('2026-10-12T05:00:00.000Z')).toBe('2026-10-12 05:00:00 UTC');
+    expect(utcInstantText('2026-10-12T05:37:00.123Z')).toBe('2026-10-12 05:37:00.123 UTC');
   });
 });

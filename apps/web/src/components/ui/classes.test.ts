@@ -132,9 +132,10 @@ const PASSED_IN = ['line-through'];
 /**
  * Literals that look like a class but are not one (UX-1e, #317): a tooltip's `side` ('top',
  * 'bottom'), a skeleton's `shape` ('text'), the `p` element an empty state renders; and `group`,
- * Tailwind's marker class for `group-open:`, which generates no CSS of its own.
+ * Tailwind's marker class for `group-open:`, which generates no CSS of its own. UX-1d2 (#319):
+ * `size`, a native attribute the form controls set themselves.
  */
-const NOT_CLASSES = new Set(['top', 'bottom', 'text', 'p', 'group']);
+const NOT_CLASSES = new Set(['top', 'bottom', 'text', 'p', 'group', 'size']);
 
 const CLASSES = [...new Set([...FILES.flatMap(harvest), ...PASSED_IN])]
   .filter((c) => !NOT_CLASSES.has(c))
@@ -182,6 +183,18 @@ describe('the primitives’ classes', async () => {
         'rounded-md',
         'bg-state-down-fill',
         'motion-safe:duration-fast',
+      ]),
+    );
+  });
+
+  it('include the form fields’ (UX-1d2, #319)', () => {
+    expect(CLASSES).toEqual(
+      expect.arrayContaining([
+        'border-line-strong',
+        'aria-invalid:border-alarm-border',
+        'disabled:bg-disabled',
+        'accent-accent',
+        'text-alarm-ink',
       ]),
     );
   });

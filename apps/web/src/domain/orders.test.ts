@@ -10,14 +10,18 @@ import {
   dispatchTargets,
   draftFor,
   draftProblems,
+  erpStatusTone,
   filterStatuses,
   flagTexts,
   isDirtyDraft,
+  isOverdue,
   isStaleDraft,
   mergeCommands,
   mergeOrders,
   newestOrder,
+  orderCodeWords,
   orderFailure,
+  priorityGlyph,
   unsettledCommands,
 } from './orders.ts';
 
@@ -179,5 +183,37 @@ describe('orders domain', () => {
     ).toEqual(['Short', 'Dispatch failed', 'Dispatch lost']);
     expect(countsText({})).toBe('–');
     expect(countsText({ b: 2, a: 1, z: 0 })).toBe('a: 1, b: 2');
+  });
+
+  it('marks an unfinished order past its due date overdue, never a finished one (P-02)', () => {
+    const due = Date.parse('2026-10-15T19:00:00.000Z');
+    const late = order('A', { dueDate: '2026-10-15T19:00:00.000Z' });
+    expect(isOverdue(late, due + 1)).toBe(true);
+    // At the due instant itself: not yet.
+    expect(isOverdue(late, due)).toBe(false);
+    expect(isOverdue(late, undefined)).toBe(false);
+    for (const status of ['imported', 'released', 'dispatched', 'in-progress'] as const) {
+      expect(isOverdue({ ...late, status }, due + 1)).toBe(true);
+    }
+    for (const status of ['completed', 'closed', 'cancelled', 'rejected'] as const) {
+      expect(isOverdue({ ...late, status }, due + 1)).toBe(false);
+    }
+  });
+
+  it('writes codes as words, ERP statuses as tones and priorities as glyphs', () => {
+    expect(orderCodeWords('revision-refused')).toBe('Revision refused');
+    expect(orderCodeWords('  command_failed ')).toBe('Command failed');
+    expect(orderCodeWords('SENT')).toBe('Sent');
+    expect(
+      ['rejected', 'refused', 'conflict', 'revision-refused', 'pending', 'sent', 'imported'].map(
+        erpStatusTone,
+      ),
+    ).toEqual(['alarm', 'alarm', 'warn', 'warn', 'info', 'neutral', 'neutral']);
+    expect([1, 2, 3, 5].map(priorityGlyph)).toEqual([
+      'triangles-up',
+      'triangle-up',
+      undefined,
+      undefined,
+    ]);
   });
 });

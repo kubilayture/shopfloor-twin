@@ -307,7 +307,14 @@ export function OrderOee({ id }: { readonly id: string }) {
               </ul>
             </div>
           ) : null}
-          <div className="mt-3 overflow-x-auto rounded-lg border border-slate-300 bg-white">
+          {/* A named tab stop, so the keyboard can scroll the jobs sideways (axe
+              scrollable-region-focusable, #328); UX-6b moves the table onto `DataTable`. */}
+          <div
+            tabIndex={0}
+            role="region"
+            aria-label="OEE per job of the order"
+            className="mt-3 overflow-x-auto rounded-lg border border-slate-300 bg-white"
+          >
             <table className="w-full min-w-[48rem] text-left text-sm" data-testid="order-oee-jobs">
               <caption className="sr-only">OEE per job of the order</caption>
               <thead className="bg-slate-100">

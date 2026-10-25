@@ -38,6 +38,9 @@ const FILES = [
   // The chart frames (UX-1f, #320).
   'chart/echart.tsx',
   'chart/trend-chart.tsx',
+  // The migrated screens: a screen on the tokens draws only classes Tailwind generates.
+  'screens/order-list.tsx',
+  'screens/order-detail.tsx',
   // The traceability screens (UX-8, #331).
   'screens/trace-common.tsx',
   'screens/trace-search.tsx',

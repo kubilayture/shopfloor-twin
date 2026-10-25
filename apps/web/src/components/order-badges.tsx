@@ -4,6 +4,7 @@ import {
   ORDER_STATUS_TEXT,
   ORDER_STATUS_TONE,
   flagTexts,
+  priorityGlyph,
 } from '../domain/orders.ts';
 import { Badge } from './ui/badge.tsx';
 
@@ -41,6 +42,34 @@ export function CommandStateBadge({ state }: { readonly state: CommandState }) {
   return (
     <Badge data-testid="command-state" data-state={state} title={text.meaning} tone={text.tone}>
       {text.label}
+    </Badge>
+  );
+}
+
+/**
+ * The ERP's priority (P-02): the number in a neutral outline badge, with a glyph for the two most
+ * urgent (1 and 2), so it reads as a priority beside the alarm screens' badges. Urgency is not an
+ * abnormal state, so no colour (design system 1.2). `data-priority` is the raw number.
+ */
+export function OrderPriorityBadge({ priority }: { readonly priority: number }) {
+  return (
+    <Badge
+      tone="neutral"
+      variant="outline"
+      icon={priorityGlyph(priority)}
+      title={`Priority ${String(priority)}; 1 is the most urgent`}
+      data-priority={String(priority)}
+    >
+      {priority}
+    </Badge>
+  );
+}
+
+/** An unfinished order past its due date (P-02): a `warn` badge with the clock glyph. */
+export function OverdueBadge() {
+  return (
+    <Badge tone="warn" icon="clock" data-testid="order-overdue">
+      Overdue
     </Badge>
   );
 }

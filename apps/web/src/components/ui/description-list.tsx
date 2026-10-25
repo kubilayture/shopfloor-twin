@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 
 /**
  * Key facts (UX-1c, #315; design system 3.4): a `dl` in a fixed number of columns per breakpoint
- * (1 / 2 / 4 by default) that flows by column, so the reading order never changes with the width.
+ * (1 / 2 / 4 by default; `compact`, 2 / 4, for short facts) that flows by column, so the reading order never changes with the width.
  * A fact with no value (`detail` null or undefined) is left out; where its absence is the
  * information, the caller passes it as a `Missing` with the reason, which is kept.
  */
@@ -19,6 +19,8 @@ const COLUMNS = {
   1: 'columns-1',
   2: 'columns-1 sm:columns-2',
   4: 'columns-1 sm:columns-2 xl:columns-4',
+  /** Short facts (a page header's): two columns from the narrowest screen, four from `xl`. */
+  compact: 'columns-2 xl:columns-4',
 } as const;
 
 export function DescriptionList({

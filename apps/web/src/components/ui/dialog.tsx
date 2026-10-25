@@ -216,9 +216,12 @@ export function Dialog({
             />
           </header>
           <div ref={content} className="flex min-h-0 flex-1 flex-col">
-            <div className={`min-h-0 flex-1 overflow-y-auto px-5 py-4 ${look.text}`}>
-              {children}
-            </div>
+            {/* No empty body under a confirmation's description (UX-7 review, iPad check). */}
+            {children === undefined || children === null ? null : (
+              <div className={`min-h-0 flex-1 overflow-y-auto px-5 py-4 ${look.text}`}>
+                {children}
+              </div>
+            )}
             {footer === undefined ? null : (
               <footer className="flex flex-wrap justify-end gap-2 border-t border-line-subtle px-5 py-3">
                 {footer}

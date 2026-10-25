@@ -1085,7 +1085,8 @@ function OperationRow({
       <p
         ref={stateRef}
         tabIndex={-1}
-        className="mt-1 text-lg"
+        // Focused by script after a sign-off only: no ring, as a focused heading (G-22).
+        className="mt-1 text-lg focus-visible:outline-none"
         data-testid={`terminal-op-state-${id}`}
       >
         {operation.signedOff ? (

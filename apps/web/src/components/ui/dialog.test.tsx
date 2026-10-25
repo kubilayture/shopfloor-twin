@@ -299,6 +299,13 @@ describe('ConfirmDialog', () => {
     expect(confirm.className).toContain('bg-accent');
   });
 
+  it('has no empty body between its description and its buttons (UX-7 iPad check)', () => {
+    render(<Confirm onConfirm={() => undefined} onCancel={() => undefined} />);
+    const dialog = screen.getByRole('dialog', { name: 'Close order PO-2610-303?' });
+    expect(dialog.querySelector('.overflow-y-auto')).toBeNull();
+    expect(dialog.querySelector('footer')).not.toBeNull();
+  });
+
   it('has 56 px buttons, a 56 px close button and larger text at the touch size (UX-7)', () => {
     const { unmount } = render(<Confirm onConfirm={() => undefined} onCancel={() => undefined} />);
     const heights = () =>

@@ -284,12 +284,13 @@ describe('summarize', () => {
     );
     expect(md).toContain('(**stopped by the budget**)');
     expect(md).toContain('2 of 10 pages measured');
+    expect(md).toContain('1 failed to load, 7 not reached within the budget; 0 route');
     expect(md).toContain('0 critical, 1 serious, 0 moderate, 0 minor');
     expect(md).toContain('| orders | 2 | 0 | 1 | 0 | 0 | 390 | color-contrast |');
     expect(md).not.toContain('| oee |');
     expect(md).toContain('| color-contrast | serious | 1 | 1 | color-contrast help |');
     expect(md).toContain('"Orders" (order, orders)');
-    expect(md).toContain('- operator / data: 1 pages');
+    expect(md).toContain('- operator / data: 1 routes, at every width');
   });
 });
 

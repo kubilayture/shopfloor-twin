@@ -298,7 +298,7 @@ export function summarize(report: A11yReport): string {
     f.states.length > 0 ? `states ${f.states.join(', ')}` : '',
   ].filter((t) => t !== '');
   out.push(
-    `- **Coverage:** ${String(report.coverage.measured)} of ${String(report.coverage.planned)} pages measured (route × state × role × width), ${String(report.coverage.failed)} failed to load, ${String(report.coverage.skipped.length)} combinations skipped (no id), ${String(report.coverage.notReached.length)} not reached.${filterText.length > 0 ? ` Filter: ${filterText.join('; ')}.` : ''}`,
+    `- **Coverage:** ${String(report.coverage.measured)} of ${String(report.coverage.planned)} pages measured (route × state × role × width), ${String(report.coverage.failed)} failed to load, ${String(report.coverage.planned - report.coverage.measured - report.coverage.failed)} not reached within the budget; ${String(report.coverage.skipped.length)} route × state × role combinations skipped (no id).${filterText.length > 0 ? ` Filter: ${filterText.join('; ')}.` : ''}`,
     `- **Rule violations (rule × page):** ${countsText(total)}.`,
     `- **Pages wider than the viewport:** ${String(measured.filter((e) => e.overflowX).length)}.`,
     '',
@@ -406,7 +406,7 @@ export function summarize(report: A11yReport): string {
       const k = `${s.role} / ${s.state}`;
       groups.set(k, (groups.get(k) ?? 0) + 1);
     }
-    for (const [k, n] of groups) out.push(`- ${k}: ${String(n)} pages`);
+    for (const [k, n] of groups) out.push(`- ${k}: ${String(n)} routes, at every width`);
     out.push('');
   }
   return out.join('\n');

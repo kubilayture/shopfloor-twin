@@ -123,7 +123,7 @@ export interface A11yReport {
   };
   readonly entries: readonly Entry[];
   readonly titles: {
-    /** The `document.title` per route, read in its data state as the supervisor at 1440. */
+    /** The `document.title` per route: its first state measured as the supervisor (data first). */
     readonly byRoute: Readonly<Record<string, string>>;
     readonly duplicates: readonly { readonly title: string; readonly routes: readonly string[] }[];
   };

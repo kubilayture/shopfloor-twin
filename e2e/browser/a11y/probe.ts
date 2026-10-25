@@ -124,10 +124,13 @@ function focusedNow(): (FocusStop & { onScreen: boolean; covered: boolean }) | n
   const top = onScreen ? document.elementFromPoint(x, y) : null;
   const covered = top !== null && top !== el && !el.contains(top) && !top.contains(el);
   const table = el.closest('table');
-  const name = (el.getAttribute('aria-label') ?? el.innerText)
-    .trim()
-    .replace(/\s+/g, ' ')
-    .slice(0, 40);
+  const label =
+    el instanceof HTMLInputElement ||
+    el instanceof HTMLSelectElement ||
+    el instanceof HTMLTextAreaElement
+      ? (el.labels?.[0]?.innerText ?? el.getAttribute('placeholder') ?? el.name)
+      : el.innerText;
+  const name = (el.getAttribute('aria-label') ?? label).trim().replace(/\s+/g, ' ').slice(0, 40);
   const region = el.closest('nav')
     ? 'nav'
     : el.closest('header')
@@ -273,11 +276,20 @@ async function outsidePoint(page: Page, overlay: string): Promise<{ x: number; y
   }, overlay);
 }
 
-/** Tab `presses` times; whether every stop stayed inside `container`. */
+/**
+ * Tab `presses` times; whether no stop landed on the page outside `container`. A stop on the body
+ * is the focus leaving for the browser's own controls past the last element, as a modal dialog
+ * allows too, not an escape into the page behind.
+ */
 async function tabsStayIn(page: Page, container: string, presses: number): Promise<boolean> {
   for (let i = 0; i < presses; i += 1) {
     await page.keyboard.press('Tab');
-    if (!(await focusIn(page, container))) return false;
+    const escaped = await page.evaluate((s) => {
+      const active = document.activeElement;
+      if (active === null || active === document.body) return false;
+      return document.querySelector(s)?.contains(active) !== true;
+    }, container);
+    if (escaped) return false;
   }
   return true;
 }

@@ -80,9 +80,12 @@ interface Item {
   readonly url: string;
 }
 
+/** Playwright's colour codes, which a report should not hold. */
+const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
+
 /** An error's first line, for the report. */
 const message = (error: unknown) =>
-  error instanceof Error ? (error.message.split('\n')[0] ?? '') : String(error);
+  (error instanceof Error ? (error.message.split('\n')[0] ?? '') : String(error)).replace(ANSI, '');
 
 const fileSafe = (text: string) => text.replace(/[^A-Za-z0-9_-]+/g, '-');
 
@@ -275,8 +278,10 @@ test('visual and accessibility harness (report-only)', async ({ browser }) => {
           counts: m.counts,
           violations: m.violations,
         });
-        if (item.role === 'supervisor' && item.state === 'data' && width === 1440) {
-          titles[item.route.id] = m.title;
+        // Each route's title from the first page measured as the supervisor (signed out for the
+        // login): its data state where it has one, as the tiers come in that order.
+        if (width === widths[0] && (item.role === 'supervisor' || item.role === 'signed-out')) {
+          titles[item.route.id] ??= m.title;
         }
       } catch (error) {
         entries.push({
@@ -499,8 +504,15 @@ async function webkitTouchScroll(): Promise<TouchScrollCheck> {
   }
   try {
     const context = await browser.newContext({ ...devices['iPhone 15'], baseURL: web });
+    const origin = new URL(web).origin;
     await context.route('**/*', async (route) => {
-      const response = await route.fetch();
+      const request = route.request();
+      // WebKit leaves `Origin` out of an intercepted request's headers; the MES refuses a write
+      // without it (ADR-0023), so the page's own origin goes back on, as the browser sends it.
+      const write = !['GET', 'HEAD'].includes(request.method());
+      const response = await route.fetch(
+        write ? { headers: { ...request.headers(), origin } } : undefined,
+      );
       await route.fulfill({ response });
     });
     const page = await context.newPage();

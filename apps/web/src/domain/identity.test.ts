@@ -8,7 +8,6 @@ import { safeRedirect } from '../auth/redirect.ts';
 import { sessionOf } from '../test/fixtures.ts';
 import {
   loginFailure,
-  newPasswordProblems,
   PERMISSION_AREAS,
   PERMISSION_LABELS,
   passwordChangeFailure,
@@ -86,18 +85,18 @@ describe('identity on screen (#170)', () => {
   });
 
   it('checks a new password as the MES does: 12–128 characters, not the current one, confirmed', () => {
-    expect(newPasswordProblems('long enough pw', 'long enough pw', 'old one here')).toEqual([]);
-    expect(newPasswordProblems('short', 'short')).toEqual([
+    const texts = (next: string, confirm: string, current?: string) =>
+      passwordFormProblems(next, confirm, current).map((problem) => problem.text);
+    expect(texts('long enough pw', 'long enough pw', 'old one here')).toEqual([]);
+    expect(texts('short', 'short')).toEqual([
       'The new password needs 12 to 128 characters (it has 5).',
     ]);
-    expect(newPasswordProblems('same password', 'same password', 'same password')).toEqual([
+    expect(texts('same password', 'same password', 'same password')).toEqual([
       'The new password must differ from the current one.',
     ]);
-    expect(newPasswordProblems('long enough pw', 'long enough px')).toEqual([
-      'The two new passwords differ.',
-    ]);
+    expect(texts('long enough pw', 'long enough px')).toEqual(['The two new passwords differ.']);
     // Characters, not UTF-16 units.
-    expect(newPasswordProblems('🔒'.repeat(12), '🔒'.repeat(12))).toEqual([]);
+    expect(texts('🔒'.repeat(12), '🔒'.repeat(12))).toEqual([]);
   });
 
   it('ties each problem of the password form to its field (UX-11)', () => {
@@ -115,8 +114,6 @@ describe('identity on screen (#170)', () => {
     expect(passwordFormProblems('x'.repeat(129), 'x'.repeat(129), 'old one here')).toEqual([
       { field: 'next', text: 'The new password needs 12 to 128 characters (it has 129).' },
     ]);
-    // The old list of texts: an empty current password is not its problem.
-    expect(newPasswordProblems('long enough pw', 'long enough pw', '')).toEqual([]);
   });
 
   it('says every permission in words, grouped by area in reading order (UX-11, Y-02)', () => {

@@ -45,13 +45,16 @@ export function Account() {
                 term: 'Roles',
                 detail: <span data-testid="account-roles">{rolesText(user.roles)}</span>,
               },
-              { term: 'Logged in', detail: <WallTime at={session.createdAt} /> },
+              {
+                term: 'Logged in',
+                detail: <WallTime at={session.createdAt} className="whitespace-nowrap" />,
+              },
               {
                 term: 'Session ends',
                 detail: (
                   <>
                     After {SESSION_IDLE_MS[session.kind] / 60_000} minutes without use, at the
-                    latest <WallTime at={session.expiresAt} />
+                    latest <WallTime at={session.expiresAt} className="whitespace-nowrap" />
                   </>
                 ),
               },
@@ -95,6 +98,7 @@ export function Account() {
               </Callout>
             ) : null}
             <ChangePasswordForm
+              username={user.username}
               onChanged={(ended) => {
                 setChanged(
                   `Password changed.${ended > 0 ? ` ${String(ended)} other session${ended === 1 ? '' : 's'} ended.` : ''}`,

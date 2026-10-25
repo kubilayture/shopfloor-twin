@@ -137,17 +137,6 @@ export function passwordFormProblems(
   return problems;
 }
 
-/** What is wrong with a new password before it is sent (the MES checks the same, 422). */
-export function newPasswordProblems(
-  next: string,
-  confirm: string,
-  current?: string,
-): readonly string[] {
-  return passwordFormProblems(next, confirm, current === '' ? undefined : current).map(
-    (problem) => problem.text,
-  );
-}
-
 /** A failed password change as a message (422: rejected, with the MES's reason). */
 export function passwordChangeFailure(error: unknown): WriteFailure {
   if (error instanceof ApiError && error.problem?.type === PROBLEM_TYPES.passwordRejected) {

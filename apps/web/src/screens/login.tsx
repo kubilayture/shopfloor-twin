@@ -120,7 +120,13 @@ export function LoginForm({
         ];
         setMissing(empty);
         if (empty.length > 0) {
-          setMessage('Enter your user name and password.');
+          setMessage(
+            empty.length === 2
+              ? 'Enter your user name and password.'
+              : empty[0] === 'username'
+                ? 'Enter your user name.'
+                : 'Enter your password.',
+          );
           focusFirstInvalid([usernameRef, passwordRef]);
           return;
         }
@@ -152,7 +158,7 @@ export function LoginForm({
               onChange={(event) => {
                 setUsername(event.target.value);
               }}
-              className={`${controlClass()} w-full read-only:bg-surface-sunken`}
+              className={`${controlClass({ size: 'lg' })} w-full read-only:bg-surface-sunken`}
             />
           );
         }}
@@ -174,7 +180,7 @@ export function LoginForm({
             onChange={(event) => {
               setPassword(event.target.value);
             }}
-            className={`${controlClass()} w-full`}
+            className={`${controlClass({ size: 'lg' })} w-full`}
           />
         )}
       </Field>
@@ -224,7 +230,7 @@ function PasswordInput({
       onChange={(event) => {
         onChange(event.target.value);
       }}
-      className={`${controlClass()} w-full`}
+      className={`${controlClass({ size: 'lg' })} w-full`}
     />
   );
 }
@@ -238,9 +244,15 @@ function PasswordInput({
  */
 export function ChangePasswordForm({
   current: known,
+  username,
   onChanged,
 }: {
   readonly current?: string | undefined;
+  /**
+   * Whose password it is: a hidden read-only `autocomplete="username"` field, so a password manager
+   * saves the new password under the right account (the form shows no user name field).
+   */
+  readonly username?: string | undefined;
   readonly onChanged: (endedSessions: number) => void;
 }) {
   const [current, setCurrent] = useState(known ?? '');
@@ -293,6 +305,17 @@ export function ChangePasswordForm({
           </ul>
         </Callout>
       ) : null}
+      {username === undefined ? null : (
+        <input
+          type="text"
+          name="username"
+          autoComplete="username"
+          value={username}
+          readOnly
+          hidden
+          data-testid="password-username"
+        />
+      )}
       {known === undefined ? (
         <Field label="Current password" error={errorOf('current')}>
           {(ids) => (
@@ -367,6 +390,14 @@ function LoginCard({
   readonly children: ReactNode;
 }) {
   const headingRef = useHeadingFocus<HTMLHeadingElement>();
+  // The same card turns into the next step (the forced change after the login): its new
+  // heading takes the focus, so the step is announced and the keyboard starts there.
+  const shown = useRef(heading);
+  useEffect(() => {
+    if (shown.current === heading) return;
+    shown.current = heading;
+    headingRef.current?.focus();
+  }, [heading, headingRef]);
   return (
     <main id="main" tabIndex={-1} className="min-h-screen bg-canvas px-4 py-12 text-ink md:py-20">
       <div className="mx-auto w-full max-w-md overflow-hidden rounded-lg border border-line bg-surface">
@@ -431,6 +462,8 @@ export function Login() {
           <Button
             variant="ghost"
             size="sm"
+            // The label on the card's text edge: the ghost button's own padding to the left.
+            className="-ml-2.5"
             onClick={() => {
               setTyped(undefined);
               void auth.logOut();
@@ -446,6 +479,7 @@ export function Login() {
         </p>
         <ChangePasswordForm
           current={typed}
+          username={session.user.username}
           onChanged={() => {
             setTyped(undefined);
             // The session now needs no change: `BackTo` takes the user on.

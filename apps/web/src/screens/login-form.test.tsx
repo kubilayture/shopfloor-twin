@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NEW_PASSWORD, PASSWORD, fakeMes } from '../test/fake-mes.ts';
 import { renderApp } from '../test/render-app.tsx';
@@ -25,6 +25,32 @@ function description(element: HTMLElement): string {
 }
 
 const field = (testId: string) => screen.getByTestId<HTMLInputElement>(testId);
+
+/**
+ * The fake MES with the writes matching `hang` never answered, counting every request: a busy
+ * form must send no second one.
+ */
+function hanging(hang: (method: string, path: string) => boolean, options = {}) {
+  const mes = fakeMes(options);
+  const sent: string[] = [];
+  const fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const method = init?.method ?? 'GET';
+    const path = new URL(input instanceof Request ? input.url : input.toString(), 'http://x')
+      .pathname;
+    sent.push(`${method} ${path}`);
+    return hang(method, path) ? new Promise<Response>(() => undefined) : mes.fetch(input, init);
+  };
+  return { fetch, count: (request: string) => sent.filter((one) => one === request).length };
+}
+
+/** Every way a form is sent again: a click on its submit, and Enter (the form's submit event). */
+function sendAgain(submit: HTMLElement) {
+  fireEvent.click(submit);
+  const form = submit.closest('form');
+  if (!form) throw new Error('the submit is in no form');
+  fireEvent.submit(form);
+  fireEvent.keyDown(form, { key: 'Enter' });
+}
 
 /** A fetch whose login answers 429 with a Retry-After; everything else as the fake MES. */
 function throttled() {
@@ -80,6 +106,15 @@ describe('the login page (UX-11)', () => {
       expect(document.activeElement).toBe(field('login-username'));
     });
 
+    // The alert says what is empty: only the name here.
+    fireEvent.change(field('login-password'), { target: { value: 'something' } });
+    fireEvent.click(screen.getByTestId('login-submit'));
+    await waitFor(() => {
+      expect(screen.getByTestId('login-message').textContent).toBe('Enter your user name.');
+    });
+    expect(field('login-password').getAttribute('aria-invalid')).toBeNull();
+    fireEvent.change(field('login-password'), { target: { value: '' } });
+
     // With the name given, only the password is marked, and it takes the focus.
     fireEvent.change(field('login-username'), { target: { value: 'ayse' } });
     fireEvent.click(screen.getByTestId('login-submit'));
@@ -89,6 +124,7 @@ describe('the login page (UX-11)', () => {
     expect(field('login-username').getAttribute('aria-invalid')).toBeNull();
     expect(field('login-username').getAttribute('aria-describedby')).toBeNull();
     expect(description(field('login-password'))).toBe('Enter your password.');
+    expect(screen.getByTestId('login-message').textContent).toBe('Enter your password.');
   });
 
   it('ties a refused login to both fields, focuses the name and keeps what was typed', async () => {
@@ -140,6 +176,70 @@ describe('the login page (UX-11)', () => {
     });
     expect(screen.getByRole('button', { name: 'Log in' })).toBe(submit);
   });
+
+  it('sends no second login while one is on its way, by click or by Enter', async () => {
+    const mes = hanging((method, path) => method === 'POST' && path === '/api/v1/session');
+    vi.stubGlobal('fetch', mes.fetch);
+    await renderApp('/login', { session: 'fetch' });
+    fireEvent.change(await screen.findByTestId('login-username'), { target: { value: 'ayse' } });
+    fireEvent.change(field('login-password'), { target: { value: PASSWORD } });
+    fireEvent.click(screen.getByTestId('login-submit'));
+    await waitFor(() => {
+      expect(mes.count('POST /api/v1/session')).toBe(1);
+    });
+    sendAgain(screen.getByTestId('login-submit'));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(mes.count('POST /api/v1/session')).toBe(1);
+  });
+
+  it('sends no login while a logout is still ending at the MES (#170 review L3)', async () => {
+    const mes = hanging((method, path) => method === 'DELETE' && path === '/api/v1/session', {
+      signedIn: true,
+    });
+    vi.stubGlobal('fetch', mes.fetch);
+    const app = await renderApp('/', { session: 'fetch' });
+    await app.open();
+    fireEvent.click(await screen.findByTestId('logout'));
+    const submit = await screen.findByTestId('login-submit');
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Logging out…' })).toBe(submit);
+    });
+    expect(submit.getAttribute('aria-busy')).toBe('true');
+    fireEvent.change(field('login-username'), { target: { value: 'ayse' } });
+    fireEvent.change(field('login-password'), { target: { value: PASSWORD } });
+    sendAgain(submit);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(mes.count('POST /api/v1/session')).toBe(0);
+    expect(mes.count('DELETE /api/v1/session')).toBe(1);
+  });
+
+  it('marks only the password when the re-login cover is refused: the name is given', async () => {
+    const mes = fakeMes({ signedIn: true, roles: ['admin'] });
+    vi.stubGlobal('fetch', mes.fetch);
+    const app = await renderApp('/admin/users', { session: 'fetch' });
+    await app.open();
+    fireEvent.change(await screen.findByTestId('new-username'), { target: { value: 'half' } });
+    mes.end();
+    await app.drop(4401);
+    await screen.findByTestId('relogin');
+    fireEvent.change(field('login-password'), { target: { value: 'wrong password, long' } });
+    fireEvent.click(screen.getByTestId('login-submit'));
+    expect((await screen.findByTestId('login-message')).textContent).toMatch(
+      /user name or password is wrong/,
+    );
+    expect(field('login-username').readOnly).toBe(true);
+    expect(field('login-username').getAttribute('aria-invalid')).toBeNull();
+    expect(field('login-username').getAttribute('aria-describedby')).toBeNull();
+    expect(field('login-password').getAttribute('aria-invalid')).toBe('true');
+    expect(description(field('login-password'))).toMatch(/user name or password is wrong/);
+    await waitFor(() => {
+      expect(document.activeElement).toBe(field('login-password'));
+    });
+  });
 });
 
 describe('the password forms (UX-11)', () => {
@@ -184,6 +284,33 @@ describe('the password forms (UX-11)', () => {
     expect(mes.calls.some((c) => c.path === '/api/v1/account/password')).toBe(false);
   });
 
+  it('sends no second password change while one is on its way, by click or by Enter', async () => {
+    const mes = hanging(
+      (method, path) => method === 'POST' && path === '/api/v1/account/password',
+      {
+        signedIn: true,
+      },
+    );
+    vi.stubGlobal('fetch', mes.fetch);
+    await renderApp('/account', { session: 'fetch' });
+    fireEvent.change(await screen.findByTestId('current-password'), {
+      target: { value: PASSWORD },
+    });
+    fireEvent.change(field('new-password'), { target: { value: NEW_PASSWORD } });
+    fireEvent.change(field('confirm-password'), { target: { value: NEW_PASSWORD } });
+    const submit = screen.getByTestId('change-password');
+    fireEvent.click(submit);
+    await waitFor(() => {
+      expect(submit.getAttribute('aria-busy')).toBe('true');
+    });
+    expect(screen.getByRole('button', { name: 'Change password' })).toBe(submit);
+    sendAgain(submit);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(mes.count('POST /api/v1/account/password')).toBe(1);
+  });
+
   it('marks only the confirmation when the two new passwords differ', async () => {
     vi.stubGlobal('fetch', fakeMes({ signedIn: true }).fetch);
     await renderApp('/account', { session: 'fetch' });
@@ -217,8 +344,23 @@ describe('the password forms (UX-11)', () => {
     expect(screen.getByTestId('must-change').textContent).toBe(
       'ayse, your password is temporary. Choose your own before you continue; it ends your other sessions.',
     );
-    expect(screen.getByRole('form', { name: 'Change password' })).toBeTruthy();
+    const form = screen.getByRole('form', { name: 'Change password' });
     expect(screen.getByRole('button', { name: 'Log out instead' })).toBeTruthy();
+    // The step is announced: its heading takes the focus from the login's submit.
+    await waitFor(() => {
+      expect(document.activeElement).toBe(
+        screen.getByRole('heading', { level: 1, name: 'Choose a new password' }),
+      );
+    });
+    // Whose password it is, for a password manager: hidden, read-only, not a field to fill.
+    const user = within(form).getByTestId<HTMLInputElement>('password-username');
+    expect([user.type, user.name, user.autocomplete, user.value]).toEqual([
+      'text',
+      'username',
+      'username',
+      'ayse',
+    ]);
+    expect([user.hidden, user.readOnly]).toEqual([true, true]);
   });
 });
 
@@ -236,6 +378,8 @@ describe('the account page (UX-11)', () => {
     expect(times).toHaveLength(2);
     for (const time of times) {
       expect(time.tagName).toBe('TIME');
+      // A time never breaks across lines ("(wall time)" alone on the next one).
+      expect(time.className).toContain('whitespace-nowrap');
       expect(time.textContent).toMatch(
         /^[A-Z][a-z]{2} \d{1,2} [A-Z][a-z]{2}, \d{2}:\d{2}:\d{2} \(wall time\)$/,
       );

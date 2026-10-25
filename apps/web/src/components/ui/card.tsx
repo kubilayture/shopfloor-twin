@@ -1,4 +1,5 @@
 import { useId, type ReactNode } from 'react';
+import type { DataAttributes } from './badge.tsx';
 import type { Tone } from './tokens.ts';
 
 /**
@@ -10,7 +11,9 @@ import type { Tone } from './tokens.ts';
  * Its role, by `as`: a `div` (the default) with a title is a named group (`role="group"`), so a
  * grid of KPI cards does not flood the landmark list; `section` is a region landmark and
  * `article` an article, each named by its heading, for a card that is a page section or a
- * self-contained item (a machine card). Without a title none is named.
+ * self-contained item (a machine card). Without a title none is named. `data-*` props pass
+ * through to the card's element (design system 4), so a screen's raw values stay where tests read
+ * them.
  */
 
 /** Written out in full: Tailwind finds class names in the source. */
@@ -23,7 +26,7 @@ export const CARD_TONE_BAR: Readonly<Record<Tone, string>> = {
   alarm: 'border-l-4 border-l-alarm-border',
 };
 
-export interface CardProps {
+export interface CardProps extends DataAttributes {
   readonly title?: ReactNode;
   readonly headingLevel?: 2 | 3;
   readonly description?: ReactNode;
@@ -49,12 +52,14 @@ export function Card({
   testId,
   className,
   children,
+  ...data
 }: CardProps) {
   const headingId = useId();
   const Heading = headingLevel === 2 ? 'h2' : 'h3';
   const hasHeader = title !== undefined || description !== undefined || actions !== undefined;
   return (
     <Element
+      {...data}
       data-testid={testId}
       {...(title === undefined
         ? {}

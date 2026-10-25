@@ -1,27 +1,27 @@
 import type { OrderJobOeeDto, OrderOeeDto } from '@shopfloor/contracts/mes-api';
 import { useQuery } from '@tanstack/react-query';
-import type { ReactNode } from 'react';
 import { ApiError, getOrderOee } from '../api/client.ts';
 import { queryKeys } from '../api/queries.ts';
-import { NA_REASON, RatioHeadline, RatioValue, StatusFlags } from '../components/oee-ui.tsx';
+import { FinalityBadge } from '../components/finality-badge.tsx';
+import { NA_REASON, StatusFlags } from '../components/oee-ui.tsx';
 import { QueryError } from '../components/query-error.tsx';
+import { Callout } from '../components/ui/callout.tsx';
+import { Code } from '../components/ui/code.tsx';
+import { DataTable, type Column } from '../components/ui/data-table.tsx';
+import { EmptyState } from '../components/ui/empty-state.tsx';
+import { Duration, Missing, Percent, PlantTime } from '../components/ui/format.tsx';
+import { Section } from '../components/ui/section.tsx';
+import { Skeleton } from '../components/ui/skeleton.tsx';
+import { KpiTile } from '../components/ui/stat.tsx';
 import {
   ABOVE_ONE_TEXT,
-  goodText,
-  minutesText,
   orderFlags,
   orderLineFlags,
   orderPending,
   parseFraction,
   pickOrderOee,
 } from '../domain/oee.ts';
-import { formatPlantTime } from '../domain/time.ts';
 import { useLiveOrderOee } from '../live/live-context.tsx';
-
-const cell = 'px-2 py-1.5 align-top';
-
-const time = (value: string | null): ReactNode =>
-  value === null ? '–' : <time dateTime={value}>{formatPlantTime(value)}</time>;
 
 const HEAD_SOURCE_TEXT: Record<NonNullable<OrderJobOeeDto['head']['source']>, string> = {
   accepted: 'its accepted fact',
@@ -46,128 +46,177 @@ function Head({ job }: { readonly job: OrderJobOeeDto }) {
   }
   return (
     <>
-      {time(head.at)}
+      {head.at === null ? <Missing reason="No head time" /> : <PlantTime at={head.at} />}
       {head.source ? (
-        <span className="block text-xs text-slate-700">from {HEAD_SOURCE_TEXT[head.source]}</span>
+        <span className="block text-xs text-ink-secondary">
+          from {HEAD_SOURCE_TEXT[head.source]}
+        </span>
       ) : null}
     </>
   );
 }
 
-function JobRow({ job }: { readonly job: OrderJobOeeDto }) {
+/** A job's window: from its head time to its completion, "(open)" while it runs. */
+function JobWindow({ job }: { readonly job: OrderJobOeeDto }) {
   const { window } = job;
+  if (!window) return <Missing reason="No window yet: the job has not reached the head" />;
   return (
-    <tr
-      data-testid={`order-oee-job-${job.commandId}`}
-      data-final={String(job.final)}
-      data-oee={job.oee?.oee?.decimal ?? 'n/a'}
-      className="border-t border-slate-200"
-    >
-      <th scope="row" className={`${cell} font-mono font-medium`}>
-        {job.commandId}
-      </th>
-      <td className={cell}>{job.machine}</td>
-      <td className={cell}>
-        <Head job={job} />
-      </td>
-      <td className={cell}>
-        {window ? (
-          <>
-            {time(window.from)} to {time(window.to)}
-            {window.open ? ' (open)' : ''}
-            {window.headTimeUnknown ? (
-              <span className="block text-xs text-amber-950">from its start: no changeover</span>
-            ) : null}
-          </>
-        ) : (
-          '–'
-        )}
-      </td>
-      <td className={`${cell} tabular-nums`}>{job.cycles}</td>
-      <td className={cell}>
-        <RatioValue ratio={job.oee?.oee} na={NA_REASON.oee} />
-      </td>
-      <td className={cell}>
-        <RatioValue ratio={job.oee?.availability} na={NA_REASON.availability} />
-      </td>
-      <td className={cell}>
-        <RatioValue ratio={job.oee?.performance} na={NA_REASON.performance} />
-      </td>
-      <td className={cell}>
-        <RatioValue ratio={job.oee?.quality} na={NA_REASON.quality} />
-      </td>
-      <td className={cell}>{job.final ? 'Final' : 'Provisional'}</td>
-    </tr>
+    <>
+      <span className="whitespace-nowrap">
+        <PlantTime at={window.from} />
+      </span>{' '}
+      to{' '}
+      <span className="whitespace-nowrap">
+        <PlantTime at={window.to} />
+      </span>
+      {window.open ? ' (open)' : ''}
+      {window.headTimeUnknown ? (
+        <span className="block text-xs text-warn-ink">from its start: no changeover</span>
+      ) : null}
+    </>
   );
 }
 
-function OrderOeeCard({ order }: { readonly order: OrderOeeDto }) {
+/** The jobs table (design system 4.5): one row per job, the ratios as percentages. */
+const JOB_COLUMNS: readonly Column<OrderJobOeeDto>[] = [
+  {
+    key: 'job',
+    header: 'Job',
+    rowHeader: true,
+    nowrap: true,
+    cell: (job) => <Code className="font-medium">{job.commandId}</Code>,
+  },
+  { key: 'cnc', header: 'CNC', nowrap: true, cell: (job) => <Code>{job.machine}</Code> },
+  { key: 'head', header: 'Head time', priority: 3, cell: (job) => <Head job={job} /> },
+  { key: 'window', header: 'Window', priority: 2, cell: (job) => <JobWindow job={job} /> },
+  { key: 'cycles', header: 'Cycles', numeric: true, cell: (job) => job.cycles },
+  {
+    key: 'oee',
+    header: 'OEE',
+    numeric: true,
+    cell: (job) => <Percent ratio={job.oee?.oee} na={NA_REASON.oee} />,
+  },
+  {
+    key: 'availability',
+    header: 'Availability',
+    numeric: true,
+    priority: 3,
+    cell: (job) => <Percent ratio={job.oee?.availability} na={NA_REASON.availability} />,
+  },
+  {
+    key: 'performance',
+    header: 'Performance',
+    numeric: true,
+    priority: 3,
+    cell: (job) => <Percent ratio={job.oee?.performance} na={NA_REASON.performance} />,
+  },
+  {
+    key: 'quality',
+    header: 'Quality',
+    numeric: true,
+    priority: 3,
+    cell: (job) => <Percent ratio={job.oee?.quality} na={NA_REASON.quality} />,
+  },
+  {
+    key: 'status',
+    header: 'Status',
+    nowrap: true,
+    cell: (job) => <FinalityBadge final={job.final} />,
+  },
+];
+
+/** Exact milliseconds (`num/den`) as a number, for display only. */
+function msOf(text: string): number {
+  const exact = parseFraction(text);
+  return Number(exact.num) / Number(exact.den);
+}
+
+function OrderOeeTile({ order }: { readonly order: OrderOeeDto }) {
   const { oee } = order;
   return (
-    <article
-      data-testid="order-oee-card"
-      className="flex flex-col gap-2 rounded-lg border border-slate-300 bg-white p-4 shadow-sm"
+    <KpiTile
+      title="Order OEE"
+      testId="order-oee-card"
+      headline={{
+        label: 'OEE',
+        value: <Percent ratio={oee.oee} na={NA_REASON.oee} testId="order-oee-oee" />,
+        hint: oee.oee ? undefined : NA_REASON.oee,
+      }}
+      details={[
+        {
+          label: 'Availability',
+          value: (
+            <Percent
+              ratio={oee.availability}
+              na={NA_REASON.availability}
+              testId="order-oee-availability"
+            />
+          ),
+        },
+        {
+          label: 'Performance',
+          value: (
+            <Percent
+              ratio={oee.performance}
+              na={NA_REASON.performance}
+              testId="order-oee-performance"
+            />
+          ),
+        },
+        {
+          label: 'Quality (OP10)',
+          value: <Percent ratio={oee.quality} na={NA_REASON.quality} testId="order-oee-quality" />,
+        },
+        {
+          label: 'Planned busy time',
+          value: <Duration ms={oee.totals.plannedBusyMs} />,
+        },
+      ]}
     >
-      <h3 className="font-semibold">Order OEE</h3>
-      <RatioHeadline label="OEE" ratio={oee.oee} na={NA_REASON.oee} testId="order-oee-oee" />
-      <dl className="grid grid-cols-[1fr_auto] gap-x-4 text-sm">
-        <dt className="text-slate-700">Availability</dt>
-        <dd className="text-right">
-          <RatioValue
-            ratio={oee.availability}
-            na={NA_REASON.availability}
-            testId="order-oee-availability"
-          />
-        </dd>
-        <dt className="text-slate-700">Performance</dt>
-        <dd className="text-right">
-          <RatioValue
-            ratio={oee.performance}
-            na={NA_REASON.performance}
-            testId="order-oee-performance"
-          />
-        </dd>
-        <dt className="text-slate-700">Quality (OP10)</dt>
-        <dd className="text-right">
-          <RatioValue ratio={oee.quality} na={NA_REASON.quality} testId="order-oee-quality" />
-        </dd>
-        <dt className="text-slate-700">Planned busy time</dt>
-        <dd className="text-right tabular-nums">{minutesText(oee.totals.plannedBusyMs)}</dd>
-        <dt className="text-slate-700">OP10 cycles (good)</dt>
-        <dd className="text-right tabular-nums">
-          {oee.totals.produced} ({oee.totals.good})
-        </dd>
-      </dl>
+      <p className="text-sm text-ink-secondary">
+        OP10 cycles: <span className="tabular-nums text-ink">{oee.totals.produced}</span>, of which{' '}
+        <span className="tabular-nums text-ink">{oee.totals.good}</span> good.
+      </p>
       <StatusFlags flags={orderFlags(order)} />
       {oee.anomaly ? (
-        <p className="text-sm text-amber-950">
+        <Callout tone="warn">
           Anomaly: cycles were counted although there was no production time.
-        </p>
+        </Callout>
       ) : null}
-    </article>
+    </KpiTile>
   );
 }
 
-function FirstPassYieldCard({ order }: { readonly order: OrderOeeDto }) {
+function FirstPassYieldTile({ order }: { readonly order: OrderOeeDto }) {
   const fpy = order.firstPassYield;
   return (
-    <article
-      data-testid="order-fpy"
+    <KpiTile
+      title="First-pass yield"
+      testId="order-fpy"
       data-final={String(fpy.final)}
       data-yield={fpy.yield?.decimal ?? 'n/a'}
-      className="flex flex-col gap-2 rounded-lg border border-slate-300 bg-white p-4 shadow-sm"
+      headline={{
+        label: 'Yield',
+        value: <Percent ratio={fpy.yield} na={NA_REASON.yield} testId="order-fpy-yield" />,
+        hint: fpy.yield ? undefined : NA_REASON.yield,
+      }}
+      details={[
+        {
+          label: 'Packed good first time',
+          // The bare count: the specs read the element's text as the number.
+          value: <span data-testid="order-fpy-good">{fpy.firstPassGood}</span>,
+          unit: 'blanks',
+        },
+        {
+          label: 'Blanks taken',
+          value: <span data-testid="order-fpy-started">{fpy.started}</span>,
+          unit: 'blanks',
+        },
+      ]}
     >
-      <h3 className="font-semibold">First-pass yield</h3>
-      <RatioHeadline
-        label="Yield"
-        ratio={fpy.yield}
-        na={NA_REASON.yield}
-        testId="order-fpy-yield"
-      />
-      <p className="text-sm">
-        <span data-testid="order-fpy-good">{fpy.firstPassGood}</span> of{' '}
-        <span data-testid="order-fpy-started">{fpy.started}</span> blanks taken packed good with
-        every record good, across the routing.
+      <p className="text-sm text-ink-secondary">
+        Packed good with every record good, across the routing. Beside the order OEE, never
+        multiplied into it: OP10 quality alone hides the leak test’s scrap.
       </p>
       <StatusFlags
         flags={[
@@ -186,63 +235,100 @@ function FirstPassYieldCard({ order }: { readonly order: OrderOeeDto }) {
               },
         ]}
       />
-      <p className="text-xs text-slate-700">
-        Beside the order OEE, never multiplied into it: OP10 quality alone hides the leak test’s
-        scrap.
-      </p>
-    </article>
+    </KpiTile>
   );
 }
 
-function OrderLineCard({ order }: { readonly order: OrderOeeDto }) {
-  const { line } = order;
+/** Units packed good per product: "VB-100: 59", one product per line, never run together (Q-04). */
+function PackedGood({ good }: { readonly good: Readonly<Record<string, number>> }) {
+  const entries = Object.entries(good)
+    .filter(([, n]) => n !== 0)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  if (entries.length === 0) return <Missing reason="Nothing packed good yet" />;
   return (
-    <article
-      data-testid="order-line-oee"
-      data-final={line ? String(line.final) : undefined}
-      data-oee={line?.oee?.decimal ?? 'n/a'}
-      data-above-one={line ? String(line.aboveOne) : undefined}
-      className="flex flex-col gap-2 rounded-lg border border-slate-300 bg-white p-4 shadow-sm"
+    <ul className="flex flex-col">
+      {entries.map(([product, n]) => (
+        <li key={product}>
+          <Code>{product}</Code>: <span className="tabular-nums">{n}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function OrderLineTile({ order }: { readonly order: OrderOeeDto }) {
+  const { line } = order;
+  if (!line) {
+    return (
+      <KpiTile
+        title="Line OEE of this order"
+        testId="order-line-oee"
+        data-oee="n/a"
+        headline={{
+          label: 'Line OEE',
+          missing: 'No job of this order is head of its CNC’s queue yet.',
+        }}
+      />
+    );
+  }
+  return (
+    <KpiTile
+      title="Line OEE of this order"
+      testId="order-line-oee"
+      data-final={String(line.final)}
+      data-oee={line.oee?.decimal ?? 'n/a'}
+      data-above-one={String(line.aboveOne)}
+      tone={line.aboveOne ? 'warn' : undefined}
+      headline={{
+        label: 'Line OEE',
+        value: <Percent ratio={line.oee} na={NA_REASON.line} testId="order-line-oee-value" />,
+        hint: line.oee ? undefined : NA_REASON.line,
+      }}
+      details={[
+        { label: 'Planned busy time', value: <Duration ms={line.plannedBusyMs} /> },
+        { label: 'Ideal time at the bottleneck', value: <Duration ms={msOf(line.idealMs)} /> },
+      ]}
     >
-      <h3 className="font-semibold">Line OEE of this order</h3>
-      {line ? (
-        <>
-          <RatioHeadline
-            label="Line OEE"
-            ratio={line.oee}
-            na={NA_REASON.line}
-            testId="order-line-oee-value"
-          />
-          <dl className="grid grid-cols-[auto_1fr] gap-x-4 text-sm [&_dd]:text-right [&_dt]:whitespace-nowrap">
-            <dt className="text-slate-700">In progress</dt>
-            <dd className="text-right">
-              {time(line.from)} to {time(line.to)}
-            </dd>
-            <dt className="text-slate-700">Planned busy time</dt>
-            <dd className="text-right tabular-nums">{minutesText(line.plannedBusyMs)}</dd>
-            <dt className="text-slate-700">Packed good</dt>
-            <dd className="text-right tabular-nums">{goodText(line.good)}</dd>
-            <dt className="text-slate-700">Ideal time at the bottleneck</dt>
-            <dd className="text-right tabular-nums">{minutesText(parseFraction(line.idealMs))}</dd>
-          </dl>
-          <StatusFlags flags={orderLineFlags(line)} />
-          {line.aboveOne ? <p className="text-sm text-amber-950">{ABOVE_ONE_TEXT}</p> : null}
-          <p className="text-xs text-slate-700" data-testid="order-line-not-additive">
-            Its own good units × the bottleneck’s effective cycle ÷ the line’s planned time while it
-            was in progress. Not additive across orders: orders overlap in time.
-          </p>
-        </>
-      ) : (
-        <p className="text-sm">No job of this order is head of its CNC’s queue yet.</p>
-      )}
-    </article>
+      <dl className="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2">
+        <div>
+          {/* Q-04: a completed order's window is its whole run, not "In progress". */}
+          <dt className="text-xs font-medium text-ink-secondary">
+            {line.open ? 'In progress' : 'Window'}
+          </dt>
+          <dd data-testid="order-line-window">
+            <span className="whitespace-nowrap">
+              <PlantTime at={line.from} />
+            </span>{' '}
+            to{' '}
+            <span className="whitespace-nowrap">
+              <PlantTime at={line.to} />
+            </span>
+            {line.open ? ' (open: to the plant clock)' : ''}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-xs font-medium text-ink-secondary">Packed good</dt>
+          <dd data-testid="order-line-good">
+            <PackedGood good={line.good} />
+          </dd>
+        </div>
+      </dl>
+      <StatusFlags flags={orderLineFlags(line)} />
+      {line.aboveOne ? <Callout tone="warn">{ABOVE_ONE_TEXT}</Callout> : null}
+      <p className="text-xs text-ink-secondary" data-testid="order-line-not-additive">
+        Its own good units × the bottleneck’s effective cycle ÷ the line’s planned time while it was
+        in progress. Not additive across orders: orders overlap in time.
+      </p>
+    </KpiTile>
   );
 }
 
 /**
  * The order's OEE (#233, ADR-0036): A, P, Q and OEE over its job windows, each job's head time,
  * window and OEE, the first-pass yield across the routing beside it, and the order's own line
- * OEE; read once and followed live on `oee:order:<id>`.
+ * OEE; read once and followed live on `oee:order:<id>`. The ratios are percentages; each keeps
+ * the MES's four decimals in `data-decimal` and the exact fraction in `data-fraction` and its
+ * tooltip (E-02).
  */
 export function OrderOee({ id }: { readonly id: string }) {
   const read = useQuery({
@@ -253,27 +339,25 @@ export function OrderOee({ id }: { readonly id: string }) {
   const order = pickOrderOee(read.data, pushed);
   const missing = read.error instanceof ApiError && read.error.status === 404 && !order;
   return (
-    <section aria-labelledby="order-oee-title" data-testid="order-oee-section" className="mt-6">
-      <h2 id="order-oee-title" className="text-xl font-semibold">
-        OEE and first-pass yield
-      </h2>
-      <p className="mt-1 text-sm text-slate-700">
-        Over the order’s job windows on its CNCs: each from the job’s head time (its changeover
-        counts against this order) to its completion.
-      </p>
-      {read.isPending && !order ? <p className="mt-2 text-sm">Loading the order’s OEE…</p> : null}
+    <Section
+      id="order-oee-title"
+      testId="order-oee-section"
+      title="OEE and first-pass yield"
+      description="Over the order’s job windows on its CNCs: each from the job’s head time (its changeover counts against this order) to its completion."
+    >
+      {read.isPending && !order ? <Skeleton shape="card" label="Loading the order’s OEE…" /> : null}
       {missing ? (
-        <p className="mt-2 text-sm" data-testid="order-oee-missing">
-          The MES has no OEE for this order.
-        </p>
-      ) : read.isError && !order ? (
-        <div className="mt-2">
-          <QueryError
-            what="the order’s OEE"
-            error={read.error}
-            onRetry={() => void read.refetch()}
+        <div className="rounded-lg border border-line bg-surface px-4">
+          <EmptyState
+            size="inline"
+            icon="info"
+            testId="order-oee-missing"
+            title="The MES has no OEE for this order"
+            body="It has one once a job of the order is accepted."
           />
         </div>
+      ) : read.isError && !order ? (
+        <QueryError what="the order’s OEE" error={read.error} onRetry={() => void read.refetch()} />
       ) : null}
       {order ? (
         <div
@@ -282,76 +366,61 @@ export function OrderOee({ id }: { readonly id: string }) {
           data-oee={order.oee.oee?.decimal ?? 'n/a'}
           data-revision={String(order.revision)}
           data-incidents={String(order.incidents.length)}
-          className="mt-2"
+          className="flex flex-col gap-4"
         >
           {!order.final ? (
-            <p className="mb-2 text-sm text-amber-950" data-testid="order-oee-pending">
+            <p className="text-sm text-ink-secondary" data-testid="order-oee-pending">
               Provisional: {orderPending(order).join('; ')}.
             </p>
           ) : null}
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-            <OrderOeeCard order={order} />
-            <FirstPassYieldCard order={order} />
-            <OrderLineCard order={order} />
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+            <OrderOeeTile order={order} />
+            <FirstPassYieldTile order={order} />
+            <OrderLineTile order={order} />
           </div>
           {order.incidents.length > 0 ? (
-            <div className="mt-2 text-sm" data-testid="order-oee-incidents">
-              <p className="font-medium">Written-off gaps under it (a final value may change):</p>
+            <Callout
+              tone="warn"
+              data-testid="order-oee-incidents"
+              title="Written-off gaps under it (a final value may change)"
+            >
               <ul>
                 {order.incidents.map((incident) => (
                   <li key={`${incident.machine}-${String(incident.epoch)}-${String(incident.id)}`}>
-                    {incident.machine}, run {incident.epoch}: sequence {incident.seqFrom} to{' '}
-                    {incident.seqTo}
+                    <Code>{incident.machine}</Code>, run {incident.epoch}: sequence{' '}
+                    {incident.seqFrom} to {incident.seqTo}
                   </li>
                 ))}
               </ul>
-            </div>
+            </Callout>
           ) : null}
-          {/* A named tab stop, so the keyboard can scroll the jobs sideways (axe
-              scrollable-region-focusable, #328); UX-6b moves the table onto `DataTable`. */}
-          <div
-            tabIndex={0}
-            role="region"
-            aria-label="OEE per job of the order"
-            className="mt-3 overflow-x-auto rounded-lg border border-slate-300 bg-white"
-          >
-            <table className="w-full min-w-[48rem] text-left text-sm" data-testid="order-oee-jobs">
-              <caption className="sr-only">OEE per job of the order</caption>
-              <thead className="bg-slate-100">
-                <tr>
-                  {[
-                    'Job',
-                    'CNC',
-                    'Head time',
-                    'Window',
-                    'Cycles',
-                    'OEE',
-                    'A',
-                    'P',
-                    'Q',
-                    'Status',
-                  ].map((column) => (
-                    <th key={column} scope="col" className={`${cell} font-semibold`}>
-                      {column}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {order.jobs.length === 0 ? (
-                  <tr>
-                    <td colSpan={10} className={cell}>
-                      No job accepted yet.
-                    </td>
-                  </tr>
-                ) : (
-                  order.jobs.map((job) => <JobRow key={job.commandId} job={job} />)
-                )}
-              </tbody>
-            </table>
-          </div>
+          <Section level={3} title="Per job" description="One row per job of the order, by CNC.">
+            <DataTable
+              caption="OEE per job of the order"
+              testId="order-oee-jobs"
+              columns={JOB_COLUMNS}
+              rows={order.jobs}
+              rowKey={(job) => job.commandId}
+              rowTestId={(job) => `order-oee-job-${job.commandId}`}
+              rowProps={(job) => ({
+                'data-final': String(job.final),
+                'data-oee': job.oee?.oee?.decimal ?? 'n/a',
+              })}
+              narrow="stack"
+              empty={
+                <div className="px-4">
+                  <EmptyState
+                    size="inline"
+                    icon="info"
+                    testId="order-oee-jobs-empty"
+                    title="No job accepted yet"
+                  />
+                </div>
+              }
+            />
+          </Section>
         </div>
       ) : null}
-    </section>
+    </Section>
   );
 }

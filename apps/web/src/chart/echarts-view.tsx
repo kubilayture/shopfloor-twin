@@ -1,5 +1,6 @@
 import {
   init,
+  registerTheme,
   use as registerModules,
   type EChartsCoreOption,
   type EChartsType,
@@ -7,6 +8,15 @@ import {
 import { CanvasRenderer } from 'echarts/renderers';
 import { useEffect, useRef } from 'react';
 import { ECHARTS_MODULES } from './echarts-modules.ts';
+import {
+  ECHARTS_THEME,
+  echartsTheme,
+  readFont,
+  readTokens,
+  resolveTokens,
+  useThemeVersion,
+  type TokenReader,
+} from './theme.ts';
 
 // The charts' modules (echarts-modules.ts) on a canvas, with a canvas-drawn tooltip.
 registerModules([...ECHARTS_MODULES, CanvasRenderer]);
@@ -14,15 +24,30 @@ registerModules([...ECHARTS_MODULES, CanvasRenderer]);
 /** The print image's pixels per CSS pixel of the chart on screen. */
 const PRINT_PIXEL_RATIO = 3;
 
-const reducedMotion = (): boolean =>
-  typeof window.matchMedia === 'function' &&
-  window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+/**
+ * The option as the chart draws it (design system section 5): the builder's option with its token
+ * references resolved, no animation (no intro, no update transitions: #308, C-03, and reduced
+ * motion is then nothing to honour), and the tooltip drawn on the canvas (`renderMode:
+ * 'richText'`): ECharts' HTML tooltip writes markup with `style` attributes, which the strict CSP
+ * (`style-src 'self'`) refuses.
+ */
+export function themedOption(option: EChartsCoreOption, read: TokenReader): EChartsCoreOption {
+  const tooltip = option.tooltip as Record<string, unknown> | undefined;
+  return resolveTokens(
+    {
+      ...option,
+      animation: false,
+      tooltip: { ...tooltip, renderMode: 'richText' },
+    },
+    read,
+  );
+}
 
 /**
- * Apache ECharts on a canvas, created once and given new options as they change. Under the
- * strict CSP (no 'unsafe-inline'): ECharts styles its own elements through the DOM (allowed), and
- * the tooltip is drawn on the canvas (`renderMode: 'richText'`), because the HTML tooltip writes
- * markup with `style` attributes, which the policy refuses.
+ * Apache ECharts on a canvas, created once and given new options as they change, in the theme
+ * `shopfloor` (theme.ts) with the tokens' current values; a change of the theme on `<html>`
+ * registers the theme again and redraws. Under the strict CSP ECharts styles its own elements
+ * through the DOM (allowed) and draws the tooltip on the canvas.
  */
 export function EChartsView({
   option,
@@ -34,14 +59,15 @@ export function EChartsView({
   const container = useRef<HTMLDivElement>(null);
   const snapshot = useRef<HTMLImageElement>(null);
   const chart = useRef<EChartsType | null>(null);
-  // The animation the chart is drawn with: the option's own (SPC charts: off, #308), else on
-  // unless the user prefers reduced motion. The print snapshot restores it afterwards.
-  const animation = useRef(true);
+  const read = useRef<TokenReader | null>(null);
+  const themeVersion = useThemeVersion();
 
   useEffect(() => {
     const element = container.current;
     if (!element) return undefined;
-    const instance = init(element, undefined, { renderer: 'canvas', height });
+    read.current = readTokens();
+    registerTheme(ECHARTS_THEME, echartsTheme(read.current, readFont()));
+    const instance = init(element, ECHARTS_THEME, { renderer: 'canvas', height });
     chart.current = instance;
     const resize = new ResizeObserver(() => {
       instance.resize({ height });
@@ -49,21 +75,18 @@ export function EChartsView({
     resize.observe(element);
     // Print (#146): the live canvas is resized and redrawn while the page is laid out for paper,
     // so it is hidden there and a still image of the chart as it is now is printed instead (a
-    // `data:` URL, which the CSP's img-src allows). Taken on `beforeprint` (Print button, Ctrl+P),
-    // after drawing once more without animation, so a chart still animating prints its end state.
+    // `data:` URL, which the CSP's img-src allows). Taken on `beforeprint` (Print button, Ctrl+P).
     const takeSnapshot = () => {
       const image = snapshot.current;
       if (!image) return;
-      instance.setOption({ animation: false });
       // `pixelRatio` multiplies the chart's on-screen CSS width (a 462 px chart gives 924 px),
       // not the paper's: the chart is laid out at the width it has on screen. Three times keeps
       // a chart from a narrow window sharp when the image is stretched to the A4 text width.
       image.src = instance.getDataURL({
         type: 'png',
         pixelRatio: PRINT_PIXEL_RATIO,
-        backgroundColor: '#ffffff',
+        backgroundColor: readTokens()('surface'),
       });
-      instance.setOption({ animation: animation.current });
     };
     window.addEventListener('beforeprint', takeSnapshot);
     return () => {
@@ -74,17 +97,19 @@ export function EChartsView({
     };
   }, [height]);
 
+  // The theme on `<html>` changed (UX-12): the tokens' new values into the theme and the option.
   useEffect(() => {
-    animation.current = typeof option.animation === 'boolean' ? option.animation : !reducedMotion();
-    chart.current?.setOption(
-      {
-        ...option,
-        animation: animation.current,
-        tooltip: { renderMode: 'richText', ...(option.tooltip as object | undefined) },
-      },
-      { notMerge: true },
-    );
-  }, [option, height]);
+    if (themeVersion === 0 || !chart.current) return;
+    read.current = readTokens();
+    registerTheme(ECHARTS_THEME, echartsTheme(read.current, readFont()));
+    chart.current.setTheme(ECHARTS_THEME);
+  }, [themeVersion]);
+
+  useEffect(() => {
+    const instance = chart.current;
+    if (!instance) return;
+    instance.setOption(themedOption(option, read.current ?? readTokens()), { notMerge: true });
+  }, [option, height, themeVersion]);
 
   return (
     <>

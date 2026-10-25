@@ -18,14 +18,22 @@ import {
   requestUrl,
   result,
 } from '../test/oee-fixtures.ts';
-import { renderApp } from '../test/render-app.tsx';
+import { renderApp, settle } from '../test/render-app.tsx';
 import { expectDecimals } from '../test/decimals.ts';
 
-// jsdom has no canvas: the chart is a stub, the tables beside it carry the values.
-vi.mock('../chart/echarts-view.tsx', () => ({ EChartsView: () => null }));
+// jsdom has no canvas: the chart is a stub, the tables beside it carry the values. It records
+// every option it is given (UX-1f: an unrelated re-render must hand it the same option).
+const charts = vi.hoisted(() => ({ options: [] as unknown[] }));
+vi.mock('../chart/echarts-view.tsx', () => ({
+  EChartsView: ({ option }: { option: unknown }) => {
+    charts.options.push(option);
+    return null;
+  },
+}));
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  charts.options.length = 0;
 });
 
 function api(overrides: Record<string, (url: URL) => Response> = {}) {
@@ -133,6 +141,40 @@ describe('OEE dashboard', () => {
     const hour = screen.getByTestId('hour-2026-10-15T04:00:00.000Z').querySelectorAll('td')[1];
     expect(hour?.dataset.decimal).toBe('n/a');
     expect(expectDecimals(document.body).length).toBeGreaterThanOrEqual(20);
+  });
+
+  it('hands each chart the same option when it re-renders without new data (UX-1f)', async () => {
+    // A new option redraws the chart (`notMerge`) and drops an open tooltip: a push that changes
+    // nothing the charts show re-renders them but must not build their options again.
+    vi.stubGlobal('fetch', api());
+    const app = await renderApp('/oee');
+    await app.open();
+    await screen.findByTestId('pareto-BREAKDOWN/SPINDLE-OVERLOAD');
+    await screen.findByTestId('hour-2026-10-15T04:00:00.000Z');
+    await waitFor(() => {
+      expect(app.factory.last.sent.map((message) => message.topic)).toContain('oee:cell-m1');
+    });
+    // A bucket of another shift for the focused work center: its live value changes, the shown
+    // buckets don't.
+    const otherShift = (revision: number) => ({
+      type: 'oee' as const,
+      topic: 'oee:cell-m1',
+      hour: null,
+      shift: bucket('cell-m1', {
+        key: '2026-10-15/B',
+        shiftKey: '2026-10-15/B',
+        revision,
+      }),
+    });
+    await app.push(otherShift(1));
+    await settle(() => undefined);
+    expect(new Set(charts.options.slice(-3)).size).toBe(3);
+    const drawn = new Set(charts.options);
+    const renders = charts.options.length;
+    await app.push(otherShift(2));
+    await settle(() => undefined);
+    expect(charts.options.length).toBeGreaterThan(renders);
+    for (const option of charts.options.slice(renders)) expect(drawn.has(option)).toBe(true);
   });
 
   it('subscribes to every work center and machine and applies pushed buckets', async () => {

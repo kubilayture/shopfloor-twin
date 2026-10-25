@@ -23,6 +23,7 @@ import {
 import { useCan, useUnsavedDraft } from '../auth/auth.tsx';
 import { EChart } from '../chart/echart.tsx';
 import { spcChartOption } from '../chart/spc-options.ts';
+import { CHART_SIZES } from '../chart/theme.ts';
 import { useHeadingFocus } from '../components/heading-focus.ts';
 import { QueryError } from '../components/query-error.tsx';
 import {
@@ -394,7 +395,7 @@ function ChartFigure({
       title={CHART_TEXT[chart].label}
       description={`${CHART_TEXT[chart].label}: ${String(points.length)} points, ${String(firing.length)} firing a rule, ${String(provisional)} provisional; the values are in the tables below.`}
       option={option}
-      height={240}
+      height={CHART_SIZES.compact}
     >
       <p className="mt-2 text-sm" data-testid={`spc-summary-${chart}`}>
         {points.length} points ({provisional} provisional), {firing.length} firing a rule.

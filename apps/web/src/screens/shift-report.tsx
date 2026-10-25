@@ -9,7 +9,7 @@ import {
 } from '@shopfloor/contracts/mes-api';
 import { skipToken, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router';
-import { useEffect, useId, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useRef, type ReactNode } from 'react';
 import {
   getReasonCodes,
   getShiftReport,
@@ -19,7 +19,7 @@ import {
 } from '../api/client.ts';
 import { queryKeys, useAlarmConfig } from '../api/queries.ts';
 import { EChart } from '../chart/echart.tsx';
-import { paretoOption } from '../chart/oee-options.ts';
+import { paretoOption, paretoReading } from '../chart/oee-options.ts';
 import { useHeadingFocus } from '../components/heading-focus.ts';
 import { QueryError } from '../components/query-error.tsx';
 import { ShiftPicker, shiftLabel, useShiftSelection } from '../components/shift-picker.tsx';
@@ -501,7 +501,12 @@ function DowntimeSection({
   readonly names: ReadonlyMap<string, string>;
 }) {
   const { downtime } = report;
-  const pareto = downtime.reasons.length > 0 ? paretoOption({ reasons: downtime.reasons }) : null;
+  // Memoised on the reasons: the same option across unrelated re-renders (a new one redraws the
+  // chart and drops an open tooltip).
+  const pareto = useMemo(
+    () => (downtime.reasons.length > 0 ? paretoOption({ reasons: downtime.reasons }) : null),
+    [downtime.reasons],
+  );
   return (
     <section
       aria-labelledby="report-downtime-title"
@@ -542,16 +547,15 @@ function DowntimeSection({
           ) : null}
         </dd>
       </dl>
-      <div className="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-2 print:block">
+      <div className="mt-3 grid grid-cols-1 items-start gap-4 lg:grid-cols-2 print:block">
         <EChart
           testId="report-pareto-chart"
           title="Availability loss by reason"
-          description="Horizontal bars of the availability loss by reason, own and external, largest first; the table lists every value."
+          description={`${paretoReading({ reasons: downtime.reasons })}; the table lists every value.`}
           option={pareto?.option ?? null}
-          {...(pareto ? { height: pareto.height } : {})}
-        >
-          {pareto ? null : <p className="text-sm">No availability loss in this shift.</p>}
-        </EChart>
+          {...(pareto ? { height: pareto.height } : { height: 160 })}
+          empty="No availability loss in this shift."
+        />
         <div className="min-w-0">
           <h3 className="font-semibold">Pareto by reason</h3>
           <div className={tableBox}>

@@ -48,7 +48,7 @@ function CartonStatus({ carton }: { readonly carton: CartonTraceDto['carton'] })
           Closed
         </Badge>
       ) : (
-        <Badge tone="info" title="Still filling">
+        <Badge tone="neutral" variant="outline" title="Still filling">
           Open
         </Badge>
       )}

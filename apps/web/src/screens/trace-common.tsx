@@ -60,10 +60,12 @@ export function useMachineName(): (id: string) => ReactNode {
   });
   return (id) => {
     const name = list.data?.find((item) => item.id.toLowerCase() === id.toLowerCase())?.name;
-    if (name === undefined) return <Code>{id}</Code>;
+    if (name === undefined) return <Code className="whitespace-nowrap">{id}</Code>;
     return (
+      // The name and the id each keep to one line (never "Manual assembly sta-/tion").
       <span className="inline-flex flex-wrap items-baseline gap-x-1.5">
-        <span>{name}</span> <Code className="text-ink-secondary">{id}</Code>
+        <span className="whitespace-nowrap">{name}</span>{' '}
+        <Code className="whitespace-nowrap text-ink-secondary">{id}</Code>
       </span>
     );
   };
@@ -83,7 +85,7 @@ export const TRACE_BACK: PageHeaderBack = {
 export function idTitle(kind: string, id: string): ReactNode {
   return (
     <>
-      {kind} <Code>{id}</Code>
+      {kind} <Code className="whitespace-nowrap">{id}</Code>
     </>
   );
 }
@@ -222,7 +224,7 @@ export function HeaderFacts({
       {facts.map(([label, value]) => (
         <div key={label} className="flex min-w-0 items-baseline gap-1.5">
           <dt className="text-ink-secondary">{label}</dt>
-          <dd className="min-w-0">{value}</dd>
+          <dd className="min-w-0 whitespace-nowrap">{value}</dd>
         </div>
       ))}
     </dl>
@@ -548,6 +550,8 @@ export function Holds({
             'data-subject-kind': hold.subject.kind,
             'data-subject-id': hold.subject.id,
           })}
+          // The bar says "blocks shipping" (open and rejected alike), not the hold's state: the
+          // badge beside it carries the state (a rejected hold is a neutral solid badge, 2.6).
           rowTone={(hold) => (hold.state === 'released' ? undefined : 'alarm')}
           columns={[
             {

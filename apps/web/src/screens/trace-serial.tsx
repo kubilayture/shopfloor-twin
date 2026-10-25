@@ -76,7 +76,7 @@ function Crew({ record }: { readonly record: TraceRecordDto }) {
     <ul data-testid="record-crew" data-count={String(record.crew.length)} className="space-y-1">
       {record.crew.map((member) => (
         <li key={`${String(member.userId)}-${member.from}`} data-user={member.username}>
-          <span className="font-medium">{member.username}</span>
+          <span className="font-medium whitespace-nowrap">{member.username}</span>
           <span className="block text-xs text-ink-secondary">
             from <PlantTime at={member.from} />
             {member.to === null ? (
@@ -118,7 +118,11 @@ function Reading({ record }: { readonly record: TraceRecordDto }) {
 /** The device operator: the raw user name as reported, nobody, or not reported (6.3). */
 function Operator({ record }: { readonly record: TraceRecordDto }) {
   return (
-    <span data-testid="record-operator" data-reported={String(record.operatorReported)}>
+    <span
+      data-testid="record-operator"
+      data-reported={String(record.operatorReported)}
+      className="whitespace-nowrap"
+    >
       {record.operator ??
         (record.operatorReported ? (
           <Missing reason="No device operator signed on" />
@@ -187,6 +191,7 @@ function Records({ unit }: { readonly unit: TraceUnitDto }) {
             {
               key: 'machine',
               header: 'Machine',
+              width: '11rem',
               cell: (record) => (
                 <span data-testid="record-machine">{machine(record.equipment)}</span>
               ),

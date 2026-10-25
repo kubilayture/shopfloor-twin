@@ -87,7 +87,18 @@ function Master({ trace, run }: { readonly trace: LotTraceDto; readonly run: num
         {trace.consumed}
       </span>,
     ],
-    ['Units', <Quantity key="units" value={trace.units.length} />],
+    [
+      'Units',
+      trace.truncated ? (
+        // Truncated: the MES lists the first N of a larger number it does not count (T-04).
+        <span key="units" className="tabular-nums" data-testid="lot-units-count">
+          <Quantity value={trace.units.length} /> of more than{' '}
+          <Quantity value={GENEALOGY_LIMITS.units} />
+        </span>
+      ) : (
+        <Quantity key="units" value={trace.units.length} />
+      ),
+    ],
     [
       'Received (ERP)',
       master ? (

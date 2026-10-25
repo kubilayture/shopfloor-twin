@@ -488,6 +488,8 @@ describe('lot page (forward trace)', () => {
     // An operator may not hold: no link to the form.
     expect(screen.queryByTestId('trace-hold-open')).toBeNull();
     expect(screen.getByTestId('lot-truncated')).toBeTruthy();
+    // The units listed of a larger number the MES does not count: "2 of more than 5000".
+    expect(screen.getByTestId('lot-units-count').textContent).toBe('2 of more than 5000');
     expect(screen.getByTestId('trace-finality').dataset.notFinal).toBe('ASM-01');
     expect(screen.getByTestId('lot-master').dataset).toMatchObject({
       status: 'active',
@@ -587,6 +589,10 @@ describe('carton page', () => {
     expect(page.dataset).toMatchObject({ status: 'open', members: '1', capacity: '20' });
     expect(screen.getByTestId('carton-held')).toBeTruthy();
     expect(screen.getByTestId('carton-status').textContent).toBe('OpenHeld');
+    // Open is a normal state, neutral (only Held is raised).
+    expect(within(screen.getByTestId('carton-status')).getByText('Open').className).toContain(
+      'text-neutral-ink',
+    );
     expect(screen.getByTestId('carton-members').textContent).toBe('1 of 20');
     expect(screen.getByTestId('carton-units').dataset.count).toBe('1');
     expect(screen.getByTestId('carton-unit-3-42').dataset.serial).toBe('VB-100-000042');
@@ -731,6 +737,12 @@ describe('trace screens on the design system (UX-8, #331)', () => {
       );
     });
     expect(within(assembly).getByRole('rowheader').textContent).toBe('OP30');
+    // User names and ids never break at a hyphen ("reconcile-/operator").
+    expect(within(assembly).getByText('mehmet').className).toContain('whitespace-nowrap');
+    expect(within(assembly).getByTestId('record-operator').className).toContain(
+      'whitespace-nowrap',
+    );
+    expect(within(assembly).getByText('Machine asm-01').className).toContain('whitespace-nowrap');
     const leak = screen.getByTestId('record-OP40-1');
     expect(within(leak).getByTestId('record-machine').textContent).toBe('LKT-01');
     expect(within(leak).getByText('Rework').className).toContain('bg-warn-soft');

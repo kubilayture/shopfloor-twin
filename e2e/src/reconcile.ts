@@ -97,10 +97,20 @@
  * RECONCILE_DEADLINE_MS (overall limit, default
  * 25 minutes), RECONCILE_SILENT_WAIT_MS (how long past the margin, in simulated time, the run may go
  * on for a silent machine's next fact; default 2 hours, 2 wall minutes at 60×). SIGINT and SIGTERM remove the stack and the env file before exiting.
+ *
+ * UX-1g (#321): with RECONCILE_A11Y=1 the last pass, once its checks are done and before its stack
+ * goes, runs Playwright's `a11y` project, the visual and accessibility harness (browser/a11y):
+ * report-only, reading pages only, within A11Y_BUDGET_MS (default 15 minutes, added to that pass's
+ * deadline); its report goes to A11Y_RESULTS (default e2e/results/a11y/; a folder outside
+ * e2e/results survives the next run's cleanup, for a before/after pair). Off by default, so the
+ * gate's run is unchanged. Its variables (A11Y_ROUTES, A11Y_ROLES, A11Y_WIDTHS, A11Y_STATES,
+ * A11Y_BUDGET_MS) are checked before anything starts: a typo fails in seconds. The harness is left
+ * out when the pass has already failed.
+ * The pass fails only if the harness cannot run.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { formatIssues, loadPlantConfig } from '@shopfloor/plant-config';
 import { shiftSegments } from '@shopfloor/shift-calendar';
@@ -163,6 +173,8 @@ import {
   type ShiftReportCheck,
 } from './shift-checks.ts';
 import { pruneBuildCache } from '@shopfloor/test-kit/heavy-lock';
+import { ROUTES as A11Y_ROUTES } from '../browser/a11y/routes.ts';
+import { budgetFromEnv, filterFromEnv, validateRoutes } from './a11y-report.ts';
 import { REPO, Stack, removeImages } from './stack.ts';
 import { episodeIdentity, traceConfigOf, type TraceSectionJson } from './trace-shapes.ts';
 
@@ -270,6 +282,29 @@ const ORDER_USERS = {
 const skipBuild = process.env.RECONCILE_SKIP_BUILD === '1';
 const imageTag = process.env.RECONCILE_TAG ?? 'reconcile';
 const withBrowser = process.env.RECONCILE_BROWSER !== '0';
+/** UX-1g (#321): the visual and accessibility harness after the last pass, opt-in. */
+const withA11y = process.env.RECONCILE_A11Y === '1';
+let A11Y_BUDGET_MS = 0;
+if (withA11y) {
+  try {
+    A11Y_BUDGET_MS = budgetFromEnv(process.env);
+    validateRoutes(filterFromEnv(process.env), A11Y_ROUTES);
+  } catch (error) {
+    console.error(`RECONCILE_A11Y=1: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(2);
+  }
+  if (!withBrowser) {
+    console.warn(
+      'RECONCILE_A11Y=1 with RECONCILE_BROWSER=0: no browser, so the harness does not run',
+    );
+  }
+}
+/** Where the harness writes; relative to where the command was started. */
+const A11Y_RESULTS = process.env.A11Y_RESULTS
+  ? resolve(process.env.INIT_CWD ?? process.cwd(), process.env.A11Y_RESULTS)
+  : join(RESULTS, 'a11y');
+/** The harness's time on top of its budget: logins, the id discovery, the last page. */
+const A11Y_MARGIN_MS = 5 * 60_000;
 
 const started = Date.now();
 const log = (message: string) => {
@@ -375,6 +410,8 @@ interface Report {
   quality?: Record<string, unknown>;
   incidents?: unknown[];
   rejectedMessages?: number;
+  /** UX-1g (#321): the visual and accessibility harness's exit code and where its report is. */
+  a11y?: { exitCode: number; report: string };
   /** The live checks: the overview (#100), the OEE dashboard (#123) and the alarms (#147). */
   browser?: { exitCode: number; report?: unknown; oee?: unknown; alarms?: unknown };
   /**
@@ -550,12 +587,15 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
   process.once('SIGTERM', stop);
   // An overall deadline below the CI job's limit: a slow run fails here, with its report and
   // logs, instead of being cancelled without them.
+  // The harness (UX-1g) runs on the last pass and has its own budget on top.
+  const a11y = withA11y && withBrowser && pass === passNames.at(-1);
+  const deadlineMs = DEADLINE_MS + (a11y ? A11Y_BUDGET_MS + A11Y_MARGIN_MS : 0);
   let deadlineTimer: NodeJS.Timeout | undefined;
   const deadline = new Promise<never>((_, reject) => {
     deadlineTimer = setTimeout(() => {
       browserChild?.kill('SIGTERM');
-      reject(new Error(`the run exceeded its deadline of ${String(DEADLINE_MS)} ms`));
-    }, DEADLINE_MS);
+      reject(new Error(`the run exceeded its deadline of ${String(deadlineMs)} ms`));
+    }, deadlineMs);
   });
   try {
     await Promise.race([
@@ -663,6 +703,8 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
         // command confirmed by its device fact before the next: the order headless applies them
         // in (ADR-0030, B3). Only then the injections and the resume.
         let webUrl = '';
+        /** Detail ids the harness (UX-1g) cannot find on a list page, as this pass knows them. */
+        const a11yIds: Record<string, string> = { shift: shiftKey };
         let ctx: PassContext | undefined;
         const ordersReport: Record<string, unknown> = {};
         const goldenOrders = orders
@@ -1287,6 +1329,8 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
             .find((u) => u.partId === signal?.first.partId)?.serial;
           if (!signal || !signalSerial)
             fail(`the drift's episode ${String(driftKey)} or its serial`);
+          a11yIds.lot = QUALITY_LOT;
+          if (signalSerial) a11yIds.serial = signalSerial;
           const exitCode = await runBrowser('quality-final', {
             RECONCILE_WEB_URL: webUrl,
             RECONCILE_MES_URL: mes.base,
@@ -1398,6 +1442,30 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
           }
         }
         phase('coding');
+
+        // 7. UX-1g (#321): the visual and accessibility harness, report-only, on this stack with
+        //    its data and its users; it reads pages only. It fails the pass only if it cannot run.
+        if (a11y && report.failures.length > 0) {
+          log('the pass already failed: the accessibility harness is left out');
+        } else if (a11y) {
+          log(`the visual and accessibility harness (budget ${String(A11Y_BUDGET_MS)} ms)`);
+          const exitCode = await runBrowser('a11y', {
+            RECONCILE_WEB_URL: webUrl,
+            RECONCILE_RESULTS: RESULTS_DIR,
+            A11Y_RESULTS,
+            A11Y_BUDGET_MS: String(A11Y_BUDGET_MS),
+            A11Y_IDS: JSON.stringify({
+              ...a11yIds,
+              ...(JSON.parse(process.env.A11Y_IDS ?? '{}') as Record<string, string>),
+            }),
+            ...browserLogin,
+          });
+          report.a11y = { exitCode, report: join(A11Y_RESULTS, 'report.json') };
+          if (exitCode !== 0) {
+            fail(`the accessibility harness could not run (Playwright exit ${String(exitCode)})`);
+          }
+          phase('a11y');
+        }
       })(),
       deadline,
     ]);
@@ -1617,6 +1685,7 @@ function summarize(report: Report): void {
   if (report.incidents) console.log(`  incidents: ${JSON.stringify(report.incidents)}`);
   if (report.browser) console.log(`  browser: ${JSON.stringify(report.browser)}`);
   if (report.coding) console.log(`  coding: ${JSON.stringify(report.coding)}`);
+  if (report.a11y) console.log(`  a11y (report-only): ${JSON.stringify(report.a11y)}`);
   console.log(
     report.failures.length === 0
       ? 'RECONCILE-OK'

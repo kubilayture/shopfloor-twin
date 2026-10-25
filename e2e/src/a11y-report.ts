@@ -1,0 +1,588 @@
+/**
+ * The visual and accessibility harness's report (UX-1g, #321): its shape, the filter a pull request
+ * narrows it with, the human summary and the before/after diff. Pure: the Playwright project
+ * (`e2e/browser/a11y`) writes the report, `src/a11y-diff.ts` compares two of them.
+ */
+
+/** axe's impact levels, worst first. */
+export const IMPACTS = ['critical', 'serious', 'moderate', 'minor'] as const;
+export type Impact = (typeof IMPACTS)[number];
+
+/** The widths every page is checked at (ux-plan "Rules for every issue": responsive). */
+export const WIDTHS = [1440, 1280, 1024, 768, 390] as const;
+
+/** Each page's state: data-rich, empty (a filter or period with nothing in it), not found. */
+export const STATES = ['data', 'empty', 'not-found'] as const;
+export type PageState = (typeof STATES)[number];
+
+/** The roles a page is checked as; `signed-out` for the login and the terminal's sign-on. */
+export const A11Y_ROLES = [
+  'supervisor',
+  'operator',
+  'quality',
+  'maintenance',
+  'admin',
+  'signed-out',
+] as const;
+export type A11yRole = (typeof A11Y_ROLES)[number];
+
+/** One axe rule's violation on one page at one width. */
+export interface Violation {
+  readonly id: string;
+  readonly impact: Impact;
+  readonly help: string;
+  /** How many elements break the rule. */
+  readonly nodes: number;
+  /** The first few elements' selectors, to find them. */
+  readonly targets: readonly string[];
+}
+
+export type ImpactCounts = Record<Impact, number>;
+
+/** The colour themes; only `light` until UX-12 ships the switch (UX-F1 adds `dark`). */
+export const THEMES = ['light', 'dark'] as const;
+export type Theme = (typeof THEMES)[number];
+
+/** One route in one state, as one role, at one width (in one theme). */
+export interface Entry {
+  readonly route: string;
+  readonly state: PageState;
+  readonly role: A11yRole;
+  readonly width: number;
+  /** Absent in a report from before the field: `light`, so diffs across it keep matching. */
+  readonly theme?: Theme;
+  /** The path loaded, with its query. */
+  readonly url: string;
+  readonly title: string;
+  /** Relative to the report's folder. */
+  readonly screenshot: string | null;
+  /** The page settled (no "Loading…" left in `main`) before it was measured. */
+  readonly ready: boolean;
+  /** The page scrolls sideways (wider than the viewport): only a table's or chart's frame may. */
+  readonly overflowX: boolean;
+  /** Violations by impact; `nodes` summed per rule is not counted here, rules are. */
+  readonly counts: ImpactCounts;
+  readonly violations: readonly Violation[];
+  /** The page could not be measured (navigation or axe failed); counted as not covered. */
+  readonly error?: string;
+}
+
+/** A combination the run did not reach (the budget) or could not build (no id for a detail). */
+export interface Skipped {
+  readonly route: string;
+  readonly state: PageState;
+  readonly role: A11yRole;
+  readonly reason: string;
+}
+
+export interface FocusStop {
+  readonly element: string;
+  readonly region: 'nav' | 'header' | 'main' | 'other';
+  readonly visible: boolean;
+  readonly inTable: number | null;
+}
+
+export interface KeyboardSample {
+  readonly route: string;
+  readonly role: A11yRole;
+  readonly width: number;
+  readonly stops: readonly FocusStop[];
+  /** Stops inside one table before the focus leaves it (G-33): the longest such run. */
+  readonly longestTableRun: number;
+  readonly findings: readonly string[];
+}
+
+export interface OverlayCheck {
+  readonly route: string;
+  readonly width: number;
+  readonly kind: string;
+  readonly trigger: string;
+  /** Each check's outcome; `null` where it does not apply. */
+  readonly checks: Readonly<Record<string, boolean | null>>;
+  readonly findings: readonly string[];
+}
+
+export interface TouchScrollCheck {
+  readonly engine: string;
+  readonly route: string;
+  readonly ran: boolean;
+  readonly detail: Readonly<Record<string, unknown>>;
+  readonly findings: readonly string[];
+}
+
+export interface A11yReport {
+  readonly version: 1;
+  readonly startedAt: string;
+  readonly finishedAt: string;
+  readonly budgetMs: number;
+  readonly elapsedMs: number;
+  /** The budget ran out: `coverage.notReached` lists what was left. */
+  readonly stoppedByBudget: boolean;
+  readonly axe: { readonly version: string; readonly tags: readonly string[] };
+  readonly filter: A11yFilter;
+  readonly coverage: {
+    /** Pages: route × state × role × width. */
+    readonly planned: number;
+    readonly measured: number;
+    /** Pages that failed to load or to measure. */
+    readonly failed: number;
+    /** Combinations without an id for their detail route (each at every width, not planned). */
+    readonly skipped: readonly Skipped[];
+    /** Combinations the budget left (each at every width), and their pages. */
+    readonly notReached: readonly Skipped[];
+    readonly notReachedPages: number;
+    /** Roles whose login failed (one row each), and the planned pages it cost. */
+    readonly loginFailed: readonly Skipped[];
+    readonly loginFailedPages: number;
+  };
+  readonly entries: readonly Entry[];
+  readonly titles: {
+    /** The `document.title` per route: its first state measured as the supervisor (data first). */
+    readonly byRoute: Readonly<Record<string, string>>;
+    readonly duplicates: readonly { readonly title: string; readonly routes: readonly string[] }[];
+  };
+  readonly keyboard: readonly KeyboardSample[];
+  readonly overlays: readonly OverlayCheck[];
+  readonly touchScroll: readonly TouchScrollCheck[];
+  /**
+   * Requests other than GET and HEAD the harness caused, the login excepted: it must read only,
+   * so each is a finding (`POST /api/v1/…`).
+   */
+  readonly writes: readonly string[];
+}
+
+/** What a run covers: each list empty means all. */
+export interface A11yFilter {
+  readonly routes: readonly string[];
+  readonly roles: readonly A11yRole[];
+  readonly widths: readonly number[];
+  readonly states: readonly PageState[];
+}
+
+const list = (value: string | undefined): string[] =>
+  (value ?? '')
+    .split(',')
+    .map((v) => v.trim())
+    .filter((v) => v !== '');
+
+/**
+ * The filter from the environment: `A11Y_ROUTES` (route ids or path prefixes, `shell` for the nav
+ * drawer checks), `A11Y_ROLES`, `A11Y_WIDTHS`, `A11Y_STATES`, each a comma list. An unknown role,
+ * width or state is an error: a typo must not silently check nothing.
+ */
+export function filterFromEnv(env: Readonly<Record<string, string | undefined>>): A11yFilter {
+  const roles = [...new Set(list(env.A11Y_ROLES))];
+  const widths = [...new Set(list(env.A11Y_WIDTHS).map(Number))];
+  const states = [...new Set(list(env.A11Y_STATES))];
+  const badRole = roles.find((r) => !(A11Y_ROLES as readonly string[]).includes(r));
+  if (badRole !== undefined) throw new Error(`A11Y_ROLES: unknown role ${badRole}`);
+  const badWidth = widths.find((w) => !Number.isInteger(w) || w < 320 || w > 3840);
+  if (badWidth !== undefined) throw new Error(`A11Y_WIDTHS: not a width ${String(badWidth)}`);
+  const badState = states.find((s) => !(STATES as readonly string[]).includes(s));
+  if (badState !== undefined) throw new Error(`A11Y_STATES: unknown state ${badState}`);
+  return {
+    routes: [...new Set(list(env.A11Y_ROUTES))],
+    roles: roles as A11yRole[],
+    widths,
+    states: states as PageState[],
+  };
+}
+
+/** The pseudo-route of the shell's checks: the nav drawer and touch scrolling behind it. */
+export const SHELL = 'shell';
+
+/**
+ * Every `A11Y_ROUTES` entry must be `shell`, a route id or a path prefix (`/orders`) that selects
+ * at least one route: a typo throws, naming each bad entry, rather than checking nothing.
+ */
+export function validateRoutes(
+  filter: A11yFilter,
+  routes: readonly { readonly id: string; readonly path: string }[],
+): void {
+  const bad = filter.routes.filter(
+    (entry) =>
+      entry !== SHELL &&
+      !routes.some((r) => r.id === entry) &&
+      !(entry.startsWith('/') && routes.some((r) => pathMatches(r.path, entry))),
+  );
+  if (bad.length > 0) {
+    throw new Error(
+      `A11Y_ROUTES: no route ${bad.join(', ')} (route ids: ${routes.map((r) => r.id).join(', ')}; or a path prefix, or ${SHELL})`,
+    );
+  }
+}
+
+/** `A11Y_BUDGET_MS`: a positive whole number of milliseconds, 15 minutes by default. */
+export function budgetFromEnv(env: Readonly<Record<string, string | undefined>>): number {
+  const raw = env.A11Y_BUDGET_MS;
+  if (raw === undefined || raw === '') return 15 * 60_000;
+  const ms = Number(raw);
+  if (!Number.isSafeInteger(ms) || ms <= 0) {
+    throw new Error(`A11Y_BUDGET_MS: not a positive whole number of milliseconds: ${raw}`);
+  }
+  return ms;
+}
+
+/** Whether a route (its id and path pattern) passes the filter's routes. */
+export function routeSelected(filter: A11yFilter, id: string, path: string): boolean {
+  if (filter.routes.length === 0) return true;
+  return filter.routes.some((r) => r === id || (r.startsWith('/') && pathMatches(path, r)));
+}
+
+/** `/orders` selects `/orders` and `/orders/$id`, not `/ordersx`; `/` selects only `/`. */
+function pathMatches(path: string, prefix: string): boolean {
+  if (prefix === '/') return path === '/';
+  const p = prefix.endsWith('/') ? prefix.slice(0, -1) : prefix;
+  return path === p || path.startsWith(`${p}/`);
+}
+
+export const widthsOf = (filter: A11yFilter): readonly number[] =>
+  filter.widths.length > 0 ? filter.widths : WIDTHS;
+
+export const rolesOf = (filter: A11yFilter): readonly A11yRole[] =>
+  filter.roles.length > 0 ? filter.roles : A11Y_ROLES;
+
+export const statesOf = (filter: A11yFilter): readonly PageState[] =>
+  filter.states.length > 0 ? filter.states : STATES;
+
+/** The shape of axe's result this report keeps (a structural subset of axe-core's). */
+export interface AxeResultLike {
+  readonly violations: readonly {
+    readonly id: string;
+    readonly impact?: string | null;
+    readonly help: string;
+    readonly nodes: readonly { readonly target: readonly unknown[] }[];
+  }[];
+}
+
+const isImpact = (value: unknown): value is Impact =>
+  (IMPACTS as readonly unknown[]).includes(value);
+
+export const zeroCounts = (): ImpactCounts => ({ critical: 0, serious: 0, moderate: 0, minor: 0 });
+
+/** axe's violations, worst first, with counts by impact (one per rule; no impact counts minor). */
+export function fromAxe(result: AxeResultLike): {
+  counts: ImpactCounts;
+  violations: Violation[];
+} {
+  const violations = result.violations
+    .map((v): Violation => ({
+      id: v.id,
+      impact: isImpact(v.impact) ? v.impact : 'minor',
+      help: v.help,
+      nodes: v.nodes.length,
+      targets: v.nodes.slice(0, 3).map((n) => n.target.map(String).join(' ')),
+    }))
+    .sort((a, b) => IMPACTS.indexOf(a.impact) - IMPACTS.indexOf(b.impact) || cmp(a.id, b.id));
+  const counts = zeroCounts();
+  for (const v of violations) counts[v.impact] += 1;
+  return { counts, violations };
+}
+
+const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+/** Titles shared by more than one route (G-05: each route's title is distinct). */
+export function duplicateTitles(
+  byRoute: Readonly<Record<string, string>>,
+): { title: string; routes: string[] }[] {
+  const routes = new Map<string, string[]>();
+  for (const [route, title] of Object.entries(byRoute)) {
+    routes.set(title, [...(routes.get(title) ?? []), route]);
+  }
+  return [...routes]
+    .filter(([, r]) => r.length > 1)
+    .map(([title, r]) => ({ title, routes: r.sort() }))
+    .sort((a, b) => cmp(a.title, b.title));
+}
+
+/**
+ * The longest run of consecutive focus stops inside one table (G-33): `inTable` is the table's
+ * index on the page, `null` outside any table.
+ */
+export function longestTableRun(stops: readonly Pick<FocusStop, 'inTable'>[]): number {
+  let longest = 0;
+  let run = 0;
+  let table: number | null = null;
+  for (const stop of stops) {
+    if (stop.inTable !== null && stop.inTable === table) run += 1;
+    else run = stop.inTable === null ? 0 : 1;
+    table = stop.inTable;
+    longest = Math.max(longest, run);
+  }
+  return longest;
+}
+
+/** A page's key: a missing theme is `light`, so a report from before the field still matches. */
+export const entryKey = (e: Pick<Entry, 'route' | 'state' | 'role' | 'width' | 'theme'>): string =>
+  `${e.route}|${e.state}|${e.role}|${String(e.width)}|${e.theme ?? 'light'}`;
+
+const sum = (a: ImpactCounts, b: ImpactCounts): ImpactCounts => ({
+  critical: a.critical + b.critical,
+  serious: a.serious + b.serious,
+  moderate: a.moderate + b.moderate,
+  minor: a.minor + b.minor,
+});
+
+const countsText = (c: ImpactCounts) => IMPACTS.map((i) => `${String(c[i])} ${i}`).join(', ');
+
+/** Markdown table cell text: a pipe would end the cell. */
+const cell = (text: string) => text.replaceAll('|', '\\|').replaceAll('\n', ' ');
+
+/**
+ * The human summary (markdown): coverage, totals by impact, each route's worst page, the rules seen
+ * most, titles, keyboard, overlays and the touch-scroll check.
+ */
+export function summarize(report: A11yReport): string {
+  const measured = report.entries.filter((e) => e.error === undefined);
+  const total = measured.reduce((acc, e) => sum(acc, e.counts), zeroCounts());
+  const out: string[] = [];
+  out.push('# Visual and accessibility harness (UX-1g)', '');
+  out.push(
+    `Report-only. axe ${report.axe.version} (${report.axe.tags.join(', ')}), ${String(
+      Math.round(report.elapsedMs / 1000),
+    )} s of a ${String(Math.round(report.budgetMs / 60_000))}-minute budget${
+      report.stoppedByBudget ? ' (**stopped by the budget**)' : ''
+    }.`,
+    '',
+  );
+  const f = report.filter;
+  const filterText = [
+    f.routes.length > 0 ? `routes ${f.routes.join(', ')}` : '',
+    f.roles.length > 0 ? `roles ${f.roles.join(', ')}` : '',
+    f.widths.length > 0 ? `widths ${f.widths.join(', ')}` : '',
+    f.states.length > 0 ? `states ${f.states.join(', ')}` : '',
+  ].filter((t) => t !== '');
+  out.push(
+    `- **Coverage:** ${String(report.coverage.measured)} of ${String(report.coverage.planned)} pages measured (route × state × role × width), ${String(report.coverage.failed)} failed to load, ${String(report.coverage.notReachedPages)} not reached within the budget, ${String(report.coverage.loginFailedPages)} lost to a failed login${report.coverage.loginFailed.length > 0 ? ` (${report.coverage.loginFailed.map((l) => l.role).join(', ')})` : ''}; ${String(report.coverage.skipped.length)} route × state × role combinations skipped (no id).${filterText.length > 0 ? ` Filter: ${filterText.join('; ')}.` : ''}`,
+    `- **Rule violations (rule × page):** ${countsText(total)}.`,
+    `- **Pages wider than the viewport:** ${String(measured.filter((e) => e.overflowX).length)}.`,
+    '',
+  );
+
+  // Each route's worst page by (critical, serious) and the rules it breaks.
+  const byRoute = new Map<string, Entry[]>();
+  for (const e of measured) byRoute.set(e.route, [...(byRoute.get(e.route) ?? []), e]);
+  out.push('## Routes', '');
+  out.push(
+    '| Route | Pages | Critical | Serious | Moderate | Minor | Sideways scroll at | Rules |',
+    '| --- | --: | --: | --: | --: | --: | --- | --- |',
+  );
+  for (const [route, entries] of [...byRoute].sort(([a], [b]) => cmp(a, b))) {
+    const max = (i: Impact) => Math.max(...entries.map((e) => e.counts[i]));
+    const rules = new Set(entries.flatMap((e) => e.violations.map((v) => v.id)));
+    const overflow = [...new Set(entries.filter((e) => e.overflowX).map((e) => e.width))].sort(
+      (a, b) => b - a,
+    );
+    out.push(
+      `| ${route} | ${String(entries.length)} | ${IMPACTS.map((i) => String(max(i))).join(' | ')} | ${overflow.join(', ') || '–'} | ${[...rules].sort().join(', ') || '–'} |`,
+    );
+  }
+  out.push('', 'Counts are the most rules of that impact on any one page of the route.', '');
+
+  const rules = new Map<string, { impact: Impact; help: string; pages: number; nodes: number }>();
+  for (const e of measured) {
+    for (const v of e.violations) {
+      const r = rules.get(v.id) ?? { impact: v.impact, help: v.help, pages: 0, nodes: 0 };
+      rules.set(v.id, { ...r, pages: r.pages + 1, nodes: r.nodes + v.nodes });
+    }
+  }
+  out.push('## Rules', '');
+  if (rules.size === 0) out.push('No violation.', '');
+  else {
+    out.push('| Rule | Impact | Pages | Elements | Help |', '| --- | --- | --: | --: | --- |');
+    for (const [id, r] of [...rules].sort(
+      ([a, x], [b, y]) =>
+        IMPACTS.indexOf(x.impact) - IMPACTS.indexOf(y.impact) || y.pages - x.pages || cmp(a, b),
+    )) {
+      out.push(
+        `| ${id} | ${r.impact} | ${String(r.pages)} | ${String(r.nodes)} | ${cell(r.help)} |`,
+      );
+    }
+    out.push('');
+  }
+
+  out.push('## Page titles', '');
+  const titled = Object.keys(report.titles.byRoute).length;
+  out.push(
+    report.titles.duplicates.length === 0
+      ? `${String(titled)} routes, every title distinct.`
+      : `${String(titled)} routes; shared titles: ${report.titles.duplicates
+          .map((d) => `"${d.title}" (${d.routes.join(', ')})`)
+          .join('; ')}.`,
+    '',
+  );
+
+  out.push('## Keyboard', '');
+  if (report.keyboard.length === 0) out.push('Not sampled.', '');
+  else {
+    out.push(
+      '| Route | Width | Stops | Longest run in one table | Findings |',
+      '| --- | --: | --: | --: | --- |',
+    );
+    for (const k of report.keyboard) {
+      out.push(
+        `| ${k.route} | ${String(k.width)} | ${String(k.stops.length)} | ${String(k.longestTableRun)} | ${cell(k.findings.join('; ')) || '–'} |`,
+      );
+    }
+    out.push('');
+  }
+
+  out.push('## Overlays', '');
+  if (report.overlays.length === 0) out.push('None found.', '');
+  else {
+    out.push(
+      '| Route | Width | Kind | Trigger | Checks | Findings |',
+      '| --- | --: | --- | --- | --- | --- |',
+    );
+    for (const o of report.overlays) {
+      const checks = Object.entries(o.checks)
+        .filter(([, v]) => v !== null)
+        .map(([k, v]) => `${k} ${v ? 'yes' : '**no**'}`)
+        .join(', ');
+      out.push(
+        `| ${o.route} | ${String(o.width)} | ${o.kind} | ${cell(o.trigger)} | ${checks} | ${cell(o.findings.join('; ')) || '–'} |`,
+      );
+    }
+    out.push('');
+  }
+
+  out.push('## Writes', '');
+  out.push(
+    report.writes.length === 0
+      ? 'None: the harness only read.'
+      : `**The harness caused ${String(report.writes.length)}:** ${report.writes.slice(0, 10).join('; ')}.`,
+    '',
+  );
+
+  out.push('## Touch scrolling behind the open nav drawer', '');
+  if (report.touchScroll.length === 0) out.push('Not run.', '');
+  for (const t of report.touchScroll) {
+    out.push(
+      `- **${t.engine}** (${t.route}): ${t.ran ? (t.findings.length === 0 ? 'no finding' : t.findings.join('; ')) : `not run: ${t.findings.join('; ')}`}.`,
+    );
+  }
+  out.push('');
+  if (report.coverage.notReached.length > 0) {
+    out.push('## Not reached within the budget', '');
+    const groups = new Map<string, number>();
+    for (const s of report.coverage.notReached) {
+      const k = `${s.role} / ${s.state}`;
+      groups.set(k, (groups.get(k) ?? 0) + 1);
+    }
+    for (const [k, n] of groups) out.push(`- ${k}: ${String(n)} routes, at every width`);
+    out.push('');
+  }
+  return out.join('\n');
+}
+
+const NO_FILTER: A11yFilter = { routes: [], roles: [], widths: [], states: [] };
+
+/** A measured page inside the filter (its routes by id here: entries carry no path pattern). */
+const kept =
+  (filter: A11yFilter) =>
+  (e: Entry): boolean =>
+    e.error === undefined &&
+    (filter.routes.length === 0 || filter.routes.includes(e.route)) &&
+    (filter.roles.length === 0 || filter.roles.includes(e.role)) &&
+    (filter.widths.length === 0 || filter.widths.includes(e.width)) &&
+    (filter.states.length === 0 || filter.states.includes(e.state));
+
+export interface DiffRow {
+  readonly key: string;
+  readonly before: ImpactCounts | null;
+  readonly after: ImpactCounts | null;
+  readonly added: readonly string[];
+  readonly removed: readonly string[];
+}
+
+/**
+ * Before and after, page by page (route × state × role × width), limited to `filter`'s routes,
+ * roles, widths and states: the counts on each side and the rules each side has alone. Pages
+ * measured on one side only appear with `null` on the other.
+ */
+export function diffReports(
+  before: Pick<A11yReport, 'entries'>,
+  after: Pick<A11yReport, 'entries'>,
+  filter: A11yFilter = NO_FILTER,
+): DiffRow[] {
+  const keep = kept(filter);
+  const index = (entries: readonly Entry[]) =>
+    new Map(entries.filter(keep).map((e) => [entryKey(e), e] as const));
+  const b = index(before.entries);
+  const a = index(after.entries);
+  const keys = [...new Set([...b.keys(), ...a.keys()])].sort();
+  return keys.flatMap((key): DiffRow[] => {
+    const x = b.get(key);
+    const y = a.get(key);
+    const rulesX = new Set(x?.violations.map((v) => v.id) ?? []);
+    const rulesY = new Set(y?.violations.map((v) => v.id) ?? []);
+    const added = [...rulesY].filter((r) => !rulesX.has(r)).sort();
+    const removed = [...rulesX].filter((r) => !rulesY.has(r)).sort();
+    const same =
+      x !== undefined &&
+      y !== undefined &&
+      added.length === 0 &&
+      removed.length === 0 &&
+      IMPACTS.every((i) => x.counts[i] === y.counts[i]);
+    if (same) return [];
+    return [{ key, before: x?.counts ?? null, after: y?.counts ?? null, added, removed }];
+  });
+}
+
+/** The diff as markdown: totals on each side, then each changed page. */
+export function diffMarkdown(
+  before: Pick<A11yReport, 'entries'>,
+  after: Pick<A11yReport, 'entries'>,
+  filter: A11yFilter = NO_FILTER,
+): string {
+  const rows = diffReports(before, after, filter);
+  const totals = (r: Pick<A11yReport, 'entries'>) =>
+    r.entries.filter(kept(filter)).reduce((acc, e) => sum(acc, e.counts), zeroCounts());
+  const out = ['# Accessibility diff (UX-1g harness)', ''];
+  out.push(`- **Before:** ${countsText(totals(before))}.`);
+  out.push(`- **After:** ${countsText(totals(after))}.`);
+  const seriousAdded = rows.filter(
+    (r) =>
+      r.after !== null &&
+      (r.before === null
+        ? r.after.critical + r.after.serious > 0
+        : r.after.critical > r.before.critical || r.after.serious > r.before.serious),
+  );
+  out.push(
+    `- **Pages with more critical or serious rules than before:** ${String(seriousAdded.length)}.`,
+    '',
+  );
+  if (rows.length === 0) {
+    out.push('No page changed.');
+    return `${out.join('\n')}\n`;
+  }
+  const c = (x: ImpactCounts | null) =>
+    x === null ? 'not measured' : IMPACTS.map((i) => String(x[i])).join('/');
+  out.push(
+    '| Page (route, state, role, width, theme) | Before (c/s/m/m) | After | New rules | Gone rules |',
+    '| --- | --- | --- | --- | --- |',
+  );
+  for (const r of rows) {
+    out.push(
+      `| ${r.key.replaceAll('|', ', ')} | ${c(r.before)} | ${c(r.after)} | ${r.added.join(', ') || '–'} | ${r.removed.join(', ') || '–'} |`,
+    );
+  }
+  return `${out.join('\n')}\n`;
+}
+
+/**
+ * The iOS rule of thumb (#321's comment, from the #351 review) on the open drawer's lock styles:
+ * `overflow: hidden` on the root alone does not stop touch scrolling in iOS Safari;
+ * `touch-action: none` on the backdrop, or a `position: fixed` body, does.
+ */
+export function iosLockFinding(styles: Readonly<Record<string, string>>): string[] {
+  const overflowOnly =
+    (styles.htmlOverflowY === 'hidden' || styles.bodyOverflowY === 'hidden') &&
+    styles.bodyPosition !== 'fixed' &&
+    styles.backdropTouchAction !== 'none';
+  return overflowOnly
+    ? [
+        'the page behind the open drawer is locked by overflow: hidden alone, which iOS Safari does not honour for touch scrolling (touch-action: none on the backdrop or a position: fixed body would)',
+      ]
+    : [];
+}

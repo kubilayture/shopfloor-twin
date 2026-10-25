@@ -163,7 +163,8 @@ const FRAME_FIT = 'overflow-clip';
 /**
  * The frame when the table is wider (or `bounded`): a bounded scroll box the header sticks in. Its
  * scroll padding keeps a focused row control clear of that header (WCAG 2.4.11): the page's own
- * `scroll-padding-top` does not reach inside the box. 48 px: a header row of two lines.
+ * `scroll-padding-top` does not reach inside the box. 48 px (a header row of two lines) until
+ * `useOverflow` sets it to the measured header height.
  */
 const FRAME_SCROLL = 'overflow-auto scroll-pt-12';
 const FRAME_SCROLL_HEIGHT = 'max-h-[min(70vh,720px)]';
@@ -220,6 +221,10 @@ interface Overflow {
 /**
  * Whether the table is wider than its frame, and whether the frame scrolls vertically, measured
  * whenever either is resized. Without `ResizeObserver` (jsdom) neither.
+ *
+ * It also sets the frame's scroll padding to the header row's height (plus 8 px), so a focused
+ * row control clears a header of any number of lines; `scroll-pt-12` is the value until then.
+ * Set through the CSSOM (`style.setProperty`), which `style-src 'self'` allows.
  */
 function useOverflow(
   frame: RefObject<HTMLDivElement | null>,
@@ -231,14 +236,20 @@ function useOverflow(
     const box = frame.current;
     const content = table.current;
     if (!box || !content || typeof ResizeObserver !== 'function') return undefined;
+    const head = content.tHead;
     const measure = () => {
       setWide(content.getBoundingClientRect().width > box.clientWidth + 1);
       setTall(box.scrollHeight > box.clientHeight + 1);
+      if (head) {
+        const height = Math.ceil(head.getBoundingClientRect().height);
+        box.style.setProperty('scroll-padding-top', `${String((height + 8) / 16)}rem`);
+      }
     };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(box);
     observer.observe(content);
+    if (head) observer.observe(head);
     return () => {
       observer.disconnect();
     };
@@ -640,7 +651,13 @@ export function DataTable<Row>({
       disabled={selectable.length === 0}
       testId={selection.testId}
       onChange={(on) => {
-        selection.onChange(new Set(on ? selectable : []));
+        // This page's rows only: a selection made on other pages stays.
+        const next = new Set(selection.selected);
+        for (const key of selectable) {
+          if (on) next.add(key);
+          else next.delete(key);
+        }
+        selection.onChange(next);
       }}
     />
   ) : null;

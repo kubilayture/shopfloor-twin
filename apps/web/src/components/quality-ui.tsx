@@ -24,9 +24,9 @@ export const inputClass = controlClass();
 export const buttonClass = uiButtonClass({ variant: 'secondary' });
 export const primaryClass = uiButtonClass({ variant: 'primary' });
 export const cell = 'px-2 py-1.5 align-top';
-/** Row dividers and hover on the legacy table's own rows (design system 4.5: no zebra). */
 /** The header cells' padding, as `cell`'s (`HEADER_CELL` aligns them to the bottom). */
 const LEGACY_HEADER_PAD = 'px-2 py-1.5';
+/** Row dividers and hover on the legacy table's own rows (design system 4.5: no zebra). */
 const LEGACY_BODY = 'divide-y divide-line-subtle *:hover:bg-surface-sunken';
 
 export const timeOf = (value: string | null): ReactNode =>

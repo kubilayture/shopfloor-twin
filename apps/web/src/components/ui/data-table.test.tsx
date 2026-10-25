@@ -223,6 +223,16 @@ describe('DataTable sticky header', () => {
     );
   });
 
+  it('pads the scroll box by the measured header height, through the CSSOM', () => {
+    stubResize({ tableWidth: 600, frameWidth: 600, scrollHeight: 1200, clientHeight: 500 });
+    vi.spyOn(HTMLTableSectionElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      height: 63.5,
+    } as DOMRect);
+    render(table({ rows: rowsOf(40), bounded: true }));
+    const frame = screen.getByRole('region', { name: 'Active alarms, newest first' });
+    expect(frame.style.getPropertyValue('scroll-padding-top')).toBe('4.5rem'); // 64 + 8 px
+  });
+
   it('is a focusable region named by its caption once the bounded box overflows', () => {
     stubResize({ tableWidth: 600, frameWidth: 600, scrollHeight: 1200, clientHeight: 500 });
     render(table({ rows: rowsOf(40), bounded: true }));
@@ -256,7 +266,7 @@ describe('DataTable sticky header', () => {
     );
     vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(600);
     render(table({ rows: rowsOf(20) }));
-    expect(observe).toHaveBeenCalledTimes(2);
+    expect(observe).toHaveBeenCalledTimes(3); // the frame, the table, its header row
     const frame = screen.getByRole('region', { name: 'Active alarms, newest first' });
     expect(frame.dataset.frame).toBe('scroll');
     expect(screen.getByText('Scroll for more columns.').className).toMatch(/\bsr-only\b/);
@@ -365,6 +375,45 @@ describe('DataTable selection', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
     fireEvent.click(all());
     expect([...(onChange.mock.calls[1]?.[0] as Set<string>)]).toEqual(['a3', 'a4']);
+  });
+
+  it('keeps the other pages\u2019 selection when the select-all selects or clears a page', () => {
+    function Paged() {
+      const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+      return (
+        <>
+          {table({
+            rows: rowsOf(5),
+            pageSize: 2,
+            selection: {
+              selected,
+              onChange: setSelected,
+              label: (row) => `Select ${row.code}`,
+              allLabel: 'Select all',
+              testId: 'select-all',
+            },
+          })}
+          <output data-testid="chosen">{[...selected].sort().join(',')}</output>
+        </>
+      );
+    }
+    render(<Paged />);
+    const chosen = () => screen.getByTestId('chosen').textContent;
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select CODE-1' }));
+    expect(chosen()).toBe('a1');
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    // Page 2: none of its rows selected, so the select-all is clear, not mixed.
+    expect(all().checked).toBe(false);
+    expect(all().indeterminate).toBe(false);
+    fireEvent.click(all());
+    expect(chosen()).toBe('a1,a3,a4');
+    expect(all().checked).toBe(true);
+    fireEvent.click(all());
+    expect(chosen()).toBe('a1');
+    expect(all().checked).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Previous' }));
+    // Page 1: one of two selected.
+    expect(all().indeterminate).toBe(true);
   });
 
   it('keeps the select-all mixed when the owner keeps the selection after a click', () => {

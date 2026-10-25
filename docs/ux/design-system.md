@@ -498,7 +498,7 @@ interface FieldProps {
   label: string; // visible <label>
   hint?: React.ReactNode; // below the control, aria-describedby
   error?: string; // below the hint, red ink, aria-invalid + aria-describedby, role none (the form's summary announces)
-  required?: boolean; // " (required)" in the label; optional fields say nothing
+  required?: boolean; // " (required)" in the label, said once: no aria-required as well; optional fields say nothing
   inline?: boolean; // label left of the control (filter bars)
   children: (ids: {
     id: string;
@@ -521,17 +521,22 @@ The one way to enter a time (N-02, D-05, C-07):
 ```ts
 interface PlantTimeInputProps {
   label: string;
+  name: string; // the boxes are `<name>-date` and `<name>-time`; a hidden `<name>` holds the ISO value
   value: string | null; // ISO 8601 UTC, as the API takes it
-  onChange: (iso: string | null) => void;
+  onChange: (iso: string | null) => void; // null while empty or not a (permitted) time
   withSeconds?: boolean; // downtime split: true
   min?: string;
-  max?: string; // ISO bounds (the shift)
+  max?: string; // ISO bounds, inclusive (the shift)
   required?: boolean;
-  testId?: string;
+  testId?: string; // on the time box; `<testId>-date`, `<testId>-utc`
+  variant?: 'plant' | 'console';
+  hint?: React.ReactNode;
+  error?: string;
+  defaultDate?: string; // an instant whose plant day fills an empty date box
 }
 ```
 
-Two plain text inputs, date (`dd/mm/yyyy`, or a `Select` of the shift's days when bounded) and time (`hh:mm` or `hh:mm:ss`), not the native pickers (they follow the OS locale). The label says "(plant time, Europe/Istanbul)"; the hint shows the UTC instant as it will be sent, live ("= 2026-10-12 05:00:00 UTC"). Parsing and formatting go through `domain/time.ts` in the plant zone. Where the console needs simulation time, the same input is labelled "(simulation time)".
+Two plain text inputs in a `fieldset` named by the label, date (`dd/mm/yyyy`, or a `Select` of the days between `min` and `max` when both bound it) and time (`hh:mm` or `hh:mm:ss`), not the native pickers (they follow the OS locale). The legend says "Planned start, plant time in Europe/Istanbul" ("Planned start (required), plant time in Europe/Istanbul": one parenthesis, and "required" said once, with no `aria-required` on the boxes); the hint shows the UTC instant as it will be sent, live ("= 2026-10-12 05:00:00 UTC"). A whole time typed or filled into the time box is taken at once; with bounds it lands on the day it falls on inside them (a night shift crosses midnight). An empty time box is no value, whatever the date box says (a prefilled `defaultDate` included), so an optional field tabbed through shows no error; a missing required time is the caller's `error`. The input's own format or range error shows when the focus leaves it, on the box that is wrong. An instant with milliseconds shows them (`08:37:00.123`), so the boxes, the UTC line and the value sent always agree. Parsing and formatting go through `domain/time.ts` in the plant zone. Where the console needs simulation time, the same input says "simulation time in Europe/Istanbul" (`variant: 'console'`) and its time box also takes a whole ISO 8601 instant (`2026-10-12T05:00:00Z`).
 
 ### 4.9 Dialog and ConfirmDialog
 

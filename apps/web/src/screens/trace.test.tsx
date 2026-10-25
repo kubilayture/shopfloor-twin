@@ -742,8 +742,35 @@ describe('trace screens on the design system (UX-8, #331)', () => {
     expect(within(assembly).getByTestId('record-operator').className).toContain(
       'whitespace-nowrap',
     );
-    expect(within(assembly).getByText('Machine asm-01').className).toContain('whitespace-nowrap');
+    // A machine name wraps at its spaces; its id stays whole.
+    expect(within(assembly).getByText('Machine asm-01').className).not.toContain(
+      'whitespace-nowrap',
+    );
+    expect(within(assembly).getByText('ASM-01').className).toContain('whitespace-nowrap');
+    // The reading follows the result it explains.
+    expect(
+      within(screen.getByTestId('trace-records'))
+        .getAllByRole('columnheader')
+        .map((th) => th.textContent),
+    ).toEqual([
+      'Operation',
+      'Machine',
+      'Completed',
+      'Result',
+      'Reading',
+      'Lots',
+      'Device operator',
+      'MES crew',
+    ]);
     const leak = screen.getByTestId('record-OP40-1');
+    // Its value stays whole; the limit line under it may wrap.
+    const reading = within(leak).getByTestId('record-reading');
+    expect(reading.className).not.toContain('whitespace-nowrap');
+    expect(reading.firstElementChild?.className).toContain('whitespace-nowrap');
+    // In the table a lot's material may go under its id; the id itself never breaks.
+    const lot = within(assembly).getByTestId('lot-link-SK1-2610-01');
+    expect(lot.className).toContain('whitespace-nowrap');
+    expect(lot.parentElement?.className ?? '').not.toContain('whitespace-nowrap');
     expect(within(leak).getByTestId('record-machine').textContent).toBe('LKT-01');
     expect(within(leak).getByText('Rework').className).toContain('bg-warn-soft');
     expect(leak.firstElementChild?.className).toContain('--color-warn-border');
@@ -879,6 +906,10 @@ describe('trace screens on the design system (UX-8, #331)', () => {
     await screen.findByTestId('lot-unit-2-100');
     expect(within(screen.getByTestId('lot-master')).queryByText('Run')).toBeNull();
     expect(headers()).toContain('Run');
+    // Dropped below `sm`, so the status stays in view at 390.
+    expect(
+      screen.getAllByRole('columnheader').find((th) => th.textContent === 'Run')?.className,
+    ).toContain('hidden sm:table-cell');
     await settle(() => {
       app.history.push('/trace/cartons/PO-1001-C01');
     });

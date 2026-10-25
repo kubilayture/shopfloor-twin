@@ -62,10 +62,9 @@ export function useMachineName(): (id: string) => ReactNode {
     const name = list.data?.find((item) => item.id.toLowerCase() === id.toLowerCase())?.name;
     if (name === undefined) return <Code className="whitespace-nowrap">{id}</Code>;
     return (
-      // The name and the id each keep to one line (never "Manual assembly sta-/tion").
+      // The name wraps at its spaces; the id never breaks at its hyphen ("asm-/01").
       <span className="inline-flex flex-wrap items-baseline gap-x-1.5">
-        <span className="whitespace-nowrap">{name}</span>{' '}
-        <Code className="whitespace-nowrap text-ink-secondary">{id}</Code>
+        <span>{name}</span> <Code className="whitespace-nowrap text-ink-secondary">{id}</Code>
       </span>
     );
   };
@@ -297,8 +296,13 @@ export function LotList({
       className={layout === 'stack' ? 'flex flex-col gap-0.5' : 'flex flex-wrap gap-x-4 gap-y-1'}
     >
       {lots.map((lot, index) => (
-        <span key={`${lot.lot}-${String(index)}`} className="whitespace-nowrap">
-          <LotLink lot={lot} /> <span className="text-ink-secondary">{lot.material}</span>
+        // The lot id never breaks (its link is nowrap); in a table the material may go under it.
+        <span
+          key={`${lot.lot}-${String(index)}`}
+          className={layout === 'stack' ? undefined : 'whitespace-nowrap'}
+        >
+          <LotLink lot={lot} />{' '}
+          <span className="whitespace-nowrap text-ink-secondary">{lot.material}</span>
         </span>
       ))}
     </span>

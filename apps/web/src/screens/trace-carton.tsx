@@ -117,7 +117,16 @@ function memberColumns(trace: CartonTraceDto, run: number | undefined): readonly
       cell: (unit) => <SerialLink unit={unit} />,
     },
     ...(run === undefined
-      ? [{ key: 'run', header: 'Run', numeric: true, cell: (unit: Member) => unit.epoch }]
+      ? [
+          {
+            key: 'run',
+            header: 'Run',
+            numeric: true,
+            // Dropped below `sm`, so the status stays in view at 390.
+            priority: 2 as const,
+            cell: (unit: Member) => unit.epoch,
+          },
+        ]
       : []),
     { key: 'part', header: 'Part', numeric: true, cell: (unit) => unit.partId },
     {

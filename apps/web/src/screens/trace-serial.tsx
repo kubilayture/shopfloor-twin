@@ -105,9 +105,12 @@ function Reading({ record }: { readonly record: TraceRecordDto }) {
       data-value={String(reading.value)}
       data-limit={String(reading.upperLimit)}
       data-over={String(over)}
-      className={`whitespace-nowrap tabular-nums ${over ? 'font-semibold text-alarm-ink' : ''}`}
+      className={`tabular-nums ${over ? 'font-semibold text-alarm-ink' : ''}`}
     >
-      {plainText(reading.value)} {reading.unit}{' '}
+      <span className="whitespace-nowrap">
+        {plainText(reading.value)} {reading.unit}
+      </span>{' '}
+      {/* The limit may wrap: the column stays narrow enough for the table to fit at 1280. */}
       <span className="block text-xs font-normal text-ink-secondary">
         ({over ? 'over' : 'within'} the limit {plainText(reading.upperLimit)} {reading.unit})
       </span>
@@ -121,7 +124,8 @@ function Operator({ record }: { readonly record: TraceRecordDto }) {
     <span
       data-testid="record-operator"
       data-reported={String(record.operatorReported)}
-      className="whitespace-nowrap"
+      // A user name never breaks at its hyphen; "Not reported" may wrap.
+      className={record.operator === null ? undefined : 'whitespace-nowrap'}
     >
       {record.operator ??
         (record.operatorReported ? (
@@ -191,7 +195,6 @@ function Records({ unit }: { readonly unit: TraceUnitDto }) {
             {
               key: 'machine',
               header: 'Machine',
-              width: '11rem',
               cell: (record) => (
                 <span data-testid="record-machine">{machine(record.equipment)}</span>
               ),
@@ -203,6 +206,8 @@ function Records({ unit }: { readonly unit: TraceUnitDto }) {
               cell: (record) => <PlantTime at={record.at} />,
             },
             { key: 'result', header: 'Result', cell: (record) => <Result record={record} /> },
+            // Beside the result it explains (a leak over its limit is the rework).
+            { key: 'reading', header: 'Reading', cell: (record) => <Reading record={record} /> },
             {
               key: 'lots',
               header: 'Lots',
@@ -211,11 +216,9 @@ function Records({ unit }: { readonly unit: TraceUnitDto }) {
             {
               key: 'operator',
               header: 'Device operator',
-              nowrap: true,
               cell: (record) => <Operator record={record} />,
             },
             { key: 'crew', header: 'MES crew', cell: (record) => <Crew record={record} /> },
-            { key: 'reading', header: 'Reading', cell: (record) => <Reading record={record} /> },
           ]}
         />
       )}

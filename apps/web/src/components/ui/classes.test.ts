@@ -38,6 +38,7 @@ const FILES = [
   // The migrated screens (UX-2 on): a screen on the tokens draws only classes Tailwind generates.
   'screens/overview.tsx',
   'screens/machine-detail.tsx',
+  'components/cause-text.tsx',
 ];
 
 /** Utility prefixes: a literal with one of these is a class list. */

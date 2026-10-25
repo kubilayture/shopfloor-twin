@@ -6,6 +6,7 @@ import { Link, useParams, useSearch } from '@tanstack/react-router';
 import { ApiError, getEquipment, getIntervals, getMetrics, getSeries } from '../api/client.ts';
 import { plantClock, queryKeys, usePlantClock } from '../api/queries.ts';
 import { TrendChart } from '../chart/trend-chart.tsx';
+import { CauseText } from '../components/cause-text.tsx';
 import { QueryError } from '../components/query-error.tsx';
 import { StateBadge } from '../components/state-badge.tsx';
 import { Badge } from '../components/ui/badge.tsx';
@@ -15,7 +16,7 @@ import { Code } from '../components/ui/code.tsx';
 import { DataTable, type Column } from '../components/ui/data-table.tsx';
 import { Disclosure } from '../components/ui/disclosure.tsx';
 import { EmptyState } from '../components/ui/empty-state.tsx';
-import { Duration, Missing, PlantTime } from '../components/ui/format.tsx';
+import { Duration, PlantTime } from '../components/ui/format.tsx';
 import { NotFound } from '../components/ui/not-found.tsx';
 import { PageHeader } from '../components/ui/page-header.tsx';
 import { Section } from '../components/ui/section.tsx';
@@ -96,16 +97,6 @@ function RangeSwitch({ id, range }: { readonly id: string; readonly range: Range
         search: { range: key },
       }))}
     />
-  );
-}
-
-/** A cause in words with its code beside it (O-02), or nothing reported. */
-function Cause({ cause }: { readonly cause: string | null }) {
-  if (cause === null) return <Missing reason="No cause reported" />;
-  return (
-    <span className="inline-flex flex-wrap items-baseline gap-x-2">
-      <span>{causeWords(cause)}</span> <Code className="text-ink-secondary">{cause}</Code>
-    </span>
   );
 }
 
@@ -235,7 +226,12 @@ function intervalColumns(clock: number): readonly Column<Band>[] {
       ),
     },
     { key: 'state', header: 'State', cell: (band) => <StateBadge state={band.state} /> },
-    { key: 'cause', header: 'Cause', priority: 2, cell: (band) => <Cause cause={band.cause} /> },
+    {
+      key: 'cause',
+      header: 'Cause',
+      priority: 2,
+      cell: (band) => <CauseText cause={band.cause} />,
+    },
     {
       key: 'elapsed',
       header: 'Duration',
@@ -616,7 +612,7 @@ function Facts({
         <>
           {fact('In state', <Duration ms={timeInState(current, clock)} seconds />)}
           {fact('Since', <PlantTime at={current.since} clock={clock?.watermark} />)}
-          {current.cause === null ? null : fact('Cause', <Cause cause={current.cause} />)}
+          {current.cause === null ? null : fact('Cause', <CauseText cause={current.cause} />)}
         </>
       ) : (
         fact(

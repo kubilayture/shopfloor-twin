@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import { listEquipment } from '../api/client.ts';
 import { queryKeys, usePlantClock } from '../api/queries.ts';
+import { CauseText } from '../components/cause-text.tsx';
 import { QueryError } from '../components/query-error.tsx';
 import { StateBadge } from '../components/state-badge.tsx';
 import { Badge } from '../components/ui/badge.tsx';
@@ -13,7 +14,7 @@ import { Duration, PlantTime } from '../components/ui/format.tsx';
 import { PageHeader } from '../components/ui/page-header.tsx';
 import { Section } from '../components/ui/section.tsx';
 import { Skeleton } from '../components/ui/skeleton.tsx';
-import { causeWords, groupEquipment } from '../domain/plant.ts';
+import { groupEquipment } from '../domain/plant.ts';
 import {
   isConnectionLost,
   NO_DATA,
@@ -41,15 +42,6 @@ import { useLiveConnection, useLiveStates } from '../live/live-context.tsx';
 
 /** "1 machine", "3 machines". */
 const machines = (count: number) => `${String(count)} ${count === 1 ? 'machine' : 'machines'}`;
-
-function Cause({ cause }: { readonly cause: string }) {
-  const words = causeWords(cause);
-  return (
-    <span className="flex flex-wrap items-baseline gap-x-2">
-      <span>{words}</span> <Code className="text-ink-secondary">{cause}</Code>
-    </span>
-  );
-}
 
 function MachineCard({
   equipment,
@@ -128,7 +120,7 @@ function MachineCard({
               <div className="col-span-2 min-w-0">
                 <dt className="text-xs font-medium text-ink-secondary">Cause</dt>
                 <dd>
-                  <Cause cause={current.cause} />
+                  <CauseText cause={current.cause} />
                 </dd>
               </div>
             )}

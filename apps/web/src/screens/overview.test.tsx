@@ -104,6 +104,16 @@ describe('plant overview', () => {
     expect(within(asm).getByText('Material missing: BLANK-VB')).toBeTruthy();
     expect(within(asm).getByText('MATERIAL:BLANK-VB')).toBeTruthy();
     expect(within(screen.getByTestId('machine-wsh-01')).getByText('Heater fault')).toBeTruthy();
+
+    // A cause whose code says no more than its words shows the words alone.
+    await app.push({
+      type: 'state',
+      equipment: 'cnc-01',
+      current: current({ state: 'PlannedStop', cause: 'BREAK', seq: 14 }),
+    });
+    const cnc = screen.getByTestId('machine-cnc-01');
+    expect(within(cnc).getByText('Break')).toBeTruthy();
+    expect(within(cnc).queryByText('BREAK')).toBeNull();
   });
 
   it('subscribes to states and applies the snapshot and pushed deltas', async () => {

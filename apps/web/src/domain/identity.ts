@@ -3,6 +3,7 @@ import {
   ROLES,
   USERNAME_PATTERN,
   passwordLength,
+  type Permission,
   type Role,
 } from '@shopfloor/contracts/identity';
 import { PROBLEM_TYPES } from '@shopfloor/contracts/mes-api';
@@ -24,6 +25,66 @@ export const rolesText = (roles: readonly Role[]): string =>
     .map((role) => ROLE_LABELS[role])
     .join(', ');
 
+/** The areas the account page groups permissions by (Y-02), in reading order. */
+export const PERMISSION_AREAS = [
+  'Plant data',
+  'Downtime and scrap',
+  'Alarms and shift notes',
+  'Operator terminal',
+  'Orders',
+  'Quality',
+  'Administration',
+] as const;
+export type PermissionArea = (typeof PERMISSION_AREAS)[number];
+
+/**
+ * Every permission in words, with its area (Y-02): the account page says what a role may do
+ * instead of listing `resource:verb` ids. A `Record` over the contract's permissions, so a new
+ * permission does not compile until it has its words here.
+ */
+export const PERMISSION_LABELS: Readonly<
+  Record<Permission, { readonly area: PermissionArea; readonly text: string }>
+> = {
+  read: { area: 'Plant data', text: 'See every screen of the plant' },
+  'downtime:code': { area: 'Downtime and scrap', text: 'Code downtime' },
+  'scrap:code': { area: 'Downtime and scrap', text: 'Code scrap' },
+  'alarm:ack': { area: 'Alarms and shift notes', text: 'Acknowledge alarms' },
+  'alarm:comment': { area: 'Alarms and shift notes', text: 'Comment on alarms' },
+  'alarm:shelve': { area: 'Alarms and shift notes', text: 'Shelve alarms' },
+  'note:write': { area: 'Alarms and shift notes', text: 'Write shift notes' },
+  'terminal:operate': { area: 'Operator terminal', text: 'Work at an operator terminal' },
+  'order:release': { area: 'Orders', text: 'Release orders' },
+  'order:dispatch': { area: 'Orders', text: 'Dispatch orders' },
+  'order:cancel': { area: 'Orders', text: 'Cancel orders' },
+  'order:redispatch': { area: 'Orders', text: 'Dispatch orders again' },
+  'order:close': { area: 'Orders', text: 'Close orders' },
+  'order:abandon': { area: 'Orders', text: 'Abandon orders' },
+  'spc:limits': { area: 'Quality', text: 'Set SPC control limits' },
+  'spc:ack': { area: 'Quality', text: 'Acknowledge SPC signals' },
+  'quality:hold': { area: 'Quality', text: 'Open quality holds and comment on them' },
+  'quality:release': { area: 'Quality', text: 'Release or reject quality holds' },
+  'user:admin': { area: 'Administration', text: 'Administer users' },
+  'sim:control': { area: 'Administration', text: 'Drive the simulation console' },
+};
+
+/** A permission in words with its id, for the account page's grouped list. */
+export interface PermissionLine {
+  readonly id: Permission;
+  readonly text: string;
+}
+
+/** The held permissions grouped by area, areas and permissions in reading order; empty areas left out. */
+export function permissionGroups(
+  permissions: readonly Permission[],
+): readonly { readonly area: PermissionArea; readonly permissions: readonly PermissionLine[] }[] {
+  return PERMISSION_AREAS.map((area) => ({
+    area,
+    permissions: permissions
+      .filter((id) => PERMISSION_LABELS[id].area === area)
+      .map((id) => ({ id, text: PERMISSION_LABELS[id].text })),
+  })).filter((group) => group.permissions.length > 0);
+}
+
 /**
  * A failed login as a message. The MES answers every failure the same (ADR-0026: unknown user,
  * wrong password, disabled, locked or delayed), so this can't say which.
@@ -41,24 +102,50 @@ export function loginFailure(error: unknown): string {
   return writeFailure(error, { not: 'Not logged in', conflict: '', what: 'this login' }).text;
 }
 
+/** The fields of the password form a problem belongs to. */
+export type PasswordField = 'current' | 'next' | 'confirm';
+
+/** A problem of the password form, with the field it is shown under (L-01, WCAG 3.3.1). */
+export interface PasswordProblem {
+  readonly field: PasswordField;
+  readonly text: string;
+}
+
+/**
+ * What is wrong with a password change before it is sent (the MES checks the same, 422), each
+ * problem with its field. `current` undefined: the form does not ask for it (the forced change
+ * after a login, which knows it); an empty one is a problem of its own.
+ */
+export function passwordFormProblems(
+  next: string,
+  confirm: string,
+  current?: string,
+): readonly PasswordProblem[] {
+  const problems: PasswordProblem[] = [];
+  if (current === '') problems.push({ field: 'current', text: 'Enter your current password.' });
+  const length = passwordLength(next);
+  if (length < PASSWORD_LENGTH.min || length > PASSWORD_LENGTH.max) {
+    problems.push({
+      field: 'next',
+      text: `The new password needs ${String(PASSWORD_LENGTH.min)} to ${String(PASSWORD_LENGTH.max)} characters (it has ${String(length)}).`,
+    });
+  }
+  if (current !== undefined && next === current && next !== '') {
+    problems.push({ field: 'next', text: 'The new password must differ from the current one.' });
+  }
+  if (next !== confirm) problems.push({ field: 'confirm', text: 'The two new passwords differ.' });
+  return problems;
+}
+
 /** What is wrong with a new password before it is sent (the MES checks the same, 422). */
 export function newPasswordProblems(
   next: string,
   confirm: string,
   current?: string,
 ): readonly string[] {
-  const problems: string[] = [];
-  const length = passwordLength(next);
-  if (length < PASSWORD_LENGTH.min || length > PASSWORD_LENGTH.max) {
-    problems.push(
-      `The new password needs ${String(PASSWORD_LENGTH.min)} to ${String(PASSWORD_LENGTH.max)} characters (it has ${String(length)}).`,
-    );
-  }
-  if (current !== undefined && next === current && next !== '') {
-    problems.push('The new password must differ from the current one.');
-  }
-  if (next !== confirm) problems.push('The two new passwords differ.');
-  return problems;
+  return passwordFormProblems(next, confirm, current === '' ? undefined : current).map(
+    (problem) => problem.text,
+  );
 }
 
 /** A failed password change as a message (422: rejected, with the MES's reason). */

@@ -2,16 +2,25 @@ import { PASSWORD_LENGTH } from '@shopfloor/contracts/identity';
 import type { SessionDto } from '@shopfloor/contracts/mes-api';
 import { useMutation } from '@tanstack/react-query';
 import { useRouter, useSearch } from '@tanstack/react-router';
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { ApiError } from '../api/client.ts';
 import { changePassword, getSession, login } from '../api/identity.ts';
 import { useAuth } from '../auth/auth.tsx';
 import { useHeadingFocus } from '../components/heading-focus.ts';
-import { loginFailure, newPasswordProblems, passwordChangeFailure } from '../domain/identity.ts';
+import { Button } from '../components/ui/button.tsx';
+import { Callout } from '../components/ui/callout.tsx';
+import { Code } from '../components/ui/code.tsx';
+import { controlClass, Field, type FieldIds } from '../components/ui/field.tsx';
+import { Icon } from '../components/ui/icons.tsx';
+import { PRODUCT_NAME } from '../components/ui/use-page-title.ts';
+import {
+  loginFailure,
+  passwordChangeFailure,
+  passwordFormProblems,
+  type PasswordField,
+  type PasswordProblem,
+} from '../domain/identity.ts';
 import type { LoginReason } from '../routes/identity.ts';
-
-const inputClass = 'rounded border border-slate-500 bg-white px-2 py-1';
-const primaryClass =
-  'rounded border border-sky-900 bg-sky-800 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-900 disabled:opacity-60';
 
 const REASON_TEXT: Readonly<Record<LoginReason, string>> = {
   ended: 'Your session ended. Log in again to carry on.',
@@ -19,24 +28,58 @@ const REASON_TEXT: Readonly<Record<LoginReason, string>> = {
   logout: 'You are logged out.',
 };
 
+/** The ids a control is described by, without the empty ones; undefined when none is left. */
+const joinIds = (...ids: (string | undefined)[]): string | undefined =>
+  ids.filter((id) => id !== undefined && id !== '').join(' ') || undefined;
+
+/** Focuses the first of `fields` that is marked invalid, once the render that marks it is done. */
+function useFocusFirstInvalid(): (fields: readonly RefObject<HTMLInputElement | null>[]) => void {
+  const pending = useRef<readonly RefObject<HTMLInputElement | null>[] | undefined>(undefined);
+  useEffect(() => {
+    const fields = pending.current;
+    if (!fields) return;
+    pending.current = undefined;
+    fields
+      .find((field) => field.current?.getAttribute('aria-invalid') === 'true')
+      ?.current?.focus();
+  });
+  return (fields) => {
+    pending.current = fields;
+  };
+}
+
+type LoginField = 'username' | 'password';
+
 /**
  * User name and password (#170): `POST /api/v1/session` sets the `HttpOnly` cookie. With
  * `fixedUsername` it logs the same user in again (the re-login over a page with unsaved input).
+ *
+ * A field left empty is marked under itself; a login the MES refuses as wrong (401: it never says
+ * which part, ADR-0026) marks both fields invalid and ties them to the message (L-01), while a
+ * throttled or unreachable login leaves the fields alone: they are not what is wrong. The focus
+ * goes to the first field marked.
  */
 export function LoginForm({
   fixedUsername,
   onLoggedIn,
+  className,
 }: {
   readonly fixedUsername?: string;
   readonly onLoggedIn: (session: SessionDto, password: string) => void;
+  /** Layout classes (margins) for where the form sits. */
+  readonly className?: string;
 }) {
   // A logout still ending at the MES would clear the cookie of this login (#170 review L3).
   const { loggingOut } = useAuth();
   const [username, setUsername] = useState(fixedUsername ?? '');
   const [password, setPassword] = useState('');
   const [message, setMessage] = useState<string | undefined>(undefined);
-  const userId = useId();
-  const passwordId = useId();
+  const [missing, setMissing] = useState<readonly LoginField[]>([]);
+  const [refused, setRefused] = useState(false);
+  const messageId = useId();
+  const usernameRef = useRef<HTMLInputElement>(null);
+  const passwordRef = useRef<HTMLInputElement>(null);
+  const focusFirstInvalid = useFocusFirstInvalid();
   const submit = useMutation({
     mutationFn: () => login({ username: username.trim(), password, kind: 'desk' }),
     meta: { auth: false },
@@ -45,87 +88,153 @@ export function LoginForm({
       setPassword('');
     },
     onError: (error) => {
+      // 401 is the MES's one answer for a wrong name or password, a locked or a disabled account.
+      const wrong = error instanceof ApiError && error.status === 401;
+      setRefused(wrong);
       setMessage(loginFailure(error));
+      if (wrong) focusFirstInvalid([usernameRef, passwordRef]);
     },
   });
+  const busy = submit.isPending || loggingOut;
+  const fixed = fixedUsername !== undefined;
+  /** A field's own error text: only for a field left empty (a refusal is said once, above). */
+  const fieldError = (field: LoginField): string | undefined =>
+    missing.includes(field)
+      ? field === 'username'
+        ? 'Enter your user name.'
+        : 'Enter your password.'
+      : undefined;
   return (
     <form
       noValidate
       aria-label="Log in"
-      className="mt-4 flex flex-col gap-3"
+      className={`flex flex-col gap-4${className ? ` ${className}` : ''}`}
       onSubmit={(event) => {
         event.preventDefault();
+        if (busy) return;
         setMessage(undefined);
-        if (username.trim() === '' || password === '') {
+        setRefused(false);
+        const empty: LoginField[] = [
+          ...(username.trim() === '' ? (['username'] as const) : []),
+          ...(password === '' ? (['password'] as const) : []),
+        ];
+        setMissing(empty);
+        if (empty.length > 0) {
           setMessage('Enter your user name and password.');
+          focusFirstInvalid([usernameRef, passwordRef]);
           return;
         }
         submit.mutate();
       }}
     >
-      <div className="flex flex-col gap-1">
-        <label htmlFor={userId} className="text-sm font-medium">
-          User name
-        </label>
-        <input
-          id={userId}
-          name="username"
-          data-testid="login-username"
-          value={username}
-          readOnly={fixedUsername !== undefined}
-          autoComplete="username"
-          autoCapitalize="none"
-          spellCheck={false}
-          onChange={(event) => {
-            setUsername(event.target.value);
-          }}
-          className={`${inputClass} ${fixedUsername === undefined ? '' : 'bg-slate-100'}`}
-        />
-      </div>
-      <div className="flex flex-col gap-1">
-        <label htmlFor={passwordId} className="text-sm font-medium">
-          Password
-        </label>
-        <input
-          id={passwordId}
-          name="password"
-          type="password"
-          data-testid="login-password"
-          value={password}
-          autoComplete="current-password"
-          // Only in the re-login dialog, whose name is given: straight to the password.
-          autoFocus={fixedUsername !== undefined}
-          onChange={(event) => {
-            setPassword(event.target.value);
-          }}
-          className={inputClass}
-        />
-      </div>
       {message ? (
-        <p
-          role="alert"
-          data-testid="login-message"
-          className="rounded border border-red-800 bg-red-50 p-2 text-sm text-red-950"
-        >
-          {message}
-        </p>
+        <Callout tone="alarm" role="alert" data-testid="login-message">
+          <span id={messageId}>{message}</span>
+        </Callout>
       ) : null}
-      <button
+      <Field label="User name" error={fieldError('username')}>
+        {(ids) => {
+          // The name of a re-login is given: never marked as wrong.
+          const invalid = ids.invalid || (refused && !fixed);
+          return (
+            <input
+              ref={usernameRef}
+              id={ids.id}
+              name="username"
+              data-testid="login-username"
+              value={username}
+              readOnly={fixed}
+              autoComplete="username"
+              autoCapitalize="none"
+              spellCheck={false}
+              aria-invalid={invalid || undefined}
+              aria-describedby={joinIds(ids.describedBy, refused && !fixed ? messageId : undefined)}
+              onChange={(event) => {
+                setUsername(event.target.value);
+              }}
+              className={`${controlClass()} w-full read-only:bg-surface-sunken`}
+            />
+          );
+        }}
+      </Field>
+      <Field label="Password" error={fieldError('password')}>
+        {(ids) => (
+          <input
+            ref={passwordRef}
+            id={ids.id}
+            name="password"
+            type="password"
+            data-testid="login-password"
+            value={password}
+            autoComplete="current-password"
+            // Only in the re-login dialog, whose name is given: straight to the password.
+            autoFocus={fixed}
+            aria-invalid={ids.invalid || refused || undefined}
+            aria-describedby={joinIds(ids.describedBy, refused ? messageId : undefined)}
+            onChange={(event) => {
+              setPassword(event.target.value);
+            }}
+            className={`${controlClass()} w-full`}
+          />
+        )}
+      </Field>
+      <Button
         type="submit"
+        variant="primary"
+        size="lg"
+        fullWidth
         data-testid="login-submit"
-        disabled={submit.isPending || loggingOut}
-        className={primaryClass}
+        loading={busy}
       >
-        {loggingOut ? 'Logging out…' : submit.isPending ? 'Logging in…' : 'Log in'}
-      </button>
+        {loggingOut ? 'Logging out…' : 'Log in'}
+      </Button>
     </form>
+  );
+}
+
+/** The password inputs of the change form: one look, `type="password"`, the field's ids. */
+function PasswordInput({
+  inputRef,
+  testId,
+  autoComplete,
+  value,
+  onChange,
+  ids,
+  name,
+}: {
+  readonly inputRef: RefObject<HTMLInputElement | null>;
+  readonly testId: string;
+  readonly autoComplete: 'current-password' | 'new-password';
+  readonly value: string;
+  readonly onChange: (value: string) => void;
+  readonly ids: FieldIds;
+  readonly name: string;
+}) {
+  return (
+    <input
+      ref={inputRef}
+      id={ids.id}
+      name={name}
+      type="password"
+      data-testid={testId}
+      value={value}
+      autoComplete={autoComplete}
+      aria-invalid={ids.invalid || undefined}
+      aria-describedby={ids.describedBy}
+      onChange={(event) => {
+        onChange(event.target.value);
+      }}
+      className={`${controlClass()} w-full`}
+    />
   );
 }
 
 /**
  * A change of one's own password (`POST /api/v1/account/password`): the forced change after a
  * temporary password, and the account page. `current` prefills the current password when the
- * user just typed it to log in.
+ * user just typed it to log in. The requirement is shown under the new password before anything
+ * is typed; each problem found before sending is shown under its field and listed once in the
+ * form's alert, and the focus goes to the first field with one.
  */
 export function ChangePasswordForm({
   current: known,
@@ -137,11 +246,12 @@ export function ChangePasswordForm({
   const [current, setCurrent] = useState(known ?? '');
   const [next, setNext] = useState('');
   const [confirm, setConfirm] = useState('');
-  const [problems, setProblems] = useState<readonly string[]>([]);
+  const [problems, setProblems] = useState<readonly PasswordProblem[]>([]);
   const [failure, setFailure] = useState<string | undefined>(undefined);
-  const currentId = useId();
-  const nextId = useId();
-  const confirmId = useId();
+  const currentRef = useRef<HTMLInputElement>(null);
+  const nextRef = useRef<HTMLInputElement>(null);
+  const confirmRef = useRef<HTMLInputElement>(null);
+  const focusFirstInvalid = useFocusFirstInvalid();
   const change = useMutation({
     mutationFn: () => changePassword({ currentPassword: current, newPassword: next }),
     meta: { auth: false },
@@ -155,97 +265,130 @@ export function ChangePasswordForm({
       setFailure(passwordChangeFailure(error).text);
     },
   });
+  /** The first problem of a field, shown under it; the alert lists them all. */
+  const errorOf = (field: PasswordField): string | undefined =>
+    problems.find((problem) => problem.field === field)?.text;
+  const listed = [...problems.map((problem) => problem.text), ...(failure ? [failure] : [])];
   return (
     <form
       noValidate
       aria-label="Change password"
-      className="mt-4 flex flex-col gap-3"
+      className="flex flex-col gap-4"
       onSubmit={(event) => {
         event.preventDefault();
+        if (change.isPending) return;
         setFailure(undefined);
-        const found = [
-          ...(current === '' ? ['Enter your current password.'] : []),
-          ...newPasswordProblems(next, confirm, current),
-        ];
+        const found = passwordFormProblems(next, confirm, current);
         setProblems(found);
         if (found.length === 0) change.mutate();
+        else focusFirstInvalid([currentRef, nextRef, confirmRef]);
       }}
     >
+      {listed.length > 0 ? (
+        <Callout tone="alarm" role="alert" data-testid="password-problems">
+          <ul className="flex flex-col gap-1">
+            {listed.map((text) => (
+              <li key={text}>{text}</li>
+            ))}
+          </ul>
+        </Callout>
+      ) : null}
       {known === undefined ? (
-        <div className="flex flex-col gap-1">
-          <label htmlFor={currentId} className="text-sm font-medium">
-            Current password
-          </label>
-          <input
-            id={currentId}
-            type="password"
-            data-testid="current-password"
-            value={current}
-            autoComplete="current-password"
-            onChange={(event) => {
-              setCurrent(event.target.value);
-            }}
-            className={inputClass}
-          />
-        </div>
+        <Field label="Current password" error={errorOf('current')}>
+          {(ids) => (
+            <PasswordInput
+              inputRef={currentRef}
+              ids={ids}
+              name="current-password"
+              testId="current-password"
+              autoComplete="current-password"
+              value={current}
+              onChange={setCurrent}
+            />
+          )}
+        </Field>
       ) : null}
-      <div className="flex flex-col gap-1">
-        <label htmlFor={nextId} className="text-sm font-medium">
-          New password
-        </label>
-        <input
-          id={nextId}
-          type="password"
-          data-testid="new-password"
-          value={next}
-          autoComplete="new-password"
-          aria-describedby={`${nextId}-hint`}
-          onChange={(event) => {
-            setNext(event.target.value);
-          }}
-          className={inputClass}
-        />
-        <p id={`${nextId}-hint`} className="text-xs text-slate-700">
-          {PASSWORD_LENGTH.min} to {PASSWORD_LENGTH.max} characters; a few words you remember are
-          fine. No other rules.
-        </p>
-      </div>
-      <div className="flex flex-col gap-1">
-        <label htmlFor={confirmId} className="text-sm font-medium">
-          New password again
-        </label>
-        <input
-          id={confirmId}
-          type="password"
-          data-testid="confirm-password"
-          value={confirm}
-          autoComplete="new-password"
-          onChange={(event) => {
-            setConfirm(event.target.value);
-          }}
-          className={inputClass}
-        />
-      </div>
-      {problems.length > 0 || failure ? (
-        <ul
-          role="alert"
-          data-testid="password-problems"
-          className="rounded border border-red-800 bg-red-50 p-2 text-sm text-red-950"
-        >
-          {[...problems, ...(failure ? [failure] : [])].map((text) => (
-            <li key={text}>{text}</li>
-          ))}
-        </ul>
-      ) : null}
-      <button
-        type="submit"
-        data-testid="change-password"
-        disabled={change.isPending}
-        className={primaryClass}
+      <Field
+        label="New password"
+        hint={`${String(PASSWORD_LENGTH.min)} to ${String(PASSWORD_LENGTH.max)} characters; a few words you remember are fine. No other rules.`}
+        error={errorOf('next')}
       >
-        {change.isPending ? 'Changing…' : 'Change password'}
-      </button>
+        {(ids) => (
+          <PasswordInput
+            inputRef={nextRef}
+            ids={ids}
+            name="new-password"
+            testId="new-password"
+            autoComplete="new-password"
+            value={next}
+            onChange={setNext}
+          />
+        )}
+      </Field>
+      <Field label="New password again" error={errorOf('confirm')}>
+        {(ids) => (
+          <PasswordInput
+            inputRef={confirmRef}
+            ids={ids}
+            name="confirm-password"
+            testId="confirm-password"
+            autoComplete="new-password"
+            value={confirm}
+            onChange={setConfirm}
+          />
+        )}
+      </Field>
+      <div>
+        <Button
+          type="submit"
+          variant="primary"
+          data-testid="change-password"
+          loading={change.isPending}
+        >
+          Change password
+        </Button>
+      </div>
     </form>
+  );
+}
+
+/**
+ * The login page's card on the canvas (design system 3.2): the product name in a header band
+ * that is the app's top bar in small (L-03), then the page's heading and content, and an optional
+ * footer of small print.
+ */
+function LoginCard({
+  heading,
+  footer,
+  children,
+}: {
+  readonly heading?: ReactNode;
+  readonly footer?: ReactNode;
+  readonly children: ReactNode;
+}) {
+  const headingRef = useHeadingFocus<HTMLHeadingElement>();
+  return (
+    <main id="main" tabIndex={-1} className="min-h-screen bg-canvas px-4 py-12 text-ink md:py-20">
+      <div className="mx-auto w-full max-w-md overflow-hidden rounded-lg border border-line bg-surface">
+        <div className="bg-topbar px-6 py-4 text-topbar-ink" data-surface="dark">
+          <p className="text-base font-semibold">{PRODUCT_NAME}</p>
+          <p className="text-xs text-nav-heading">Manufacturing execution system</p>
+        </div>
+        <div className="flex flex-col gap-4 p-6">
+          {heading === undefined ? null : (
+            <h1 ref={headingRef} tabIndex={-1} className="text-xl font-bold">
+              {heading}
+            </h1>
+          )}
+          {children}
+        </div>
+        {footer === undefined ? null : (
+          <div className="border-t border-line-subtle bg-surface-sunken px-6 py-4 text-xs text-ink-secondary">
+            {footer}
+          </div>
+        )}
+      </div>
+    </main>
   );
 }
 
@@ -255,7 +398,14 @@ function BackTo({ href }: { readonly href: string }) {
   useEffect(() => {
     router.history.replace(href);
   }, [router, href]);
-  return <p role="status">Logged in; opening the page…</p>;
+  return (
+    <LoginCard>
+      <p role="status" className="flex items-center gap-2 text-sm text-ink-secondary">
+        <Icon name="spinner" size={16} className="motion-safe:animate-spin" />
+        Logged in; opening the page…
+      </p>
+    </LoginCard>
+  );
 }
 
 /**
@@ -265,7 +415,6 @@ function BackTo({ href }: { readonly href: string }) {
 export function Login() {
   const auth = useAuth();
   const { redirect, reason } = useSearch({ from: '/login' });
-  const heading = useHeadingFocus<HTMLHeadingElement>();
   // The password just typed, so the forced change needn't ask for it again (memory only).
   const [typed, setTyped] = useState<string | undefined>(undefined);
   const { session } = auth;
@@ -274,73 +423,65 @@ export function Login() {
   if (session && !session.user.mustChangePassword) {
     return <BackTo href={target} />;
   }
-  const mustChange = session?.user.mustChangePassword === true;
+  if (session?.user.mustChangePassword === true) {
+    return (
+      <LoginCard
+        heading="Choose a new password"
+        footer={
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setTyped(undefined);
+              void auth.logOut();
+            }}
+          >
+            Log out instead
+          </Button>
+        }
+      >
+        <p className="text-sm text-ink-secondary" data-testid="must-change">
+          <span className="font-semibold text-ink">{session.user.username}</span>, your password is
+          temporary. Choose your own before you continue; it ends your other sessions.
+        </p>
+        <ChangePasswordForm
+          current={typed}
+          onChanged={() => {
+            setTyped(undefined);
+            // The session now needs no change: `BackTo` takes the user on.
+            void getSession().then((next) => {
+              if (next) auth.loggedIn(next);
+            });
+          }}
+        />
+      </LoginCard>
+    );
+  }
   return (
-    <main
-      id="main"
-      tabIndex={-1}
-      className="min-h-screen bg-slate-50 px-4 py-12 text-slate-900 focus:outline-none"
+    <LoginCard
+      heading="Log in"
+      footer={
+        <>
+          <p>No account, or a forgotten password? Ask an admin.</p>
+          <p className="mt-1">
+            Use the same address every time (<Code>localhost</Code> is not <Code>127.0.0.1</Code>):
+            the session belongs to the host name.
+          </p>
+        </>
+      }
     >
-      <div className="mx-auto max-w-md rounded border border-slate-300 bg-white p-6 shadow-sm">
-        <p className="text-sm font-semibold text-slate-700">ShopFloor Twin MES</p>
-        <h1 ref={heading} tabIndex={-1} className="mt-1 text-2xl font-bold">
-          {mustChange ? 'Choose a new password' : 'Log in'}
-        </h1>
-        {mustChange ? (
-          <>
-            <p className="mt-2 text-sm" data-testid="must-change">
-              {session.user.username}, your password is temporary. Choose your own before you
-              continue; it ends your other sessions.
-            </p>
-            <ChangePasswordForm
-              current={typed}
-              onChanged={() => {
-                setTyped(undefined);
-                // The session now needs no change: `BackTo` takes the user on.
-                void getSession().then((next) => {
-                  if (next) auth.loggedIn(next);
-                });
-              }}
-            />
-            <button
-              type="button"
-              className="mt-4 text-sm text-sky-800 underline"
-              onClick={() => {
-                setTyped(undefined);
-                void auth.logOut();
-              }}
-            >
-              Log out instead
-            </button>
-          </>
-        ) : (
-          <>
-            {reason ? (
-              <p
-                role="status"
-                data-testid="login-reason"
-                data-reason={reason}
-                className="mt-2 rounded border border-slate-300 bg-slate-50 p-2 text-sm"
-              >
-                {REASON_TEXT[reason]}
-              </p>
-            ) : null}
-            <LoginForm
-              onLoggedIn={(next, password) => {
-                // Without a password to change, `BackTo` takes the user on.
-                if (next.user.mustChangePassword) setTyped(password);
-                auth.loggedIn(next);
-              }}
-            />
-            <p className="mt-4 text-xs text-slate-700">
-              Open the app as <span className="font-mono">localhost</span> every time: the session
-              belongs to the host name in the address bar, and{' '}
-              <span className="font-mono">127.0.0.1</span> is another one. Ask an admin for an
-              account or a new password.
-            </p>
-          </>
-        )}
-      </div>
-    </main>
+      {reason ? (
+        <Callout tone="neutral" role="status" data-testid="login-reason" data-reason={reason}>
+          {REASON_TEXT[reason]}
+        </Callout>
+      ) : null}
+      <LoginForm
+        onLoggedIn={(next, password) => {
+          // Without a password to change, `BackTo` takes the user on.
+          if (next.user.mustChangePassword) setTyped(password);
+          auth.loggedIn(next);
+        }}
+      />
+    </LoginCard>
   );
 }

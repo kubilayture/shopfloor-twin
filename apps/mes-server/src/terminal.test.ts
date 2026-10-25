@@ -708,7 +708,10 @@ describe('operator activity and operation sign-off (#177)', () => {
     const ahead = async (operation: string): Promise<Date> => {
       const row = await h.db
         .updateTable('orders.operation_activity')
-        .set({ from_at: sql<Date>`clock_timestamp() + interval '1 hour'` })
+        // In whole milliseconds, so the Date read back is the start exactly (`until` below).
+        .set({
+          from_at: sql<Date>`date_trunc('milliseconds', clock_timestamp() + interval '1 hour')`,
+        })
         .where('order_id', '=', 'G-1')
         .where('operation', '=', operation)
         .where('to_at', 'is', null)

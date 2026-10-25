@@ -431,8 +431,9 @@ function ChartFigure({
             {showAll ? 'Hide the values' : `Show all ${String(points.length)} values`}
           </button>
           {showAll ? (
-            <div className="mt-2 max-h-96 overflow-y-auto">
+            <div className="mt-2">
               <Table
+                bounded
                 testId={`spc-values-${chart}`}
                 caption={`${CHART_TEXT[chart].label}: every point shown`}
                 columns={POINT_COLUMNS}

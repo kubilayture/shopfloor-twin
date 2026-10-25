@@ -1,12 +1,18 @@
 import type { HoldState, SpcSignalDto } from '@shopfloor/contracts/mes-api';
 import { Link } from '@tanstack/react-router';
-import type { ReactNode } from 'react';
+import { Children, type ReactNode } from 'react';
 import { HOLD_STATE_TEXT, SIGNAL_STATUS_TEXT, type QualityFailure } from '../domain/quality.ts';
 import { formatPlantTime, wallTimeText } from '../domain/time.ts';
 import { Badge, type BadgeVariant } from './ui/badge.tsx';
 import { buttonClass as uiButtonClass } from './ui/button.tsx';
 import { Textarea } from './ui/controls.tsx';
 import { controlClass } from './ui/field.tsx';
+import {
+  HEADER_CELL,
+  SCROLL_STICKY_HEADER_CELL,
+  STICKY_HEADER_CELL,
+  TableFrame,
+} from './ui/data-table.tsx';
 import type { Tone } from './ui/tokens.ts';
 
 // Shared pieces of the SPC and holds screens (#203): sections, tables, badges and messages. State
@@ -18,7 +24,10 @@ export const inputClass = controlClass();
 export const buttonClass = uiButtonClass({ variant: 'secondary' });
 export const primaryClass = uiButtonClass({ variant: 'primary' });
 export const cell = 'px-2 py-1.5 align-top';
-const head = `${cell} font-semibold`;
+/** The header cells' padding, as `cell`'s (`HEADER_CELL` aligns them to the bottom). */
+const LEGACY_HEADER_PAD = 'px-2 py-1.5';
+/** Row dividers and hover on the legacy table's own rows (design system 4.5: no zebra). */
+const LEGACY_BODY = 'divide-y divide-line-subtle *:hover:bg-surface-sunken';
 
 export const timeOf = (value: string | null): ReactNode =>
   value === null ? '–' : <time dateTime={value}>{formatPlantTime(value)}</time>;
@@ -54,39 +63,48 @@ export function Section({
   );
 }
 
+/**
+ * The quality screens' table with rows of their own (#203), on `DataTable`'s frame and header
+ * (UX-1d1, #318): the same look, the sticky header in both of its modes (on when more than 15
+ * rows), `bounded` for a long list inside a detail. Real `table` → `tbody` → `tr` → `td` markup
+ * for the positional reads. Kept until the last screen moves to `DataTable` (UX-2+).
+ */
 export function Table({
   testId,
   caption,
   columns,
   children,
   count,
+  bounded,
 }: {
   readonly testId: string;
   readonly caption: string;
   readonly columns: readonly string[];
   readonly children: ReactNode;
   readonly count?: number;
+  readonly bounded?: boolean;
 }) {
+  const sticky = (count ?? Children.count(children)) > 15;
   return (
-    <div className="overflow-x-auto rounded-lg border border-slate-300 bg-white">
-      <table
-        className="w-full text-left text-sm"
-        data-testid={testId}
-        {...(count === undefined ? {} : { 'data-count': String(count) })}
-      >
-        <caption className="sr-only">{caption}</caption>
-        <thead className="bg-slate-100">
-          <tr>
-            {columns.map((column) => (
-              <th key={column} scope="col" className={head}>
-                {column}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>{children}</tbody>
-      </table>
-    </div>
+    <TableFrame
+      testId={testId}
+      caption={caption}
+      count={count}
+      bounded={bounded}
+      bodyClassName={LEGACY_BODY}
+      head={columns.map((column, index) => (
+        <th
+          // An unnamed column (the actions) may repeat the empty name.
+          key={`${String(index)}-${column}`}
+          scope="col"
+          className={`${HEADER_CELL} ${LEGACY_HEADER_PAD} ${sticky ? STICKY_HEADER_CELL : SCROLL_STICKY_HEADER_CELL}`}
+        >
+          {column}
+        </th>
+      ))}
+    >
+      {children}
+    </TableFrame>
   );
 }
 

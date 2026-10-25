@@ -224,3 +224,38 @@ describe('legacy storage (#170 review L7)', () => {
     });
   });
 });
+
+describe('a 4403 close (#341 review, UX-7 review M2)', () => {
+  it('starts the live client again when the session read back is unchanged', async () => {
+    const mes = fakeMes({ signedIn: true, roles: ['supervisor'] });
+    vi.stubGlobal('fetch', mes.fetch);
+    const app = await renderApp('/', { session: 'fetch' });
+    await app.open();
+    expect(app.factory.sockets).toHaveLength(1);
+    const reads = sessionReads(mes.calls);
+    const before = app.queryClient.getQueryData(sessionKey);
+    await app.drop(4403);
+    await waitFor(() => {
+      expect(app.factory.sockets).toHaveLength(2);
+    });
+    expect(sessionReads(mes.calls)).toBeGreaterThan(reads);
+    // The same session, the same object: no screen's effect on the session could restart it.
+    expect(app.queryClient.getQueryData(sessionKey)).toBe(before);
+    await app.open();
+    expect(screen.getByTestId('connection-status').dataset.status).toBe('open');
+  });
+
+  it('does not start it again when the session read back has ended', async () => {
+    const mes = fakeMes({ signedIn: true, roles: ['supervisor'] });
+    vi.stubGlobal('fetch', mes.fetch);
+    const app = await renderApp('/', { session: 'fetch' });
+    await app.open();
+    mes.end();
+    await app.drop(4403);
+    await waitFor(() => {
+      expect(app.history.location.pathname).toBe('/login');
+    });
+    expect(app.factory.sockets).toHaveLength(1);
+    expect(app.live.status).toBe('stopped');
+  });
+});

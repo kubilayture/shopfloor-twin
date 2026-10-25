@@ -228,11 +228,6 @@ function terminalMes(
     refuseNext: (path: string, type: string, detail: string) => {
       refuse = { path, type, detail };
     },
-    /** The session's idle expiry moves on, as the MES's own use of it does: still valid. */
-    touchSession: () => {
-      if (session)
-        session = { ...session, idleExpiresAt: new Date(Date.now() + 3_600_000).toISOString() };
-    },
   };
 }
 
@@ -266,6 +261,9 @@ describe('the operator terminal (#177)', () => {
     expect(screen.getByTestId('terminal-state-asm-01').dataset.state).toBe('Running');
     expect(screen.getByTestId('terminal-job-asm-01').textContent).toBe('Orders here: O-1');
     expect(screen.getByTestId('terminal-wip-O-1').textContent).toBe('2');
+    // The status in the desk's words, the raw value in `data-status` (UX-7 review M1).
+    const status = screen.getByTestId('terminal-order-status-O-1');
+    expect([status.textContent, status.dataset.status]).toEqual(['In progress', 'in-progress']);
     expect(screen.getByTestId('terminal-counts-O-1-OP30').textContent).toBe(
       'in 2 · good 2 · scrap 0 · rework 0',
     );
@@ -462,6 +460,16 @@ describe('the operator terminal (#177)', () => {
     ]);
     expect(screen.getByTestId('terminal-signal-3').dataset.acknowledged).toBe('true');
     expect(screen.getByTestId('terminal-lots-asm-01').textContent).toContain('VB-100-000007');
+    // Beside the work, under its own heading, after the orders in reading order (review L1).
+    const lotsCard = screen.getByTestId('terminal-lots');
+    expect(screen.getByTestId('terminal-quality').contains(lotsCard)).toBe(false);
+    expect(lotsCard.closest('section')?.getAttribute('aria-labelledby')).toBe(
+      'terminal-lots-title',
+    );
+    expect(
+      screen.getByTestId('terminal-order-O-1').compareDocumentPosition(lotsCard) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
     expect(screen.getByTestId('terminal-lot-K1').dataset.held).toBe('true');
     expect(screen.getByTestId('terminal-lot-P1').dataset.held).toBe('false');
     expect(screen.getByTestId('terminal-quality-truncated')).toBeTruthy();
@@ -648,6 +656,56 @@ describe('the operator terminal (#177)', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
+  it('keeps the sign-off dialog busy until the answer; a refusal is said in the row, focus back (review L2)', async () => {
+    const mes = terminalMes();
+    vi.stubGlobal('fetch', mes.fetch);
+    const app = await renderApp('/terminal/line-a1', { session: 'fetch' });
+    await signOnAs('olga');
+    await app.open();
+    await app.push({
+      type: 'terminal',
+      topic: 'terminal:line-a1',
+      view: viewOf({
+        crew: mes.view.crew,
+        orders: [
+          {
+            order: mes.view.orders[0]?.order ?? orderOf('O-1'),
+            operations: [operationOf('OP50', { complete: true })],
+            wip: 0,
+          },
+        ],
+      }),
+    });
+    mes.refuseNext(
+      '/api/v1/terminal/line-a1/orders/O-1/operations/OP50/sign-off',
+      PROBLEM_TYPES.operationStale,
+      'changed',
+    );
+    const trigger = screen.getByTestId('terminal-sign-off-O-1-OP50');
+    trigger.focus();
+    fireEvent.click(trigger);
+    const name = 'Sign off OP50 of order O-1?';
+    const confirm = within(screen.getByRole('dialog', { name })).getByRole('button', {
+      name: 'Sign off operation',
+    });
+    // Two taps in a row: the dialog is busy from the first, so one write goes out.
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+    expect(confirm.getAttribute('aria-busy')).toBe('true');
+    expect((await screen.findByTestId('terminal-op-message-O-1-OP50')).textContent).toMatch(
+      /^Not signed off: someone changed this operation/,
+    );
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name })).toBeNull();
+    });
+    expect(mes.calls.filter((c) => c.path.endsWith('/OP50/sign-off'))).toHaveLength(1);
+    // Not signed off: the button is still there and has the focus again.
+    expect(document.activeElement).toBe(screen.getByTestId('terminal-sign-off-O-1-OP50'));
+    expect(screen.getByTestId('terminal-op-state-O-1-OP50').textContent).toBe(
+      'Complete: ready to sign off',
+    );
+  });
+
   it('starts the live client again after a 4403 close when the session read then is still valid (#341 review)', async () => {
     const mes = terminalMes();
     vi.stubGlobal('fetch', mes.fetch);
@@ -656,12 +714,14 @@ describe('the operator terminal (#177)', () => {
     await app.open();
     expect(app.factory.sockets).toHaveLength(1);
     // The MES closes the socket for the session (4403): the client stops and the session is read
-    // again; still valid, the screen starts the client again instead of staying "Offline".
-    mes.touchSession();
+    // again. Read back unchanged (the same object, by structural sharing), it may still read, so
+    // the client starts again instead of staying "Offline" (UX-7 review M2).
+    const before = app.queryClient.getQueryData(['session']);
     await app.drop(4403);
     await waitFor(() => {
       expect(app.factory.sockets).toHaveLength(2);
     });
+    expect(app.queryClient.getQueryData(['session'])).toBe(before);
     await app.open();
     expect(screen.getByTestId('connection-status').dataset.status).toBe('open');
     expect(app.factory.last.sent).toContainEqual({ type: 'subscribe', topic: 'terminal:line-a1' });
@@ -766,6 +826,17 @@ describe('the operator terminal (#177)', () => {
       'In progress: O-1 · VB-100',
     );
     expect(line.getAttribute('href')).toBe('/terminal/line-a1');
+    // Named by the work center; the area, machines, crew and order describe it (review L3).
+    expect(screen.getByRole('link', { name: 'Line A1' })).toBe(line);
+    const described = (line.getAttribute('aria-describedby') ?? '')
+      .split(' ')
+      .map((id) => document.getElementById(id)?.textContent ?? '');
+    expect(described).toEqual([
+      'Assembly · line-a1',
+      'Machine asm-01 No data',
+      'Signed on: olga',
+      'In progress: O-1 · VB-100',
+    ]);
     expect(line.dataset.tone).toBe('normal');
     expect(line.className).not.toContain('border-l-4');
     // A machine down in Cell M1: its tile carries the alarm bar and the state's word (line order).

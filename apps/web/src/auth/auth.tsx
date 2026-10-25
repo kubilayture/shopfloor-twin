@@ -231,13 +231,21 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
     });
     const stopLive = live.onAuthClose((code) => {
       if (code === 4401) sessionLost('ended');
-      else void queryClient.invalidateQueries({ queryKey: sessionKey });
+      else {
+        // 4403: the client has stopped; the session is read again, and one that may still read
+        // starts it again (`startLive` checks). Here, not in the screens' effects on the session:
+        // a session read back unchanged keeps its reference, so those effects would not run
+        // (#341 review, UX-7 review M2), and the desk and the terminal would stay "Offline".
+        void queryClient.invalidateQueries({ queryKey: sessionKey }).then(() => {
+          startLive();
+        });
+      }
     });
     return () => {
       stopEvents();
       stopLive();
     };
-  }, [queryClient, live, sessionLost]);
+  }, [queryClient, live, sessionLost, startLive]);
 
   const value = useMemo<Auth>(
     () => ({

@@ -5,7 +5,7 @@ import {
 } from '@shopfloor/contracts/mes-api';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearch } from '@tanstack/react-router';
-import { useEffect, useId, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useRef, type ReactNode } from 'react';
 import {
   getAlarmKpi,
   getAlarmScopes,
@@ -16,7 +16,7 @@ import {
   type AlarmScopeRef,
 } from '../api/client.ts';
 import { queryKeys, useAlarmConfig, usePlantClock } from '../api/queries.ts';
-import { alarmHourlyOption } from '../chart/alarm-options.ts';
+import { alarmHourlyOption, alarmHourlyReading } from '../chart/alarm-options.ts';
 import { EChart } from '../chart/echart.tsx';
 import { useHeadingFocus } from '../components/heading-focus.ts';
 import { QueryError } from '../components/query-error.tsx';
@@ -267,7 +267,19 @@ function BucketTable({
   const live = useLiveAlarmKpi(key);
   const config = useAlarmConfig();
   const per = windowLabel(config?.kpi.windowMs);
-  const buckets = withPushed(rest.data?.buckets ?? [], live?.[bucket], range);
+  const pushed = live?.[bucket];
+  const buckets = useMemo(
+    () => withPushed(rest.data?.buckets ?? [], pushed, { from: range.from, to: range.to }),
+    [rest.data, pushed, range.from, range.to],
+  );
+  // Built again only when the data or the served config changes: a new option redraws the chart
+  // (`notMerge`), which drops an open tooltip.
+  const floodThreshold = config?.kpi.floodThreshold;
+  const windowMs = config?.kpi.windowMs;
+  const option = useMemo(
+    () => (buckets.length > 0 ? alarmHourlyOption(buckets, floodThreshold, windowMs) : null),
+    [buckets, floodThreshold, windowMs],
+  );
   return (
     <div className="flex flex-col gap-3">
       {rest.isError ? (
@@ -277,17 +289,10 @@ function BucketTable({
         <EChart
           testId="kpi-hourly"
           title={`Raises and peak per ${per}, by hour`}
-          description={`Bars per hour of raises and of the most raises in one ${per} window, with the flood threshold as a dashed line; the table below lists every value.`}
-          option={
-            buckets.length > 0
-              ? alarmHourlyOption(buckets, config?.kpi.floodThreshold, config?.kpi.windowMs)
-              : null
-          }
-        >
-          {buckets.length === 0 && rest.data ? (
-            <p className="text-sm">No hour with alarms in this shift.</p>
-          ) : null}
-        </EChart>
+          description={`${alarmHourlyReading(buckets, config?.kpi.floodThreshold, config?.kpi.windowMs)}; the table below lists every value.`}
+          option={option}
+          empty={rest.data ? 'No hour with alarms in this shift.' : undefined}
+        />
       ) : null}
       <div className="relative min-w-0 overflow-x-auto rounded-lg border border-slate-300 bg-white">
         <table

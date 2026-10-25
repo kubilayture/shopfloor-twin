@@ -11,7 +11,7 @@ import {
 } from '../test/alarm-fixtures.ts';
 import { EQUIPMENT, PLANT, json, problem } from '../test/fixtures.ts';
 import { CURRENT_SHIFT, SHIFT, SHIFT_END, SHIFT_START, requestUrl } from '../test/oee-fixtures.ts';
-import { renderApp } from '../test/render-app.tsx';
+import { renderApp, settle } from '../test/render-app.tsx';
 import { expectDecimals } from '../test/decimals.ts';
 
 /** The chart options drawn (jsdom has no canvas): the threshold line is checked on them. */
@@ -258,6 +258,39 @@ describe('alarm KPI page', () => {
       'Peak per 1 min',
     );
     expect(server.paths.filter((path) => path === '/api/v1/alarms/config')).toHaveLength(1);
+  });
+
+  it('hands the chart the same option when it re-renders without new data (UX-1f)', async () => {
+    // A new option redraws the chart (`notMerge`) and drops an open tooltip: a push that changes
+    // only the shift's card re-renders the hourly chart but must not build its option again.
+    const server = mes({
+      shift: { plant: [kpiBucket()] },
+      hours: [hourKpi('2026-10-15T05:00:00.000Z', { raises: 12, peak10: 8 })],
+    });
+    vi.stubGlobal('fetch', server.fetch);
+    const app = await renderApp('/alarms/kpi?focus=plant');
+    await app.open();
+    await waitFor(() => {
+      expect(thresholdLine(charts.options.at(-1))).toEqual([10]);
+    });
+    await waitFor(() => {
+      expect(app.factory.last.sent.map((message) => message.topic)).toContain('alarm-kpi:plant');
+    });
+    const shiftOnly = (raises: number) => ({
+      type: 'alarm-kpi' as const,
+      topic: 'alarm-kpi:plant',
+      hour: null,
+      shift: kpiBucket({ raises }),
+      floods: [],
+    });
+    await app.push(shiftOnly(15));
+    await settle(() => undefined);
+    const drawn = charts.options.at(-1);
+    const renders = charts.options.length;
+    await app.push(shiftOnly(16));
+    await settle(() => undefined);
+    expect(charts.options.length).toBeGreaterThan(renders);
+    for (const option of charts.options.slice(renders)) expect(option).toBe(drawn);
   });
 
   it('shows n/a for a mean time to acknowledge without acknowledgements', async () => {

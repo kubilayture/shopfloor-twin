@@ -229,6 +229,8 @@ describe('DataTable sticky header', () => {
     expect(frame?.className).toContain('max-h-[min(70vh,720px)]');
     // Its scroll padding keeps a focused row clear of the sticky header inside it.
     expect(frame?.className).toMatch(/\bscroll-pt-12\b/);
+    // The containing block of absolutely positioned cell content (sr-only text): kept inside.
+    expect(frame?.className).toMatch(/(^| )relative( |$)/);
     expect(frame?.hasAttribute('tabindex')).toBe(false);
     expect(frame?.hasAttribute('role')).toBe(false);
     expect(screen.queryByRole('region')).toBeNull();

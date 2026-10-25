@@ -175,9 +175,11 @@ const FRAME_FIT = 'overflow-clip';
  * The frame when the table is wider (or `bounded`): a bounded scroll box the header sticks in. Its
  * scroll padding keeps a focused row control clear of that header (WCAG 2.4.11): the page's own
  * `scroll-padding-top` does not reach inside the box. 48 px (a header row of two lines) until
- * `useOverflow` sets it to the measured header height.
+ * `useOverflow` sets it to the measured header height. It is the containing block of what is
+ * absolutely positioned in its cells (the `sr-only` reason of a `Missing`), which would otherwise
+ * escape the box and widen the page (UX-8: the serial page scrolled sideways at 768 px).
  */
-const FRAME_SCROLL = 'overflow-auto scroll-pt-12';
+const FRAME_SCROLL = 'relative overflow-auto scroll-pt-12';
 const FRAME_SCROLL_HEIGHT = 'max-h-[min(70vh,720px)]';
 
 /** The header row's cells: sunken, small, secondary ink, a 1 px `line` under them. */

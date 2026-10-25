@@ -44,6 +44,7 @@
     "demo": "pnpm --filter @shopfloor/e2e demo",
     "demo:probe": "pnpm --filter @shopfloor/e2e demo:probe",
     "demo:record": "pnpm --filter @shopfloor/e2e demo:record",
+    "a11y:diff": "node e2e/src/a11y-diff.ts",
     "test:fresh-clone": "pnpm --filter @shopfloor/e2e test:fresh-clone",
     "gate": "node scripts/gate.ts",
     "playwright:install": "pnpm --filter @shopfloor/e2e playwright:install"

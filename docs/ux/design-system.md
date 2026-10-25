@@ -522,7 +522,7 @@ interface FieldProps {
 }
 ```
 
-- Controls (`TextInput`, `Textarea`, `Select`, `Checkbox`, `Radio`, `NumberInput`): 36 px high (`md`), 56 px in the terminal (`touch`), white, 1 px `neutral-500` border (4.76:1), `radius-md`, focus ring; invalid: border `#b91c1c` plus the error text; disabled: as a disabled button, `disabled` fill (`neutral-100`), `disabled-line` border (`neutral-300`), `disabled-ink` text (`neutral-600`, 6.92:1). Every control gets an `id` and a `name` (G-23).
+- Controls (`TextInput`, `Textarea`, `Select`, `Checkbox`, `Radio`, `NumberInput`): 36 px high with 14 px text (`md`), 44 px with 16 px text on the login and account forms (`lg`: `controlClass({ size: 'lg' })`, 2.7; 16 px also keeps iOS Safari from zooming in on focus), 56 px in the terminal (`touch`), white, 1 px `neutral-500` border (4.76:1), `radius-md`, focus ring; invalid: border `#b91c1c` plus the error text; disabled: as a disabled button, `disabled` fill (`neutral-100`), `disabled-line` border (`neutral-300`), `disabled-ink` text (`neutral-600`, 6.92:1). Every control gets an `id` and a `name` (G-23).
 - `Select` is the native `<select>` styled with tokens (an arrow from `icons.tsx`), never a custom listbox: it is accessible on every platform, the e2e specs drive it with `selectOption`, and long option texts can be read (H-05: the select is as wide as its longest option up to the field's width, and the option text is shortened at the source, not cut).
 - `Checkbox`: 16 px box in a 24 px hit area, label to the right.
 - `CharacterCount` as today's comment box ("12 of 500 characters", `aria-describedby`).

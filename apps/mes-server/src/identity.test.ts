@@ -528,13 +528,19 @@ describe('identity module (#168)', () => {
 
   it('lets parallel attempts on an admin through one per delay (H1)', async () => {
     const password = await user('adm2', ['admin']);
+    const hashes = hashesStarted();
     const burst = Array.from({ length: 12 }, () =>
       identity.login({ username: 'adm2', password: 'wrong-password-x', kind: 'desk' }).then(
         () => 'ok',
         () => 'refused',
       ),
     );
-    await waitFor(async () => (await account('adm2')).next_attempt_at !== null);
+    // The delay is set and the five judged attempts have begun their hashes (a loaded machine
+    // may start the fifth only after the delay is written, #347), so the 429 below is all alone.
+    await waitFor(
+      async () =>
+        (await account('adm2')).next_attempt_at !== null && hashesStarted() - hashes === 5,
+    );
     // Within the admin's delay: 429 with Retry-After, no hash (#264 review, F3).
     expect(await throttledLogin('adm2', password)).toBe(1);
     await Promise.all(burst);
@@ -1519,6 +1525,8 @@ describe('authentication on every route (MES_AUTH=on, #168)', () => {
       identity,
       auth: true,
       writeRate: { perSecond: 1e6, burst: 1e6 },
+      // The buckets' clock stands still (#347): none refills, however slow the machine.
+      rateClock: () => 0,
     });
     const headers = (cookie: string) => ({
       host: 'localhost',
@@ -1706,6 +1714,7 @@ describe('MES_AUTH=off (diagnosis only, #170)', () => {
       userWriteRate: { perSecond: 1e6, burst: 1e6 },
       loginRate: { perSecond: 0.001, burst: 4 },
       userLoginRate: { perSecond: 0.001, burst: 2 },
+      rateClock: () => 0,
     });
     const headers = {
       host: 'localhost',
@@ -2179,7 +2188,7 @@ describe('login throttling over HTTP (#242, S5)', () => {
       auth: true,
       allowedHosts: ['localhost'],
       edge: new EdgeTrust(EDGE),
-      loginClock: () => 0,
+      rateClock: () => 0,
     });
     try {
       const send = (username: string, pw: string, client: string) =>
@@ -2275,7 +2284,7 @@ describe('login throttling over HTTP (#242, S5)', () => {
       allowedHosts: ['localhost'],
       edge: new EdgeTrust(EDGE),
       // The real buckets on a clock that stands still (#347).
-      loginClock: () => 0,
+      rateClock: () => 0,
     });
     // Four users whose rows another transaction holds: a login of each waits for that lock
     // inside its reservation, on a connection of the login pool, for as long as the test says.
@@ -2558,7 +2567,7 @@ describe('login throttling over HTTP (#242, S5)', () => {
       auth: true,
       allowedHosts: ['localhost'],
       edge: new EdgeTrust(EDGE),
-      loginClock: () => bucketMs,
+      rateClock: () => bucketMs,
     });
     const send = (username: string, pw: string, client: string) =>
       real.app.inject({
@@ -2628,7 +2637,7 @@ describe('login throttling over HTTP (#242, S5)', () => {
       loginRate: { perSecond: 1e6, burst: 1e6 },
       // One token for the name, never refilled: the buckets' clock stands still (#347).
       userLoginRate: { perSecond: 0.001, burst: 1 },
-      loginClock: () => 0,
+      rateClock: () => 0,
     });
     try {
       for (let i = 0; i < 10; i++) {

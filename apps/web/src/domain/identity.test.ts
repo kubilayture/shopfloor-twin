@@ -1,3 +1,4 @@
+import { PERMISSIONS, permissionsOf } from '@shopfloor/contracts/identity';
 import { PROBLEM_TYPES } from '@shopfloor/contracts/mes-api';
 import { describe, expect, it } from 'vitest';
 import { ApiError } from '../api/client.ts';
@@ -7,8 +8,11 @@ import { safeRedirect } from '../auth/redirect.ts';
 import { sessionOf } from '../test/fixtures.ts';
 import {
   loginFailure,
-  newPasswordProblems,
+  PERMISSION_AREAS,
+  PERMISSION_LABELS,
   passwordChangeFailure,
+  passwordFormProblems,
+  permissionGroups,
   rolesText,
   temporaryPassword,
   userWriteFailure,
@@ -81,18 +85,61 @@ describe('identity on screen (#170)', () => {
   });
 
   it('checks a new password as the MES does: 12–128 characters, not the current one, confirmed', () => {
-    expect(newPasswordProblems('long enough pw', 'long enough pw', 'old one here')).toEqual([]);
-    expect(newPasswordProblems('short', 'short')).toEqual([
+    const texts = (next: string, confirm: string, current?: string) =>
+      passwordFormProblems(next, confirm, current).map((problem) => problem.text);
+    expect(texts('long enough pw', 'long enough pw', 'old one here')).toEqual([]);
+    expect(texts('short', 'short')).toEqual([
       'The new password needs 12 to 128 characters (it has 5).',
     ]);
-    expect(newPasswordProblems('same password', 'same password', 'same password')).toEqual([
+    expect(texts('same password', 'same password', 'same password')).toEqual([
       'The new password must differ from the current one.',
     ]);
-    expect(newPasswordProblems('long enough pw', 'long enough px')).toEqual([
-      'The two new passwords differ.',
-    ]);
+    expect(texts('long enough pw', 'long enough px')).toEqual(['The two new passwords differ.']);
     // Characters, not UTF-16 units.
-    expect(newPasswordProblems('🔒'.repeat(12), '🔒'.repeat(12))).toEqual([]);
+    expect(texts('🔒'.repeat(12), '🔒'.repeat(12))).toEqual([]);
+  });
+
+  it('ties each problem of the password form to its field (UX-11)', () => {
+    expect(passwordFormProblems('long enough pw', 'long enough pw', 'old one here')).toEqual([]);
+    // The forced change knows the current password: no field of its own to blame.
+    expect(passwordFormProblems('long enough pw', 'long enough pw')).toEqual([]);
+    expect(passwordFormProblems('short', 'shorter', '')).toEqual([
+      { field: 'current', text: 'Enter your current password.' },
+      { field: 'next', text: 'The new password needs 12 to 128 characters (it has 5).' },
+      { field: 'confirm', text: 'The two new passwords differ.' },
+    ]);
+    expect(passwordFormProblems('same password', 'same password', 'same password')).toEqual([
+      { field: 'next', text: 'The new password must differ from the current one.' },
+    ]);
+    expect(passwordFormProblems('x'.repeat(129), 'x'.repeat(129), 'old one here')).toEqual([
+      { field: 'next', text: 'The new password needs 12 to 128 characters (it has 129).' },
+    ]);
+  });
+
+  it('says every permission in words, grouped by area in reading order (UX-11, Y-02)', () => {
+    for (const permission of PERMISSIONS) {
+      expect(PERMISSION_AREAS).toContain(PERMISSION_LABELS[permission].area);
+      expect(PERMISSION_LABELS[permission].text).toMatch(/^[A-Z][a-z]/);
+    }
+    // Every area holds a permission.
+    expect(new Set(PERMISSIONS.map((p) => PERMISSION_LABELS[p].area))).toEqual(
+      new Set(PERMISSION_AREAS),
+    );
+    const groups = permissionGroups(permissionsOf(['supervisor']));
+    expect(groups.map((group) => group.area)).toEqual(
+      PERMISSION_AREAS.filter((area) => groups.some((group) => group.area === area)),
+    );
+    expect(permissionGroups(['scrap:code', 'read', 'downtime:code'])).toEqual([
+      { area: 'Plant data', permissions: [{ id: 'read', text: 'See every screen of the plant' }] },
+      {
+        area: 'Downtime and scrap',
+        permissions: [
+          { id: 'scrap:code', text: 'Code scrap' },
+          { id: 'downtime:code', text: 'Code downtime' },
+        ],
+      },
+    ]);
+    expect(permissionGroups([])).toEqual([]);
   });
 
   it('makes temporary passwords of 16 unambiguous characters without bias', () => {

@@ -248,6 +248,7 @@ function Relogin({ lost }: { readonly lost: LostSession }) {
           <span className="font-semibold">{lost.username}</span> to carry on, then send it.
         </p>
         <LoginForm
+          className="mt-4"
           fixedUsername={lost.username}
           onLoggedIn={(session) => {
             auth.loggedIn(session);

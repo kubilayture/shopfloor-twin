@@ -134,8 +134,13 @@ describe('the controls', () => {
     expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Serial' }).disabled).toBe(true);
   });
 
-  it('controlClass: 36 px on the desk, 56 px in the terminal', () => {
-    expect(classesOf({ className: controlClass() } as Element)).toContain('min-h-9');
+  it('controlClass: 36 px on the desk, 44 px with 16 px text for login and account, 56 px in the terminal', () => {
+    expect(classesOf({ className: controlClass() } as Element)).toEqual(
+      expect.arrayContaining(['min-h-9', 'text-sm']),
+    );
+    const lg = classesOf({ className: controlClass({ size: 'lg' }) } as Element);
+    expect(lg).toEqual(expect.arrayContaining(['min-h-11', 'px-3', 'py-2', 'text-base']));
+    expect(lg).not.toContain('text-sm');
     expect(classesOf({ className: controlClass({ size: 'touch' }) } as Element)).toEqual(
       expect.arrayContaining(['min-h-14', 'text-lg']),
     );

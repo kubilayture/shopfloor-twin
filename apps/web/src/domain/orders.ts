@@ -418,3 +418,41 @@ export function countsText(counts: Readonly<Record<string, number>>): string {
     .map(([key, value]) => `${key}: ${String(value)}`)
     .join(', ');
 }
+
+/** The statuses of an order still to be finished: past its due date such an order is overdue. */
+const UNFINISHED: readonly OrderStatus[] = ['imported', 'released', 'dispatched', 'in-progress'];
+
+/**
+ * Whether the order is overdue (P-02): not finished and its due date before the plant clock. A
+ * completed, closed, cancelled or rejected order never is; without a known clock none is.
+ */
+export function isOverdue(
+  order: Pick<OrderDto, 'status' | 'dueDate'>,
+  clockMs: number | undefined,
+): boolean {
+  if (clockMs === undefined || !UNFINISHED.includes(order.status)) return false;
+  return Date.parse(order.dueDate) < clockMs;
+}
+
+/**
+ * The tone of an ERP message's status (design system 2.3): a refusal or rejection `alarm`, a
+ * conflict or a refused revision `warn`, a message still waiting to go `info`, the rest `neutral`.
+ */
+const ERP_STATUS_TONE: Readonly<Record<string, Tone>> = {
+  rejected: 'alarm',
+  refused: 'alarm',
+  conflict: 'warn',
+  'revision-refused': 'warn',
+  pending: 'info',
+};
+
+export function erpStatusTone(status: string): Tone {
+  return ERP_STATUS_TONE[status] ?? 'neutral';
+}
+
+/** What the ERP's priority (1 most urgent) looks like: a glyph for the two most urgent. */
+export function priorityGlyph(priority: number): 'triangles-up' | 'triangle-up' | undefined {
+  if (priority <= 1) return 'triangles-up';
+  if (priority === 2) return 'triangle-up';
+  return undefined;
+}

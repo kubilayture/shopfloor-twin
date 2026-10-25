@@ -181,6 +181,7 @@ export function ActionForm({
   initial,
   onClose,
   onWritten,
+  headingLevel = 3,
 }: {
   readonly order: OrderDto;
   readonly commands: readonly CommandDto[];
@@ -189,8 +190,11 @@ export function ActionForm({
   readonly onClose: (done?: Done) => void;
   /** Reads the order again (after a write, or a refusal that says it moved on). */
   readonly onWritten: () => Promise<void>;
+  /** The form's heading level where it opens: 2 right under a page header, 3 inside a section. */
+  readonly headingLevel?: 2 | 3;
 }) {
   const queryClient = useQueryClient();
+  const Heading = headingLevel === 2 ? 'h2' : 'h3';
   const [draft, setDraft] = useState<ActionDraft>(initial);
   const [failure, setFailure] = useState<OrderFailure | undefined>(undefined);
   const [invalid, setInvalid] = useState<string[]>([]);
@@ -255,10 +259,10 @@ export function ActionForm({
         if (event.key === 'Escape') onClose();
       }}
     >
-      <h3 className="font-semibold">
+      <Heading className="font-semibold">
         {text.label}
         {draft.action === 'abandon' ? `: ${draft.commandId}` : ''}
-      </h3>
+      </Heading>
       <p className="text-sm">{effectText(draft, order)}</p>
       <p className="text-xs text-slate-700">
         Prepared on version {draft.version} of the order; the MES refuses it if the order has

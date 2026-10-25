@@ -257,5 +257,11 @@ describe('DescriptionList', () => {
     expect(screen.getByTestId('f').className).not.toContain('sm:columns-2');
     rerender(<DescriptionList testId="f" columns={2} facts={[]} />);
     expect(screen.getByTestId('f').className).not.toContain('xl:columns-4');
+    // Compact: two columns already on a phone, four from xl (a page header's short facts).
+    rerender(<DescriptionList testId="f" columns="compact" facts={[]} />);
+    expect(screen.getByTestId('f').className.split(' ')).toEqual(
+      expect.arrayContaining(['columns-2', 'xl:columns-4']),
+    );
+    expect(screen.getByTestId('f').className).not.toContain('columns-1');
   });
 });

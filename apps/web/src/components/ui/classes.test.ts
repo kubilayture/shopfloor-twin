@@ -42,6 +42,8 @@ const FILES = [
   'screens/overview.tsx',
   'screens/machine-detail.tsx',
   'components/cause-text.tsx',
+  'screens/order-list.tsx',
+  'screens/order-detail.tsx',
 ];
 
 /** Utility prefixes: a literal with one of these is a class list. */

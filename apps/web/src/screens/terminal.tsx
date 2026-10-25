@@ -640,8 +640,12 @@ function TerminalWork({
                 <EmptyState
                   size="inline"
                   icon="info"
-                  title="No order is active here."
-                  body="Released and dispatched orders are listed under Coming up."
+                  title={<span className="text-lg">No order is active here.</span>}
+                  body={
+                    <span className="text-base">
+                      Released and dispatched orders are listed under Coming up.
+                    </span>
+                  }
                 />
               </Card>
             ) : (
@@ -1224,7 +1228,11 @@ function Queue({ view }: { readonly view: TerminalViewDto }) {
     <TerminalSection id="terminal-queue" title="Coming up">
       {view.queue.length === 0 ? (
         <Card padding="compact">
-          <EmptyState size="inline" icon="info" title="No released or dispatched order waits." />
+          <EmptyState
+            size="inline"
+            icon="info"
+            title={<span className="text-lg">No released or dispatched order waits.</span>}
+          />
         </Card>
       ) : (
         <ul className="flex flex-col gap-3" data-testid="terminal-queue">
@@ -1278,7 +1286,11 @@ function ScrapRecords({
     <TerminalSection id="terminal-scrap" title="Scrap to code">
       {view.scrapRecords.length === 0 ? (
         <Card padding="compact">
-          <EmptyState size="inline" icon="check" title="No scrap waits for a reason." />
+          <EmptyState
+            size="inline"
+            icon="check"
+            title={<span className="text-lg">No scrap waits for a reason.</span>}
+          />
         </Card>
       ) : (
         <ul className="flex flex-col gap-4">

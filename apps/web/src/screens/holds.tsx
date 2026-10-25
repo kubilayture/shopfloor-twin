@@ -1109,8 +1109,9 @@ function Scope({ detail }: { readonly detail: HoldDetailDto }) {
           No unit in the scope yet.
         </p>
       ) : (
-        <div className="mt-2 max-h-96 overflow-y-auto">
+        <div className="mt-2">
           <Table
+            bounded
             testId="hold-units"
             caption="Units in the hold's scope"
             columns={['Serial', 'Unit (epoch / part)', 'Order', 'Carton', 'Joined']}

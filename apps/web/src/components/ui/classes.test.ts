@@ -142,6 +142,8 @@ const PASSED_IN = ['line-through'];
  * `size`, a native attribute the form controls set themselves.
  */
 const NOT_CLASSES = new Set(['top', 'bottom', 'text', 'p', 'group', 'size']);
+/** UX-1d1 (#318): a header cell's `scope="col"`. */
+NOT_CLASSES.add('col');
 
 const CLASSES = [...new Set([...FILES.flatMap(harvest), ...PASSED_IN])]
   .filter((c) => !NOT_CLASSES.has(c))

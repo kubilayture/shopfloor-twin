@@ -314,6 +314,12 @@ export interface RealtimeOptions {
   /** All logins together, a ceiling for the server only (default `LIMITS`: 100/s, 200). */
   readonly loginCeiling?: { readonly perSecond: number; readonly burst: number };
   /**
+   * The login buckets' clock in milliseconds, monotonic (default `performance.now`). Tests hold
+   * it still or move it, so what the buckets admit doesn't depend on how fast the machine runs
+   * (#347).
+   */
+  readonly loginClock?: () => number;
+  /**
    * Whether a request came from nginx over the `edge` network (#237, `EdgeTrust`): only then are
    * its proxy headers (`X-Original-Method`; `X-Real-IP` from P9-15) believed. Default: never.
    */
@@ -717,9 +723,11 @@ export async function registerRealtime(
     options.userLoginRate?.perSecond ?? LIMITS.userLoginsPerSecond,
     options.userLoginRate?.burst ?? LIMITS.userLoginBurst,
   );
+  const loginClock = options.loginClock ?? (() => performance.now());
   const loginCeiling = new WriteLimiter(
     options.loginCeiling?.perSecond ?? LIMITS.loginCeilingPerSecond,
     options.loginCeiling?.burst ?? LIMITS.loginCeilingBurst,
+    loginClock(),
   );
   // An address that logged in as this user within the window (the identity module knows) spends
   // no token of the shared ceiling (#264 round 3, R1): attackers who fill the ceiling can't keep
@@ -728,10 +736,14 @@ export async function registerRealtime(
     username: string,
     address: string,
     recentSuccess: boolean,
-  ): number | undefined =>
-    nameLimiters.take(`${username.trim().toLowerCase()}\n${address}`) ??
-    addressLimiters.take(address) ??
-    (recentSuccess ? undefined : loginCeiling.take());
+  ): number | undefined => {
+    const now = loginClock();
+    return (
+      nameLimiters.take(`${username.trim().toLowerCase()}\n${address}`, now) ??
+      addressLimiters.take(address, now) ??
+      (recentSuccess ? undefined : loginCeiling.take(now))
+    );
+  };
 
   // Identity (#168, ADR-0026).
   const identity = options.identity;

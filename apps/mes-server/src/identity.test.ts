@@ -12,7 +12,7 @@ import {
   type Permission,
   type Role,
 } from '@shopfloor/contracts/identity';
-import { PROBLEM_TYPES, sessionSchema } from '@shopfloor/contracts/mes-api';
+import { MES_API_LIMITS, PROBLEM_TYPES, sessionSchema } from '@shopfloor/contracts/mes-api';
 import type { FastifyInstance } from 'fastify';
 import { sql, type Kysely } from 'kysely';
 import type { StartedTestContainer } from 'testcontainers';
@@ -34,7 +34,9 @@ import {
   SCRYPT_PARAMS,
   Semaphore,
   hashPassword,
+  hashesDone,
   hashesStarted,
+  LOGIN_HASH_SLOTS,
   needsRehash,
   parseHash,
   parseToken,
@@ -43,7 +45,7 @@ import {
 } from './modules/identity/index.ts';
 import { WS_PATH, cookieValue } from './modules/realtime/index.ts';
 import { OPENAPI_FILE } from './openapi.ts';
-import { appUrl, startDatabase } from './testing.ts';
+import { appUrl, backendPid, blockedBy, startDatabase } from './testing.ts';
 import { createDatabase } from './db/database.ts';
 import {
   parseUserCreateArgs,
@@ -122,7 +124,7 @@ const failureReasons = async (username: string): Promise<string[]> =>
     .filter((r) => r.action === 'session.login-failed')
     .map((r) => (r.after as { reason: string }).reason);
 
-async function waitFor(check: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {
+async function waitFor(check: () => Promise<boolean>, timeoutMs = 60_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!(await check())) {
     if (Date.now() > deadline) throw new Error('timed out');
@@ -698,6 +700,7 @@ describe('identity module (#168)', () => {
     const held = new Promise<void>((resolve) => (release = resolve));
     let locked: () => void = () => undefined;
     const isLocked = new Promise<void>((resolve) => (locked = resolve));
+    let holderPid = 0;
     const holder = db.transaction().execute(async (trx) => {
       await trx
         .selectFrom('identity.user_account')
@@ -705,12 +708,14 @@ describe('identity module (#168)', () => {
         .where('username', '=', 'sol')
         .forUpdate()
         .execute();
+      holderPid = await backendPid(trx);
       locked();
       await held;
     });
     await isLocked;
     const waiting = failedLogin('sol', 'wrong-password-x', '10.50.0.1');
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // Until the attempt waits for the row lock, not a fixed 100 ms (#347).
+    await blockedBy(db, holderPid, 'the login waiting for the row lock');
     clock += 5_000;
     const decidedAt = clock;
     release();
@@ -2165,13 +2170,16 @@ describe('login throttling over HTTP (#242, S5)', () => {
 
   it('keeps the victim in while an attacker address hammers its name and random names (#264 review, F2)', async () => {
     const password = await user('h-dan', ['operator']);
-    // The real buckets: per address 5/s (10), per (name, address) 1/s (5), ceiling 100/s (200).
+    // The real buckets: per address 5/s (10), per (name, address) 1/s (5), ceiling 10/s (20), on
+    // a clock that stands still (#347): none refills, however slowly a loaded machine answers, so
+    // what they admit is exact.
     const real = await buildMesHttp({
       ready: () => Promise.resolve(true),
       identity,
       auth: true,
       allowedHosts: ['localhost'],
       edge: new EdgeTrust(EDGE),
+      loginClock: () => 0,
     });
     try {
       const send = (username: string, pw: string, client: string) =>
@@ -2195,13 +2203,15 @@ describe('login throttling over HTTP (#242, S5)', () => {
         answers.push((await send('h-dan', 'wrong-password-x', attacker)).statusCode);
         answers.push((await send(`ghost-${String(i)}`, 'wrong-password-x', attacker)).statusCode);
       }
-      // The attacker's own buckets refuse it (429); its pair locks after five judged failures.
-      expect(answers.filter((s) => s === 429).length).toBeGreaterThan(60);
+      // The attacker's own address bucket admits its burst (10: five of h-dan, five ghosts) and
+      // refuses the rest (429); its pair locks after five judged failures.
+      const { loginBurst, loginCeilingBurst } = MES_API_LIMITS;
+      expect(answers.filter((s) => s === 401)).toHaveLength(loginBurst);
+      expect(answers.filter((s) => s === 429)).toHaveLength(120 - loginBurst);
       expect((await pairsOf('h-dan')).map((p) => p.address)).toEqual([attacker]);
-      // The victim, from its own address, is in: its own buckets are untouched. (The ceiling for
-      // all logins together, 10/s since N1, is shared: the sequential hammering above drained it,
-      // so the victim comes after a refill of a few tenths of a second.)
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      // The victim, from its own address, is in at once: its own buckets are untouched, and the
+      // shared ceiling still holds what the attacker's address bucket kept from it.
+      expect(loginCeilingBurst).toBeGreaterThan(loginBurst);
       expect((await send('h-dan', password, victim)).statusCode).toBe(200);
     } finally {
       await real.app.close();
@@ -2243,7 +2253,7 @@ describe('login throttling over HTTP (#242, S5)', () => {
     await identity.updateUser('h-gus', { enabled: false }, { system: 'test' });
   });
 
-  it('keeps authenticated reads fast while a flood of logins fills the login pool (#264 review, F1)', async () => {
+  it('keeps authenticated reads answered while logins hold every connection of the login pool and a flood waits (#264 review, F1)', async () => {
     // The MES's shape: two connections for sessions, two of their own for logins.
     const name = (await sql<{ name: string }>`SELECT current_database() AS name`.execute(db))
       .rows[0]?.name;
@@ -2264,9 +2274,21 @@ describe('login throttling over HTTP (#242, S5)', () => {
       auth: true,
       allowedHosts: ['localhost'],
       edge: new EdgeTrust(EDGE),
+      // The real buckets on a clock that stands still (#347).
+      loginClock: () => 0,
     });
+    // Four users whose rows another transaction holds: a login of each waits for that lock
+    // inside its reservation, on a connection of the login pool, for as long as the test says.
+    const blockers = ['h-hal-a', 'h-hal-b', 'h-hal-c', 'h-hal-d'];
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let holding: (pid: number) => void = () => undefined;
+    const holderPid = new Promise<number>((resolve) => (holding = resolve));
+    let holder: Promise<void> | undefined;
+    const pending: Promise<number>[] = [];
     try {
       const password = await user('h-hal', ['operator']);
+      for (const blocker of blockers) await user(blocker, ['operator']);
       const loginAs = (username: string, pw: string, client: string) =>
         http.app.inject({
           method: 'POST',
@@ -2284,40 +2306,73 @@ describe('login throttling over HTTP (#242, S5)', () => {
       const ok = await loginAs('h-hal', password, '192.168.93.1');
       expect(ok.statusCode).toBe(200);
       const cookie = String(ok.headers['set-cookie']).split(';')[0] ?? '';
-      const read = async (): Promise<number> => {
-        const started = performance.now();
-        const response = await http.app.inject({
-          method: 'GET',
-          url: '/api/v1/session',
-          remoteAddress: NGINX,
-          headers: { host, cookie, 'x-real-ip': '192.168.93.1', 'x-forwarded-proto': 'https' },
-        });
-        expect(response.statusCode).toBe(200);
-        return performance.now() - started;
-      };
-      const median = (values: number[]) =>
-        [...values].sort((a, b) => a - b)[values.length >> 1] ?? 0;
-      const quiet: number[] = [];
-      for (let i = 0; i < 20; i++) quiet.push(await read());
-      // The flood: 300 logins at once from 300 addresses (each passes its own buckets), most of
-      // them unknown names, a third the victim's with a wrong password.
+      const read = async (): Promise<number> =>
+        (
+          await http.app.inject({
+            method: 'GET',
+            url: '/api/v1/session',
+            remoteAddress: NGINX,
+            headers: { host, cookie, 'x-real-ip': '192.168.93.1', 'x-forwarded-proto': 'https' },
+          })
+        ).statusCode;
+      holder = db.transaction().execute(async (trx) => {
+        await trx
+          .selectFrom('identity.user_account')
+          .select('id')
+          .where('username', 'in', blockers)
+          .forUpdate()
+          .execute();
+        holding(await backendPid(trx));
+        await held;
+      });
+      const pid = await holderPid;
+      const waitingOnHolder = async (): Promise<number> =>
+        (
+          await sql<{ n: number }>`SELECT count(*)::int AS n FROM pg_stat_activity
+            WHERE pg_blocking_pids(pid) @> ARRAY[${pid}::int]`.execute(db)
+        ).rows[0]?.n ?? 0;
+      blockers.forEach((blocker, i) => {
+        pending.push(
+          loginAs(blocker, 'wrong-password-x', `10.78.0.${String(i + 1)}`).then(
+            (r) => r.statusCode,
+          ),
+        );
+      });
+      // Both connections of the login pool wait for the lock; the other two wait for a connection.
+      await waitFor(async () => (await waitingOnHolder()) === 2);
+      // The flood: 300 logins at once from 300 addresses, most of them unknown names, a third the
+      // victim's with a wrong password. What the ceiling and the hash slots admit queues for the
+      // login pool too; the rest is refused (429) without waiting for a connection.
       const flood = Array.from({ length: 300 }, (_, i) =>
         loginAs(
           i % 3 === 0 ? 'h-hal' : `flood-${String(i)}`,
           'wrong-password-x',
           `10.77.${String(i >> 8)}.${String(i & 255)}`,
-        ),
+        ).then((r) => r.statusCode),
       );
-      const loaded: number[] = [];
-      for (let i = 0; i < 20; i++) loaded.push(await read());
-      const answers = (await Promise.all(flood)).map((r) => r.statusCode);
-      // The login pool's queue overflowed: 429s, decided without waiting for a connection.
+      pending.push(...flood);
+      // Reads go on: they never need a connection of the login pool. (Sharing it, they would wait
+      // here until the test's timeout: the review measured 54–83 ms per read with the pool merely
+      // busy.)
+      const reads: number[] = [];
+      for (let i = 0; i < 20; i++) reads.push(await read());
+      expect(reads).toEqual(Array<number>(20).fill(200));
+      // ...all of them while the login pool was still held.
+      expect(await waitingOnHolder()).toBe(2);
+      release();
+      await holder;
+      const answers = await Promise.all(pending);
+      // The two that held the pool's connections were judged once the lock was gone; the flood's
+      // overflow got 429s.
+      expect(
+        answers.slice(0, blockers.length).filter((s) => s === 401).length,
+      ).toBeGreaterThanOrEqual(2);
       expect(answers.filter((s) => s === 429).length).toBeGreaterThan(0);
-      // Reads went on at their quiet pace (the review measured 3 ms quiet, 54–83 ms flooded).
-      expect(median(loaded), `quiet ${String(median(quiet))} ms`).toBeLessThan(
-        Math.max(25, 3 * median(quiet)),
-      );
+      expect(answers.every((s) => s === 401 || s === 429)).toBe(true);
     } finally {
+      release();
+      await holder;
+      await Promise.allSettled(pending);
       await http.app.close();
       flooded.stop();
       await sessionsDb.destroy();
@@ -2325,7 +2380,9 @@ describe('login throttling over HTTP (#242, S5)', () => {
     }
   });
 
-  it('keeps a login answered within 1 s while open-loop attacks from 4 and 8 addresses run, every refusal a 429 (#264 re-review, N1)', async () => {
+  it('keeps a login answered within 10 hash times (at least 1 s) while open-loop attacks from 4 and 8 addresses run, never more hashes in flight than slots, every refusal a 429 (#264 re-review, N1)', async ({
+    task,
+  }) => {
     const password = await user('h-lea', ['operator']);
     // The real buckets, ceiling and hash slots; real scrypt hashes (two at a time, ~0.1 s each).
     const slotted = new Identity({ db, now, sweepMs: 0 });
@@ -2357,9 +2414,13 @@ describe('login throttling over HTTP (#242, S5)', () => {
       for (const attackers of [4, 8]) {
         const attack: Promise<number>[] = [];
         let n = 0;
+        // Hashes asked for and not finished, at most: each holds a hash slot until it is done.
+        let inFlight = 0;
+        const hashesBefore = hashesDone();
         // Open loop: each attacker address sends 5 logins a second of unknown names, never
         // waiting for an answer.
         const timer = setInterval(() => {
+          inFlight = Math.max(inFlight, hashesStarted() - hashesDone().count);
           for (let a = 0; a < attackers; a++) {
             n++;
             attack.push(
@@ -2383,8 +2444,23 @@ describe('login throttling over HTTP (#242, S5)', () => {
           clearInterval(timer);
         }
         const answers = await Promise.all(attack);
-        const summary = `${String(attackers)} attackers: victim ${statuses.join(',')}, ${latencies.map((l) => Math.round(l)).join(',')} ms`;
-        expect(p95(latencies), summary).toBeLessThanOrEqual(1_000);
+        // The budget is in hash times, what one hash cost meanwhile under whatever else the
+        // machine runs (#347: 1080 ms against a fixed 1 s on a loaded host). The victim waits for
+        // at most the 9 other slots' hashes, two at a time (5 hash times), and its own (6); 10
+        // leaves 4 for the database and the event loop, and the review's 1 s stays the floor.
+        // Without the slots the queue, and the wait in hash times, grows for as long as the attack
+        // outruns the hashes; the hashes in flight say so directly.
+        const hashed = hashesDone();
+        const hashMs =
+          (hashed.ms - hashesBefore.ms) / Math.max(1, hashed.count - hashesBefore.count);
+        const budget = Math.max(1_000, 10 * hashMs);
+        const summary = `${String(attackers)} attackers: victim ${statuses.join(',')}, ${latencies.map((l) => Math.round(l)).join(',')} ms; a hash ${String(Math.round(hashMs))} ms, budget ${String(Math.round(budget))} ms, at most ${String(inFlight)} hashes in flight`;
+        // The measurements, in the JSON report's meta of this test.
+        Object.assign(task.meta, {
+          [`n1-${String(attackers)}`]: { latencies, hashMs, budget, inFlight },
+        });
+        expect(p95(latencies), summary).toBeLessThanOrEqual(budget);
+        expect(inFlight, summary).toBeLessThanOrEqual(LOGIN_HASH_SLOTS.total);
         // Every refusal of the victim is a 429 (a bucket, the ceiling or no hash slot).
         expect(
           statuses.every((s) => s === 200 || s === 429),
@@ -2472,12 +2548,16 @@ describe('login throttling over HTTP (#242, S5)', () => {
     const password = await user('h-moe', ['operator']);
     const slotted = new Identity({ db, now, sweepMs: 0 });
     await slotted.start();
+    // The real buckets, ceiling and hash slots; the buckets' clock moves only when the test moves
+    // it (#347), so how full the ceiling is doesn't depend on how fast the machine answers.
+    let bucketMs = 0;
     const real = await buildMesHttp({
       ready: () => Promise.resolve(true),
       identity: slotted,
       auth: true,
       allowedHosts: ['localhost'],
       edge: new EdgeTrust(EDGE),
+      loginClock: () => bucketMs,
     });
     const send = (username: string, pw: string, client: string) =>
       real.app.inject({
@@ -2494,45 +2574,47 @@ describe('login throttling over HTTP (#242, S5)', () => {
         payload: JSON.stringify({ username, password: pw }),
       });
     const home = '192.168.97.1';
+    const { loginBurst, loginCeilingBurst } = MES_API_LIMITS;
     try {
       expect((await send('h-moe', password, home)).statusCode).toBe(200);
+      let n = 0;
       for (const attackers of [2, 4]) {
-        const attack: Promise<number>[] = [];
-        let n = 0;
-        // Each attacker address sends 10 a second, never waiting: its own bucket admits 5 a
-        // second after a burst of 10, so together they fill the 10/s ceiling (bursts of 20).
-        const timer = setInterval(() => {
-          for (let a = 0; a < attackers; a++) {
-            n++;
-            attack.push(
-              send(`raider-${String(n)}`, 'wrong-password-x', `198.51.100.${String(150 + a)}`).then(
-                (r) => r.statusCode,
-              ),
-            );
-          }
-        }, 100);
-        const statuses: number[] = [];
-        try {
-          for (let i = 0; i < 6; i++) {
-            await new Promise((resolve) => setTimeout(resolve, 1_000));
-            statuses.push((await send('h-moe', password, home)).statusCode);
-          }
-        } finally {
-          clearInterval(timer);
+        for (let round = 0; round < 6; round++) {
+          // Ten seconds on: every bucket is full again (the ceiling 20, each address 10).
+          bucketMs += 10_000;
+          // Each attacker address sends its whole burst at once: together at least the ceiling's.
+          const attack = await Promise.all(
+            Array.from({ length: attackers * loginBurst }, (_, i) => {
+              n++;
+              return send(
+                `raider-${String(n)}`,
+                'wrong-password-x',
+                `198.51.100.${String(150 + (i % attackers))}`,
+              ).then((r) => r.statusCode);
+            }),
+          );
+          const what = `${String(attackers)} attackers, round ${String(round)}`;
+          expect(
+            attack.every((s) => s === 401 || s === 429),
+            what,
+          ).toBe(true);
+          // What the ceiling refused beyond its burst (the hash slots refuse more, also 429).
+          expect(attack.filter((s) => s === 429).length, what).toBeGreaterThanOrEqual(
+            attackers * loginBurst - loginCeilingBurst,
+          );
+          // The ceiling is empty: a fresh address, with full buckets of its own, is refused...
+          const probe = await send(`probe-${String(n)}`, 'wrong-password-x', '192.168.98.1');
+          expect(probe.statusCode, what).toBe(429);
+          expect(probe.json<{ detail: string }>().detail, what).toBe(LOGIN_RATE);
+          // ...and the home address, which logged in within the window, is in.
+          expect((await send('h-moe', password, home)).statusCode, what).toBe(200);
         }
-        const answers = await Promise.all(attack);
-        // The attackers did fill the ceiling: some of their attempts were refused with 429.
-        expect(
-          answers.filter((s) => s === 429).length,
-          `${String(attackers)} attackers`,
-        ).toBeGreaterThan(0);
-        expect(statuses, `${String(attackers)} attackers`).toEqual(Array<number>(6).fill(200));
       }
     } finally {
       await real.app.close();
       slotted.stop();
     }
-  }, 60_000);
+  });
 
   it('asks the login buckets only for an attempt the global delay let through', async () => {
     const password = await user('h-cem', ['operator']);
@@ -2543,8 +2625,9 @@ describe('login throttling over HTTP (#242, S5)', () => {
       allowedHosts: ['localhost'],
       edge: new EdgeTrust(EDGE),
       loginRate: { perSecond: 1e6, burst: 1e6 },
-      // One token for the name, refilled after about 17 minutes of real time.
+      // One token for the name, never refilled: the buckets' clock stands still (#347).
       userLoginRate: { perSecond: 0.001, burst: 1 },
+      loginClock: () => 0,
     });
     try {
       for (let i = 0; i < 10; i++) {

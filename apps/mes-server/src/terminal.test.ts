@@ -694,6 +694,52 @@ describe('operator activity and operation sign-off (#177)', () => {
       'crew-ended',
     );
   });
+
+  it('never ends an interval before its start when the database clock steps back (#344)', async () => {
+    // The database's wall clock is not monotonic: Lima's guest agent, say, steps a Colima VM's
+    // clock back to its host's every 10 s. An interval started just before such a step and ended
+    // just after it read an end before its start (`operation_activity_check4`). Here the step is
+    // pinned: the open intervals' starts are moved an hour ahead of the clock.
+    const h = await harness('clock_step');
+    await started(h, 'G-1');
+    const olga = { by: h.olga, requestId: 'r' };
+    await h.orders.startWork('G-1', 'OP30', { activity: null }, olga);
+    await h.orders.startWork('G-1', 'OP40', { activity: null }, olga);
+    const ahead = async (operation: string): Promise<Date> => {
+      const row = await h.db
+        .updateTable('orders.operation_activity')
+        .set({ from_at: sql<Date>`clock_timestamp() + interval '1 hour'` })
+        .where('order_id', '=', 'G-1')
+        .where('operation', '=', operation)
+        .where('to_at', 'is', null)
+        .returning('from_at')
+        .executeTakeFirstOrThrow();
+      return row.from_at;
+    };
+    // A terminal write (pause; a sign-off closes the same way): the work ends at its start.
+    const workFrom = await ahead('OP30');
+    const work = (await mine(h, 'G-1', 'OP30', h.olga)) ?? 0;
+    await h.orders.pauseWork('G-1', 'OP30', { activity: work, reason: 'break' }, olga);
+    const [pause, closedWork] = await h.orders.activities({ orderId: 'G-1', operation: 'OP30' });
+    expect(closedWork).toMatchObject({
+      id: work,
+      endReason: 'paused',
+      from: workFrom,
+      to: workFrom,
+    });
+    expect(pause).toMatchObject({ kind: 'pause', to: null });
+    // A crew end (and so an orphan closure): the same.
+    const crewFrom = await ahead('OP40');
+    expect(
+      await h.orders.endActivities({
+        userId: h.olga.userId,
+        workCenter: 'line-a1',
+        until: crewFrom,
+      }),
+    ).toBe(2);
+    const [ended] = await h.orders.activities({ orderId: 'G-1', operation: 'OP40' });
+    expect(ended).toMatchObject({ endReason: 'crew-ended', from: crewFrom, to: crewFrom });
+  });
 });
 
 describe('crews (#177)', () => {

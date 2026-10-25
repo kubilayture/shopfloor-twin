@@ -199,6 +199,15 @@ export async function readActivities(
 }
 
 /**
+ * An interval's end in wall time: the database's clock, never before the interval's start (#344).
+ * That clock is not monotonic: a host that steps its time back (NTP, or a VM's guest agent syncing
+ * with its host, as Lima does by up to about 0.1 s every 10 s) would otherwise make a pause right
+ * after a start break `to_at >= from_at` (`operation_activity_check4`) and fail the write. Crew
+ * rows end the same way (`shifts/crew.ts`).
+ */
+const END_AT = sql<Date>`greatest(clock_timestamp(), from_at)`;
+
+/**
  * One terminal write in the caller's transaction: the order row shared (a close waits for it), the
  * operation row locked at `version`, the transition of the operator's own interval (start: none
  * open; pause: work open; resume: pause open) or the sign-off (complete, not signed off: closes
@@ -282,7 +291,7 @@ export async function terminalWrite(
     if (ids.length === 0) return;
     await trx
       .updateTable('orders.operation_activity')
-      .set({ to_at: now, to_plant_at: plantAt, end_reason: reason })
+      .set({ to_at: END_AT, to_plant_at: plantAt, end_reason: reason })
       .where('id', 'in', [...ids])
       .where('to_at', 'is', null)
       .execute();
@@ -426,7 +435,7 @@ async function closeLocked(
   const rows = await trx
     .updateTable('orders.operation_activity')
     .set({
-      to_at: sql<Date>`clock_timestamp()`,
+      to_at: END_AT,
       to_plant_at: plantAt,
       end_reason: 'crew-ended',
     })

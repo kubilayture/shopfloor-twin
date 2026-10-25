@@ -2380,7 +2380,7 @@ describe('login throttling over HTTP (#242, S5)', () => {
     }
   });
 
-  it('keeps a login answered within 10 hash times (at least 1 s) while open-loop attacks from 4 and 8 addresses run, never more hashes in flight than slots, every refusal a 429 (#264 re-review, N1)', async ({
+  it('keeps a login answered within 8 hash times (at least 1 s) while open-loop attacks from 4 and 8 addresses run, never more hashes in flight than slots, every refusal a 429 (#264 re-review, N1)', async ({
     task,
   }) => {
     const password = await user('h-lea', ['operator']);
@@ -2446,14 +2446,15 @@ describe('login throttling over HTTP (#242, S5)', () => {
         const answers = await Promise.all(attack);
         // The budget is in hash times, what one hash cost meanwhile under whatever else the
         // machine runs (#347: 1080 ms against a fixed 1 s on a loaded host). The victim waits for
-        // at most the 9 other slots' hashes, two at a time (5 hash times), and its own (6); 10
-        // leaves 4 for the database and the event loop, and the review's 1 s stays the floor.
+        // at most the 9 other slots' hashes, two at a time (5 hash times), and its own (6); 8
+        // leaves 2 for the database and the event loop (measured: at most 5 at a load of 9), and
+        // the review's 1 s stays the floor.
         // Without the slots the queue, and the wait in hash times, grows for as long as the attack
         // outruns the hashes; the hashes in flight say so directly.
         const hashed = hashesDone();
         const hashMs =
           (hashed.ms - hashesBefore.ms) / Math.max(1, hashed.count - hashesBefore.count);
-        const budget = Math.max(1_000, 10 * hashMs);
+        const budget = Math.max(1_000, 8 * hashMs);
         const summary = `${String(attackers)} attackers: victim ${statuses.join(',')}, ${latencies.map((l) => Math.round(l)).join(',')} ms; a hash ${String(Math.round(hashMs))} ms, budget ${String(Math.round(budget))} ms, at most ${String(inFlight)} hashes in flight`;
         // The measurements, in the JSON report's meta of this test.
         Object.assign(task.meta, {

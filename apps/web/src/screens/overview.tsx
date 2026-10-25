@@ -234,7 +234,7 @@ export function Overview() {
           <Skeleton
             shape="stat"
             count={3}
-            gridClassName="flex flex-wrap gap-3 *:w-36 *:rounded-lg *:border *:border-line *:bg-surface *:px-4 *:py-3"
+            gridClassName="flex flex-wrap gap-3 *:min-w-36 *:rounded-lg *:border *:border-line *:bg-surface *:px-4 *:py-3"
             label="Loading equipment…"
           />
           <Skeleton

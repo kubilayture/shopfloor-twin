@@ -500,11 +500,13 @@ function Wip({ execution }: { readonly execution: OrderExecutionDto }) {
     { term: 'Complete', detail: notComplete(execution.completedAt) },
   ];
   return (
-    <Section level={3} title="Execution and WIP" testId="order-wip" className="mt-6">
-      <div className="rounded-lg border border-line bg-surface p-4 pb-1">
-        <DescriptionList facts={facts} />
-      </div>
-    </Section>
+    <div className="mt-6">
+      <Section level={3} title="Execution and WIP" testId="order-wip">
+        <div className="rounded-lg border border-line bg-surface p-4 pb-1">
+          <DescriptionList facts={facts} />
+        </div>
+      </Section>
+    </div>
   );
 }
 
@@ -793,7 +795,7 @@ function ErpMessages({ detail }: { readonly detail: OrderDetailDto }) {
       id="order-erp-title"
       testId="order-erp"
       title="ERP messages"
-      description="The feed entries imported from the ERP and the messages sent to it (Q-05)."
+      description="The feed entries imported from the ERP and the messages sent to it."
     >
       <DataTable
         caption="ERP messages"

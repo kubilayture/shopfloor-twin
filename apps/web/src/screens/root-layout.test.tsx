@@ -366,6 +366,33 @@ describe('the nav drawer below xl', () => {
   });
 });
 
+describe('the side nav column from xl (#335 review)', () => {
+  it('spans the whole page height under the nav, in its colour, out of the accessibility tree', async () => {
+    vi.stubGlobal('fetch', fakeFetch(api));
+    await renderApp('/');
+    const column = screen.getByTestId('nav-column');
+    const classes = column.className.split(' ');
+    expect(classes).toEqual(
+      expect.arrayContaining([
+        'absolute',
+        'inset-y-0',
+        'left-0',
+        'w-58',
+        'bg-nav',
+        'hidden',
+        'xl:block',
+      ]),
+    );
+    expect(column.getAttribute('aria-hidden')).toBe('true');
+    expect(column.childElementCount).toBe(0);
+    // Positioned against the shell's root, which grows with the page (not the viewport).
+    expect(column.parentElement?.className.split(' ')).toEqual(
+      expect.arrayContaining(['relative', 'min-h-screen']),
+    );
+    expect(column.parentElement).toBe(screen.getByRole('banner').parentElement);
+  });
+});
+
 describe('print', () => {
   it('hides the shell and drops the nav offset', async () => {
     vi.stubGlobal('fetch', fakeFetch(api));

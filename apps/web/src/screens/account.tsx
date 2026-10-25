@@ -1,75 +1,113 @@
 import { SESSION_IDLE_MS } from '@shopfloor/contracts/identity';
 import { useState } from 'react';
 import { useAuth } from '../auth/auth.tsx';
-import { useHeadingFocus } from '../components/heading-focus.ts';
-import { rolesText } from '../domain/identity.ts';
+import { Callout } from '../components/ui/callout.tsx';
+import { Card } from '../components/ui/card.tsx';
+import { Code } from '../components/ui/code.tsx';
+import { DescriptionList } from '../components/ui/description-list.tsx';
+import { Disclosure } from '../components/ui/disclosure.tsx';
+import { WallTime } from '../components/ui/format.tsx';
+import { PageHeader } from '../components/ui/page-header.tsx';
+import { permissionGroups, rolesText } from '../domain/identity.ts';
 import { ChangePasswordForm } from './login.tsx';
 
-const buttonClass =
-  'rounded border border-slate-700 bg-white px-3 py-1 text-sm font-medium text-slate-900 hover:bg-slate-100 disabled:opacity-60';
-
-const wallTime = (iso: string): string =>
-  new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-
-/** `/account` (#170): who is logged in, with which roles and permissions, the password, logout. */
+/**
+ * `/account` (#170): who is logged in, with which roles and what they allow, the session's times
+ * and the password. The times are wall times, labelled so (Y-01); the permissions are words
+ * grouped by area in a closed disclosure, each with its id (Y-02); logging out is the top bar's
+ * one "Log out", and the password form keeps a form's width (Y-03).
+ */
 export function Account() {
   const auth = useAuth();
-  const heading = useHeadingFocus<HTMLHeadingElement>();
   const [changed, setChanged] = useState<string | undefined>(undefined);
   const { session } = auth;
   if (!session) return null;
   const { user } = session;
+  const groups = permissionGroups(user.permissions);
+  const count = user.permissions.length;
   return (
-    <section aria-labelledby="account-title" className="max-w-2xl">
-      <h1 id="account-title" ref={heading} tabIndex={-1} className="text-2xl font-bold">
-        Account
-      </h1>
-      <dl className="mt-4 grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2 text-sm">
-        <dt className="font-medium">User name</dt>
-        <dd data-testid="account-username">{user.username}</dd>
-        <dt className="font-medium">Roles</dt>
-        <dd data-testid="account-roles">{rolesText(user.roles)}</dd>
-        <dt className="font-medium">May</dt>
-        <dd data-testid="account-permissions" className="font-mono text-xs">
-          {user.permissions.join(', ')}
-        </dd>
-        <dt className="font-medium">Logged in</dt>
-        <dd>{wallTime(session.createdAt)}</dd>
-        <dt className="font-medium">Session ends</dt>
-        <dd>
-          after {SESSION_IDLE_MS[session.kind] / 60_000} minutes without use, at the latest{' '}
-          {wallTime(session.expiresAt)} (wall time)
-        </dd>
-      </dl>
-      <button
-        type="button"
-        data-testid="account-logout"
-        className={`${buttonClass} mt-4`}
-        onClick={() => {
-          void auth.logOut();
-        }}
-      >
-        Log out
-      </button>
-
-      <h2 className="mt-8 text-lg font-semibold">Change password</h2>
-      <p className="text-sm text-slate-700">Your other sessions (other browsers) end with it.</p>
-      {changed ? (
-        <p
-          role="status"
-          data-testid="password-changed"
-          className="mt-2 rounded border border-emerald-800 bg-emerald-50 p-2 text-sm text-emerald-950"
-        >
-          {changed}
-        </p>
-      ) : null}
-      <ChangePasswordForm
-        onChanged={(ended) => {
-          setChanged(
-            `Password changed.${ended > 0 ? ` ${String(ended)} other session${ended === 1 ? '' : 's'} ended.` : ''}`,
-          );
-        }}
+    <section aria-labelledby="account-title">
+      <PageHeader
+        id="account-title"
+        title="Account"
+        description="Who you are logged in as, what your roles allow, and your password."
       />
+      <div className="grid items-start gap-4 lg:grid-cols-2">
+        <Card title="Profile" as="section">
+          <DescriptionList
+            columns={2}
+            facts={[
+              {
+                term: 'User name',
+                detail: <span data-testid="account-username">{user.username}</span>,
+              },
+              {
+                term: 'Roles',
+                detail: <span data-testid="account-roles">{rolesText(user.roles)}</span>,
+              },
+              {
+                term: 'Logged in',
+                detail: <WallTime at={session.createdAt} className="whitespace-nowrap" />,
+              },
+              {
+                term: 'Session ends',
+                detail: (
+                  <>
+                    After {SESSION_IDLE_MS[session.kind] / 60_000} minutes without use, at the
+                    latest <WallTime at={session.expiresAt} className="whitespace-nowrap" />
+                  </>
+                ),
+              },
+            ]}
+          />
+          <Disclosure
+            summary={`What your roles allow (${String(count)} permission${count === 1 ? '' : 's'})`}
+            className="mt-1 border-t border-line-subtle pt-3"
+          >
+            <div data-testid="account-permissions" className="flex flex-col gap-3">
+              {groups.map((group) => (
+                <div key={group.area}>
+                  <h3 className="text-xs font-medium text-ink-secondary">{group.area}</h3>
+                  <ul className="mt-1 flex flex-col gap-1">
+                    {group.permissions.map((permission) => (
+                      <li
+                        key={permission.id}
+                        className="flex flex-wrap items-baseline justify-between gap-x-3"
+                      >
+                        <span className="text-ink">{permission.text}</span>
+                        <span className="text-xs text-ink-secondary">
+                          <Code>{permission.id}</Code>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          </Disclosure>
+        </Card>
+        <Card
+          title="Change password"
+          as="section"
+          description="Your other sessions (other browsers) end with it."
+        >
+          <div className="flex max-w-md flex-col gap-4">
+            {changed ? (
+              <Callout tone="ok" role="status" data-testid="password-changed">
+                {changed}
+              </Callout>
+            ) : null}
+            <ChangePasswordForm
+              username={user.username}
+              onChanged={(ended) => {
+                setChanged(
+                  `Password changed.${ended > 0 ? ` ${String(ended)} other session${ended === 1 ? '' : 's'} ended.` : ''}`,
+                );
+              }}
+            />
+          </div>
+        </Card>
+      </div>
     </section>
   );
 }

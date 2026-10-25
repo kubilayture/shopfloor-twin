@@ -10,6 +10,11 @@ import { Icon } from './icons.tsx';
  */
 
 export type ControlSize = 'md' | 'touch';
+/**
+ * A text control's size: `ControlSize`, plus `lg` (44 px, 16 px text) for the login and account
+ * forms (design system 2.7 and 4.7), whose 16 px text also keeps iOS Safari from zooming in on focus.
+ */
+export type TextControlSize = ControlSize | 'lg';
 
 export interface FieldIds {
   /** The control's `id`, which the `<label>` names. */
@@ -148,8 +153,9 @@ export function Field({
 }
 
 /** Height and text per size (a minimum: text spacing overrides may grow it). */
-const CONTROL_SIZE: Readonly<Record<ControlSize, string>> = {
+const CONTROL_SIZE: Readonly<Record<TextControlSize, string>> = {
   md: 'min-h-9 px-2.5 py-1.5 text-sm',
+  lg: 'min-h-11 px-3 py-2 text-base',
   touch: 'min-h-14 px-4 py-3 text-lg',
 };
 
@@ -159,7 +165,7 @@ const CONTROL_SIZE: Readonly<Record<ControlSize, string>> = {
  * `alarm-border` border; disabled as a disabled button (`disabled`, `disabled-line`,
  * `disabled-ink`), never opacity. Layout (width) is the caller's.
  */
-export function controlClass({ size = 'md' }: { readonly size?: ControlSize } = {}): string {
+export function controlClass({ size = 'md' }: { readonly size?: TextControlSize } = {}): string {
   return [
     'rounded-md border border-line-strong bg-surface text-ink placeholder:text-ink-secondary',
     'aria-invalid:border-alarm-border',

@@ -393,7 +393,18 @@ export function RootLayout() {
   }, [drawer, close]);
 
   return (
-    <div className="min-h-screen bg-canvas text-ink print:min-h-0 print:bg-surface">
+    <div className="relative min-h-screen bg-canvas text-ink print:min-h-0 print:bg-surface">
+      {/*
+       * The side nav's column from xl (#335 review): the nav is fixed to the viewport, so on a
+       * page longer than the window a full-page capture (or anything that lays the page out at
+       * its full height) showed the canvas below the first screen. This column spans the whole
+       * page under the nav, in its colour; it holds nothing and is not in the accessibility tree.
+       */}
+      <div
+        aria-hidden="true"
+        data-testid="nav-column"
+        className="pointer-events-none absolute inset-y-0 left-0 hidden w-58 bg-nav xl:block print:hidden"
+      />
       <a
         href="#main"
         inert={drawer}

@@ -305,9 +305,13 @@ export const SHADOWS: Readonly<Record<string, string>> = {
   'elevation-3': '0 12px 32px rgb(15 23 42 / 0.24)',
 };
 
-/** Layers (2.9), lowest first: `z-sticky` … `z-lock`. */
+/** Layers (2.9), lowest first: `z-sticky-column` … `z-lock`. */
 export const Z_INDEX: Readonly<Record<string, number>> = {
+  // A table's sticky first column over the cells it scrolls over, and its header cell over the
+  // other sticky header cells (UX-1d1, #318).
+  'sticky-column': 1,
   sticky: 10,
+  'sticky-corner': 11,
   topbar: 20,
   nav: 30,
   popover: 40,

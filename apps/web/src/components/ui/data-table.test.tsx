@@ -97,6 +97,25 @@ describe('DataTable markup', () => {
     ]);
   });
 
+  it('makes a rowHeader column the row headers (th scope="row"), the other cells td', () => {
+    const columns: readonly Column<Alarm>[] = [
+      { ...COLUMNS[0], rowHeader: true } as Column<Alarm>,
+      ...COLUMNS.slice(1),
+    ];
+    render(table({ rows: rowsOf(2), columns }));
+    const el = screen.getByRole('table', { name: 'Active alarms, newest first' });
+    const heads = within(el).getAllByRole('rowheader');
+    expect(heads.map((th) => [th.tagName, th.getAttribute('scope'), th.textContent])).toEqual([
+      ['TH', 'row', 'CODE-1'],
+      ['TH', 'row', 'CODE-2'],
+    ]);
+    // Body weight, not a header's bold; the row's other cells stay td (positional reads).
+    expect(heads[0]?.className).toContain('font-normal');
+    const first = screen.getByTestId('alarm-row-a1');
+    expect(first.querySelectorAll('td')).toHaveLength(2);
+    expect(first.firstElementChild?.getAttribute('data-cell')).toBe('c-code');
+  });
+
   it('right-aligns numbers in tabular figures, without wrapping, under a right-aligned header', () => {
     render(table({ rows: rowsOf(1) }));
     const [codeTh, minutesTh, stateTh] = screen.getAllByRole('columnheader');
@@ -697,6 +716,20 @@ describe('DataTable row actions and focus', () => {
     const detail = screen.getByText('Detail');
     expect(document.activeElement).toBe(detail);
     expect(detail.getAttribute('tabindex')).toBe('-1');
+  });
+
+  it('words the skip link by skipLabel, past a long table to the next section (G-33)', () => {
+    render(
+      <>
+        {table({ rows: rowsOf(2), skipToDetails: 'next-title', skipLabel: 'Skip past the units' })}
+        <h2 id="next-title">Orders</h2>
+      </>,
+    );
+    expect(screen.queryByRole('link', { name: 'Skip to the details' })).toBeNull();
+    const skip = screen.getByRole('link', { name: 'Skip past the units' });
+    expect(skip.getAttribute('href')).toBe('#next-title');
+    fireEvent.click(skip);
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Orders' }));
   });
 });
 

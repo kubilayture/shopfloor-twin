@@ -35,7 +35,8 @@ import type { Tone } from './tokens.ts';
  *   "Actions" header. When a row the focus was in disappears (acknowledged out of the list), the
  *   focus moves to the same control in the next row, else the previous row, else the heading of
  *   the section around the table; `announceRemoval` says so politely.
- * - "Skip to the details" before a table of row actions with a detail after it (G-33).
+ * - "Skip to the details" before a table of row actions with a detail after it (G-33), or a skip
+ *   link of its own words past a long table to the next section (`skipLabel`).
  * - Empty, loading and error through `EmptyState`, `Skeleton` and `ErrorState`.
  * - `pageSize` pages long lists ("1–50 of 180", Previous, Next).
  * - Below `md`: `scroll` keeps the table (lower-priority columns drop, a right-edge fade and a
@@ -61,6 +62,11 @@ export interface Column<Row> {
   readonly priority?: 1 | 2 | 3;
   /** Kept in view on horizontal scroll (the first column). */
   readonly sticky?: boolean;
+  /**
+   * The cell names its row (`th scope="row"`, role `rowheader`): the first column of a table whose
+   * rows are things (a state, a metric), so a screen reader says it with every other cell.
+   */
+  readonly rowHeader?: boolean;
 }
 
 export interface DataTableSelection<Row> {
@@ -117,6 +123,11 @@ export interface DataTableProps<Row> {
   readonly pageSize?: number;
   /** The id of the detail after the table: a "Skip to the details" link goes before it. */
   readonly skipToDetails?: string | undefined;
+  /**
+   * The skip link's text when what follows the table is not a detail: "Skip past the units" to
+   * the next section of a long page (G-33). "Skip to the details" by default.
+   */
+  readonly skipLabel?: string | undefined;
   /** The polite status after a row with the focus disappeared: "Alarm acknowledged; 2 left". */
   readonly announceRemoval?: (left: number) => string;
   readonly testId: string;
@@ -579,6 +590,7 @@ export function DataTable<Row>({
   narrow = 'scroll',
   pageSize,
   skipToDetails,
+  skipLabel = 'Skip to the details',
   announceRemoval,
   testId,
   count,
@@ -675,7 +687,7 @@ export function DataTable<Row>({
         }}
         className="sr-only focus:not-sr-only focus:mb-2 focus:inline-block focus:rounded-md focus:bg-surface focus:px-3 focus:py-2 focus:text-link focus:underline"
       >
-        Skip to the details
+        {skipLabel}
       </a>
     );
 
@@ -812,15 +824,19 @@ export function DataTable<Row>({
                   {rowCheck(row)}
                 </td>
               ) : null}
-              {columns.map((column, index) => (
-                <td
-                  key={column.key}
-                  data-cell={`c-${column.key}`}
-                  className={`${bodyCell} ${DENSITY[density]} ${cellClass(column)} ${column.sticky ? `${STICKY_COLUMN} bg-inherit` : ''} ${!selection && index === 0 ? bar : ''}`}
-                >
-                  {column.cell(row)}
-                </td>
-              ))}
+              {columns.map((column, index) => {
+                const Cell = column.rowHeader ? 'th' : 'td';
+                return (
+                  <Cell
+                    key={column.key}
+                    {...(column.rowHeader ? { scope: 'row' } : {})}
+                    data-cell={`c-${column.key}`}
+                    className={`${bodyCell} ${DENSITY[density]} ${cellClass(column)} ${column.rowHeader ? 'font-normal' : ''} ${column.sticky ? `${STICKY_COLUMN} bg-inherit` : ''} ${!selection && index === 0 ? bar : ''}`}
+                  >
+                    {column.cell(row)}
+                  </Cell>
+                );
+              })}
               {actions ? (
                 <td data-cell="actions" className={`${bodyCell} whitespace-nowrap py-1`}>
                   <div className="flex flex-nowrap items-center justify-end gap-1">

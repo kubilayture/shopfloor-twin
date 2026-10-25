@@ -7,6 +7,7 @@ import {
   type TraceRecordDto,
   type TraceUnitDto,
 } from '@shopfloor/contracts/mes-api';
+import type { Tone } from './tones.ts';
 
 // What the trace screens (#202) derive from the genealogy API's answers (ADR-0034): never a new
 // fact, only how an answer reads. `null` (not reported) and `[]` (none) stay distinct.
@@ -72,6 +73,34 @@ export const UNIT_STATUS_TEXT: Readonly<Record<TraceUnitDto['status'], string>> 
   scrapped: 'Scrapped',
   lost: 'Lost (its run ended)',
 };
+
+/**
+ * A unit's status as a badge tone (design system 2.6, T-02): packed and in work `neutral`, scrapped
+ * `alarm`, lost with its run `warn` (an outcome nobody chose, not a defect found).
+ */
+export const UNIT_STATUS_TONE: Readonly<Record<TraceUnitDto['status'], Tone>> = {
+  wip: 'neutral',
+  packed: 'neutral',
+  scrapped: 'alarm',
+  lost: 'warn',
+};
+
+/** A cycle's result as a badge tone: good `neutral`, rework `warn`, scrap `alarm`. */
+export const RESULT_TONE: Readonly<Record<TraceRecordDto['result'], Tone>> = {
+  good: 'neutral',
+  rework: 'warn',
+  scrap: 'alarm',
+};
+
+/**
+ * The one run (device epoch) every unit of a list belongs to, shown once in the page header
+ * instead of on every row (T-05); undefined when the list is empty or spans several runs (then
+ * each row keeps its run).
+ */
+export function singleRun(units: readonly { readonly epoch: number }[]): number | undefined {
+  const first = units[0]?.epoch;
+  return first !== undefined && units.every((unit) => unit.epoch === first) ? first : undefined;
+}
 
 export const RESULT_TEXT: Readonly<Record<TraceRecordDto['result'], string>> = {
   good: 'Good',

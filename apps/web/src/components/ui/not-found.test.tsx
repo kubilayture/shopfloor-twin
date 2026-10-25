@@ -44,6 +44,21 @@ describe('NotFound', () => {
     expect(screen.getByRole('link', { name: 'All orders' }).getAttribute('href')).toBe('/orders');
   });
 
+  it('adds a sentence of why after the one it always says', async () => {
+    await routed(() => (
+      <NotFound
+        kind="carton"
+        id="C-9"
+        back={{ to: '/trace', label: 'Traceability' }}
+        detail="Cartons form once their packing cycles are final."
+        testId="nf"
+      />
+    ));
+    expect(screen.getByTestId('nf').textContent).toContain(
+      'The MES has no carton with this id. Cartons form once their packing cycles are final.',
+    );
+  });
+
   it("is the router's page for an unknown address, naming the address", async () => {
     await routed(() => <PageNotFound />, '/nowhere');
     expect(screen.getByRole('heading', { level: 1, name: 'Page not found' })).toBeTruthy();

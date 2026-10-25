@@ -7,65 +7,84 @@ import {
 } from '@shopfloor/contracts/mes-api';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams, useSearch } from '@tanstack/react-router';
+import type { ReactNode } from 'react';
 import { ApiError } from '../api/client.ts';
 import { queryKeys } from '../api/queries.ts';
 import { getSerialTrace } from '../api/trace.ts';
-import { useHeadingFocus } from '../components/heading-focus.ts';
-import { plainText } from '../domain/numbers.ts';
 import { QueryError } from '../components/query-error.tsx';
+import { Badge } from '../components/ui/badge.tsx';
+import { Callout } from '../components/ui/callout.tsx';
+import { Code } from '../components/ui/code.tsx';
+import { DataTable } from '../components/ui/data-table.tsx';
+import { DescriptionList } from '../components/ui/description-list.tsx';
+import { EmptyState } from '../components/ui/empty-state.tsx';
+import { Missing, PlantTime } from '../components/ui/format.tsx';
+import { PageHeader } from '../components/ui/page-header.tsx';
+import { Section } from '../components/ui/section.tsx';
+import { SectionNav } from '../components/ui/section-nav.tsx';
+import { plainText } from '../domain/numbers.ts';
 import {
   RESULT_TEXT,
+  RESULT_TONE,
   TRACE_ID,
   blankLots,
   blocking,
   componentPasses,
   operationText,
-  operatorText,
   overLimit,
   serialMoving,
   unitKey,
 } from '../domain/trace.ts';
-import { formatPlantTime } from '../domain/time.ts';
 import { useTraceTopics } from '../live/live-context.tsx';
 import {
-  BackToSearch,
   CartonLink,
-  Facts,
-  Finality,
+  FinalityNotice,
+  FinalityStatus,
+  HeaderFacts,
+  HeldBadge,
+  HeldNotice,
   Holds,
+  InvalidId,
   LotList,
   OrderLink,
-  Section,
-  Table,
-  cell,
+  TRACE_BACK,
+  TraceLoading,
+  TraceNotFound,
+  UnitStatusBadge,
+  idTitle,
   linkClass,
-  plantTime,
   tracePolling,
-  unitStatus,
+  useMachineName,
 } from './trace-common.tsx';
 
 function Crew({ record }: { readonly record: TraceRecordDto }) {
   if (record.crew.length === 0) {
     // The MES joins its crew only where the machine has a device operator.
     return (
-      <span data-testid="record-crew" data-count="0" className="text-slate-700">
-        {record.operatorReported ? 'Nobody signed on' : '–'}
+      <span data-testid="record-crew" data-count="0">
+        <Missing
+          reason={
+            record.operatorReported
+              ? 'Nobody signed on'
+              : 'No crew: the machine reports no device operator'
+          }
+        />
       </span>
     );
   }
   return (
-    <ul data-testid="record-crew" data-count={String(record.crew.length)}>
+    <ul data-testid="record-crew" data-count={String(record.crew.length)} className="space-y-1">
       {record.crew.map((member) => (
         <li key={`${String(member.userId)}-${member.from}`} data-user={member.username}>
-          <span className="font-medium">{member.username}</span>{' '}
-          <span className="text-xs text-slate-700">
-            from <time dateTime={member.from}>{formatPlantTime(member.from)}</time>
+          <span className="font-medium">{member.username}</span>
+          <span className="block text-xs text-ink-secondary">
+            from <PlantTime at={member.from} />
             {member.to === null ? (
               ', still signed on'
             ) : (
               <>
                 {' '}
-                to <time dateTime={member.to}>{formatPlantTime(member.to)}</time>
+                to <PlantTime at={member.to} />
               </>
             )}
           </span>
@@ -77,7 +96,7 @@ function Crew({ record }: { readonly record: TraceRecordDto }) {
 
 function Reading({ record }: { readonly record: TraceRecordDto }) {
   const reading = record.reading;
-  if (reading === null) return <span className="text-slate-700">–</span>;
+  if (reading === null) return <Missing reason="No reading at this operation" />;
   const over = overLimit(reading);
   return (
     <span
@@ -86,86 +105,114 @@ function Reading({ record }: { readonly record: TraceRecordDto }) {
       data-value={String(reading.value)}
       data-limit={String(reading.upperLimit)}
       data-over={String(over)}
-      className={over ? 'font-semibold text-red-900' : ''}
+      className={`whitespace-nowrap tabular-nums ${over ? 'font-semibold text-alarm-ink' : ''}`}
     >
       {plainText(reading.value)} {reading.unit}{' '}
-      <span className="text-xs font-normal text-slate-700">
+      <span className="block text-xs font-normal text-ink-secondary">
         ({over ? 'over' : 'within'} the limit {plainText(reading.upperLimit)} {reading.unit})
       </span>
     </span>
   );
 }
 
-function Records({ unit }: { readonly unit: TraceUnitDto }) {
+/** The device operator: the raw user name as reported, nobody, or not reported (6.3). */
+function Operator({ record }: { readonly record: TraceRecordDto }) {
   return (
-    <Section id="trace-records-section" title="Operations">
-      <p className="text-sm text-slate-700">
-        Every cycle of the unit, by plant time: the machine, the lots it consumed, the device
-        operator at the cycle’s start, the MES users signed on to the work center (not reconciled)
-        and the leak reading.
-      </p>
-      {unit.records.length === 0 ? (
-        <p className="mt-1 text-sm" data-testid="trace-records-empty">
-          No cycle recorded yet.
-        </p>
+    <span data-testid="record-operator" data-reported={String(record.operatorReported)}>
+      {record.operator ??
+        (record.operatorReported ? (
+          <Missing reason="No device operator signed on" />
+        ) : (
+          <span className="text-ink-secondary">Not reported</span>
+        ))}
+    </span>
+  );
+}
+
+function Result({ record }: { readonly record: TraceRecordDto }) {
+  return (
+    <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1">
+      {record.result === 'good' ? (
+        // The normal outcome in words; only a rework or a scrap is raised as a badge.
+        RESULT_TEXT.good
       ) : (
-        <div className="mt-2">
-          <Table
-            testId="trace-records"
-            caption="Operations of the unit"
-            count={unit.records.length}
-            columns={[
-              'Operation',
-              'Machine',
-              'Completed',
-              'Result',
-              'Lots',
-              'Device operator',
-              'MES crew',
-              'Reading',
-            ]}
-          >
-            {unit.records.map((record) => (
-              <tr
-                key={`${record.equipment}-${String(record.epoch)}-${String(record.seq)}`}
-                data-testid={`record-${record.operation}-${String(record.pass)}`}
-                data-equipment={record.equipment}
-                data-result={record.result}
-                data-epoch={String(record.epoch)}
-                data-seq={String(record.seq)}
-                className="border-t border-slate-200"
-              >
-                <th scope="row" className={cell}>
-                  {operationText(record)}
-                </th>
-                <td className={cell} data-testid="record-machine">
-                  {record.equipment}
-                </td>
-                <td className={cell}>{plantTime(record.at)}</td>
-                <td className={cell}>
-                  {RESULT_TEXT[record.result]}
-                  {record.reason ? ` (${record.reason})` : ''}
-                </td>
-                <td className={cell}>
-                  <LotList lots={record.lots} testId="record-lots" />
-                </td>
-                <td
-                  className={cell}
-                  data-testid="record-operator"
-                  data-reported={String(record.operatorReported)}
-                >
-                  {operatorText(record)}
-                </td>
-                <td className={cell}>
-                  <Crew record={record} />
-                </td>
-                <td className={cell}>
-                  <Reading record={record} />
-                </td>
-              </tr>
-            ))}
-          </Table>
+        <Badge tone={RESULT_TONE[record.result]}>{RESULT_TEXT[record.result]}</Badge>
+      )}
+      {record.reason ? <span className="text-xs text-ink-secondary">{record.reason}</span> : null}
+    </span>
+  );
+}
+
+function Records({ unit }: { readonly unit: TraceUnitDto }) {
+  const machine = useMachineName();
+  return (
+    <Section
+      id="trace-records-section-title"
+      testId="trace-records-section"
+      title="Operations"
+      description="Every cycle by plant time: the machine, the lots consumed, the device operator at its start, the MES users signed on (not reconciled) and the leak reading."
+    >
+      {unit.records.length === 0 ? (
+        <div className="rounded-lg border border-line bg-surface">
+          <EmptyState
+            testId="trace-records-empty"
+            title="No cycle recorded yet"
+            body="The unit’s operations appear here as each machine reports its cycle."
+          />
         </div>
+      ) : (
+        <DataTable
+          caption="Operations of the unit"
+          testId="trace-records"
+          rows={unit.records}
+          count={unit.records.length}
+          rowKey={(record) => `${record.equipment}-${String(record.epoch)}-${String(record.seq)}`}
+          rowTestId={(record) => `record-${record.operation}-${String(record.pass)}`}
+          rowProps={(record) => ({
+            'data-equipment': record.equipment,
+            'data-result': record.result,
+            'data-epoch': String(record.epoch),
+            'data-seq': String(record.seq),
+          })}
+          rowTone={(record) => (record.result === 'good' ? undefined : RESULT_TONE[record.result])}
+          narrow="stack"
+          columns={[
+            {
+              key: 'operation',
+              header: 'Operation',
+              rowHeader: true,
+              nowrap: true,
+              cell: (record) => operationText(record),
+            },
+            {
+              key: 'machine',
+              header: 'Machine',
+              cell: (record) => (
+                <span data-testid="record-machine">{machine(record.equipment)}</span>
+              ),
+            },
+            {
+              key: 'at',
+              header: 'Completed',
+              nowrap: true,
+              cell: (record) => <PlantTime at={record.at} />,
+            },
+            { key: 'result', header: 'Result', cell: (record) => <Result record={record} /> },
+            {
+              key: 'lots',
+              header: 'Lots',
+              cell: (record) => <LotList lots={record.lots} testId="record-lots" />,
+            },
+            {
+              key: 'operator',
+              header: 'Device operator',
+              nowrap: true,
+              cell: (record) => <Operator record={record} />,
+            },
+            { key: 'crew', header: 'MES crew', cell: (record) => <Crew record={record} /> },
+            { key: 'reading', header: 'Reading', cell: (record) => <Reading record={record} /> },
+          ]}
+        />
       )}
     </Section>
   );
@@ -175,41 +222,69 @@ function BlankLots({ unit }: { readonly unit: TraceUnitDto }) {
   const lots = blankLots(unit);
   if (lots === 'no-record') {
     return (
-      <span data-testid="unit-blank-lots" data-reported="no-record" className="text-slate-700">
+      <span data-testid="unit-blank-lots" data-reported="no-record" className="text-ink-secondary">
         No {BLANK_OPERATION} record
       </span>
     );
   }
-  return <LotList lots={lots} testId="unit-blank-lots" />;
+  return <LotList lots={lots} testId="unit-blank-lots" none="No blank lot reported" />;
 }
 
 function Materials({ unit }: { readonly unit: TraceUnitDto }) {
   const components = componentPasses(unit);
+  const machine = useMachineName();
   return (
-    <Section id="trace-materials" title="Materials">
-      <Facts items={[['Blank lot', <BlankLots key="blank" unit={unit} />]]} />
-      {components.length === 0 ? (
-        <p className="mt-1 text-sm" data-testid="unit-components-empty">
-          No component consumed yet (no {COMPONENTS_OPERATION} record).
-        </p>
-      ) : (
-        <ul className="mt-1 flex flex-col gap-1 text-sm" data-testid="unit-components">
-          {components.map(({ record, lots }) => (
-            <li
-              key={`${record.equipment}-${String(record.epoch)}-${String(record.seq)}`}
-              data-testid={`unit-components-${record.operation}-${String(record.pass)}`}
-            >
-              <span className="text-slate-700">
-                Components at {operationText(record)} on {record.equipment}:
-              </span>{' '}
-              <LotList lots={lots} />
-            </li>
-          ))}
-        </ul>
-      )}
+    <Section
+      id="trace-materials-title"
+      testId="trace-materials"
+      title="Materials"
+      description={`The blank from its ${BLANK_OPERATION} record; the components per ${COMPONENTS_OPERATION} pass.`}
+    >
+      <div className="rounded-lg border border-line bg-surface p-5">
+        <DescriptionList
+          columns={2}
+          facts={[
+            {
+              term: `Blank lot (${BLANK_OPERATION})`,
+              detail: <BlankLots unit={unit} />,
+            },
+            {
+              id: 'components',
+              term: `Components (${COMPONENTS_OPERATION})`,
+              detail:
+                components.length === 0 ? (
+                  <span data-testid="unit-components-empty" className="text-ink-secondary">
+                    No component consumed yet (no {COMPONENTS_OPERATION} record).
+                  </span>
+                ) : (
+                  <ul className="flex flex-col gap-2" data-testid="unit-components">
+                    {components.map(({ record, lots }) => (
+                      <li
+                        key={`${record.equipment}-${String(record.epoch)}-${String(record.seq)}`}
+                        data-testid={`unit-components-${record.operation}-${String(record.pass)}`}
+                      >
+                        <span className="block text-xs text-ink-secondary">
+                          {operationText(record)} on {machine(record.equipment)}
+                        </span>
+                        <LotList lots={lots} layout="inline" none="No component reported." />
+                      </li>
+                    ))}
+                  </ul>
+                ),
+            },
+          ]}
+        />
+      </div>
     </Section>
   );
 }
+
+/** The sections of a unit's page, for the in-page index (design system 3.4). */
+const UNIT_SECTIONS = [
+  { id: 'trace-materials-title', label: 'Materials' },
+  { id: 'trace-records-section-title', label: 'Operations' },
+  { id: 'trace-holds-title', label: 'Quality holds' },
+] as const;
 
 function Unit({ unit }: { readonly unit: TraceUnitDto }) {
   const held = blocking(unit.holds);
@@ -222,34 +297,24 @@ function Unit({ unit }: { readonly unit: TraceUnitDto }) {
       data-order={unit.orderId ?? ''}
       data-carton={unit.carton ?? ''}
       data-held={String(held)}
-      className="mt-4"
     >
       {held ? (
-        <p
-          role="status"
-          data-testid="unit-held"
-          className="mb-2 rounded border border-red-700 bg-red-50 p-2 text-sm font-semibold text-red-950"
-        >
-          On quality hold: this unit must not ship until quality releases it.
-        </p>
+        <HeldNotice testId="unit-held">
+          This unit must not ship until quality releases it.
+        </HeldNotice>
       ) : null}
-      <Facts
-        items={[
-          ['Product', unit.product],
-          ['Status', unitStatus(unit.status)],
-          ['Order', <OrderLink key="o" order={unit.orderId} />],
-          ['Carton', <CartonLink key="c" carton={unit.carton} />],
-          ['Run (device epoch)', String(unit.epoch)],
-          ['Part', String(unit.partId)],
-        ]}
-      />
-      <Materials unit={unit} />
-      <Records unit={unit} />
-      <Holds
-        holds={unit.holds}
-        what="this unit, its lots, carton and order"
-        {...(unit.serial === null ? {} : { subject: { kind: 'serial' as const, id: unit.serial } })}
-      />
+      <SectionNav items={UNIT_SECTIONS} />
+      <div className="mt-6">
+        <Materials unit={unit} />
+        <Records unit={unit} />
+        <Holds
+          holds={unit.holds}
+          what="this unit, its lots, carton and order"
+          {...(unit.serial === null
+            ? {}
+            : { subject: { kind: 'serial' as const, id: unit.serial } })}
+        />
+      </div>
     </div>
   );
 }
@@ -263,94 +328,148 @@ function UnitChoice({
   readonly chosen: string | undefined;
 }) {
   return (
-    <div
-      className="mt-3 rounded border border-slate-400 bg-white p-3 text-sm"
-      data-testid="serial-units"
-      data-count={String(trace.units.length)}
-    >
-      <p>
-        {trace.units.length} units carry serial {trace.serial} (the simulator restarts its serial
-        counter with every run). {chosen === undefined ? 'Which one?' : 'Showing:'}
-      </p>
-      <ul className="mt-1 flex flex-col gap-1">
-        {trace.units.map((unit, index) => {
-          const key = unitKey(unit);
-          const current = key === chosen;
-          return (
-            <li key={key}>
-              <Link
-                to="/trace/serials/$serial"
-                params={{ serial: trace.serial }}
-                search={{ unit: key }}
-                className={current ? 'font-semibold' : linkClass}
-                data-testid={`serial-unit-${key}`}
-              >
-                Run {unit.epoch}, part {unit.partId}
-              </Link>{' '}
-              <span className="text-slate-700">
-                {unitStatus(unit.status)}
-                {unit.orderId ? `, order ${unit.orderId}` : ''}
-                {index === 0 ? ' (newest)' : ''}
-              </span>
-            </li>
-          );
-        })}
-      </ul>
+    <div className="mb-6" data-testid="serial-units" data-count={String(trace.units.length)}>
+      <Callout tone="info" title={chosen === undefined ? 'Which one?' : 'Showing one of them'}>
+        {trace.units.length} units carry serial <Code>{trace.serial}</Code>: the simulator restarts
+        its serial counter with every run.
+        {chosen === undefined ? ' Choose the unit to trace.' : ''}
+      </Callout>
+      <div className="mt-3">
+        <DataTable
+          caption={`Units with serial ${trace.serial}`}
+          testId="serial-units-table"
+          rows={trace.units}
+          rowKey={unitKey}
+          activeRowKey={chosen}
+          columns={[
+            {
+              key: 'unit',
+              header: 'Unit',
+              rowHeader: true,
+              nowrap: true,
+              cell: (unit) => (
+                <>
+                  <Link
+                    to="/trace/serials/$serial"
+                    params={{ serial: trace.serial }}
+                    search={{ unit: unitKey(unit) }}
+                    className={unitKey(unit) === chosen ? 'font-semibold text-ink' : linkClass}
+                    data-testid={`serial-unit-${unitKey(unit)}`}
+                  >
+                    Run {unit.epoch}, part {unit.partId}
+                  </Link>
+                  {unit === trace.units[0] ? (
+                    <span className="ml-2 text-xs text-ink-secondary">newest</span>
+                  ) : null}
+                </>
+              ),
+            },
+            {
+              key: 'status',
+              header: 'Status',
+              nowrap: true,
+              cell: (unit) => <UnitStatusBadge status={unit.status} />,
+            },
+            {
+              key: 'order',
+              header: 'Order',
+              nowrap: true,
+              cell: (unit) =>
+                unit.orderId === null ? (
+                  <Missing reason="No order (schedule mode)" />
+                ) : (
+                  <Code>{unit.orderId}</Code>
+                ),
+            },
+          ]}
+        />
+      </div>
     </div>
   );
 }
 
+/** The unit's key facts in the header: product, order, carton, run and part. */
+function unitFacts(unit: TraceUnitDto): readonly (readonly [string, ReactNode])[] {
+  return [
+    ['Product', <Code key="product">{unit.product}</Code>],
+    ['Order', <OrderLink key="order" order={unit.orderId} />],
+    ['Carton', <CartonLink key="carton" carton={unit.carton} />],
+    [
+      'Run',
+      <span key="run" className="tabular-nums">
+        {unit.epoch}
+      </span>,
+    ],
+    [
+      'Part',
+      <span key="part" className="tabular-nums">
+        {unit.partId}
+      </span>,
+    ],
+  ];
+}
+
 function SerialTrace({ serial, unit }: { readonly serial: string; readonly unit?: string }) {
-  const heading = useHeadingFocus<HTMLHeadingElement>();
   const read = useQuery({
     queryKey: queryKeys.traceSerial(serial),
     queryFn: ({ signal }) => getSerialTrace(serial, signal),
     refetchInterval: tracePolling(serialMoving),
   });
-  const missing = read.error instanceof ApiError && read.error.status === 404;
   const trace = read.data;
-  const single = trace?.units.length === 1;
+  if (trace === undefined) {
+    if (read.error instanceof ApiError && read.error.status === 404) {
+      return <TraceNotFound kind="serial" id={serial} />;
+    }
+    if (read.isError) {
+      return (
+        <div data-testid="trace-serial" data-serial={serial} data-units="">
+          <PageHeader
+            back={TRACE_BACK}
+            title={idTitle('Serial', serial)}
+            documentTitle={`Serial ${serial}`}
+          />
+          <QueryError what="the trace" error={read.error} onRetry={() => void read.refetch()} />
+        </div>
+      );
+    }
+    return <TraceLoading label="Loading the trace…" />;
+  }
+  const single = trace.units.length === 1;
   const shown = single
     ? trace.units[0]
-    : trace?.units.find((candidate) => unitKey(candidate) === unit);
+    : trace.units.find((candidate) => unitKey(candidate) === unit);
   return (
-    <section
-      aria-labelledby="trace-serial-title"
-      data-testid="trace-serial"
-      data-serial={serial}
-      data-units={trace ? String(trace.units.length) : ''}
-    >
-      <BackToSearch />
-      <h1 ref={heading} id="trace-serial-title" tabIndex={-1} className="mt-1 text-2xl font-bold">
-        Serial {serial}
-      </h1>
-      <p className="mt-1 text-sm text-slate-700">
-        Backward trace: the order, the blank lot, the components per pass, machines, operators, leak
-        readings and the carton.
-      </p>
-      {read.isPending ? <p className="mt-4">Loading the trace…</p> : null}
-      {missing ? (
-        <p className="mt-4" data-testid="trace-missing">
-          The MES has no unit with serial {serial}.
-        </p>
-      ) : read.isError ? (
-        <div className="mt-4">
+    <div data-testid="trace-serial" data-serial={serial} data-units={String(trace.units.length)}>
+      <PageHeader
+        back={TRACE_BACK}
+        id="trace-serial-title"
+        title={idTitle('Serial', serial)}
+        documentTitle={`Serial ${serial}`}
+        status={
+          <span className="flex flex-wrap items-center gap-2">
+            {shown ? <UnitStatusBadge status={shown.status} /> : null}
+            {shown ? <HeldBadge holds={shown.holds} /> : null}
+            <FinalityStatus final={trace.final} />
+          </span>
+        }
+        description="Backward trace: the order, the blank lot, the components per pass, machines, operators, leak readings and the carton."
+        meta={shown ? <HeaderFacts facts={unitFacts(shown)} /> : undefined}
+      />
+      <FinalityNotice final={trace.final} notFinal={trace.notFinal} />
+      {read.isError ? (
+        // A later read failed: the answer shown is the last one read; polling goes on.
+        <div className="mb-6">
           <QueryError what="the trace" error={read.error} onRetry={() => void read.refetch()} />
         </div>
       ) : null}
-      {trace ? (
-        <>
-          <Finality final={trace.final} notFinal={trace.notFinal} />
-          {single ? null : <UnitChoice trace={trace} chosen={shown ? unitKey(shown) : undefined} />}
-          {!single && unit !== undefined && !shown ? (
-            <p role="status" className="mt-2 text-sm" data-testid="serial-unit-unknown">
-              No unit {unit} carries this serial: choose one above.
-            </p>
-          ) : null}
-          {shown ? <Unit key={unitKey(shown)} unit={shown} /> : null}
-        </>
+      {single ? null : <UnitChoice trace={trace} chosen={shown ? unitKey(shown) : undefined} />}
+      {!single && unit !== undefined && !shown ? (
+        <Callout tone="warn" role="status" className="mb-6" data-testid="serial-unit-unknown">
+          No unit {unit} carries this serial: choose one above.
+        </Callout>
       ) : null}
-    </section>
+      {shown ? <Unit key={unitKey(shown)} unit={shown} /> : null}
+    </div>
   );
 }
 
@@ -359,16 +478,6 @@ export function TraceSerialRoute() {
   const { serial } = useParams({ from: '/trace/serials/$serial' });
   const { unit } = useSearch({ from: '/trace/serials/$serial' });
   useTraceTopics();
-  if (!TRACE_ID.test(serial)) {
-    return (
-      <section>
-        <BackToSearch />
-        <h1 className="mt-1 text-2xl font-bold">Serial</h1>
-        <p className="mt-2" data-testid="trace-invalid">
-          This is not a serial the MES could know.
-        </p>
-      </section>
-    );
-  }
+  if (!TRACE_ID.test(serial)) return <InvalidId kind="Serial" />;
   return <SerialTrace key={serial} serial={serial} {...(unit === undefined ? {} : { unit })} />;
 }

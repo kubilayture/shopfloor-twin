@@ -1,113 +1,197 @@
 import type { CartonTraceDto } from '@shopfloor/contracts/mes-api';
 import { useQuery } from '@tanstack/react-query';
 import { useParams } from '@tanstack/react-router';
+import type { ReactNode } from 'react';
 import { ApiError } from '../api/client.ts';
 import { queryKeys } from '../api/queries.ts';
 import { getCartonTrace } from '../api/trace.ts';
-import { useHeadingFocus } from '../components/heading-focus.ts';
 import { QueryError } from '../components/query-error.tsx';
-import { TRACE_ID, unitKey } from '../domain/trace.ts';
+import { Badge } from '../components/ui/badge.tsx';
+import { Code } from '../components/ui/code.tsx';
+import { DataTable, type Column } from '../components/ui/data-table.tsx';
+import { EmptyState } from '../components/ui/empty-state.tsx';
+import { Missing, PlantTime } from '../components/ui/format.tsx';
+import { PageHeader } from '../components/ui/page-header.tsx';
+import { Section } from '../components/ui/section.tsx';
+import { TRACE_ID, singleRun, unitKey } from '../domain/trace.ts';
 import { useTraceTopics } from '../live/live-context.tsx';
 import {
-  BackToSearch,
-  Facts,
-  Finality,
+  FinalityNotice,
+  FinalityStatus,
+  HeaderFacts,
+  HeldNotice,
   Holds,
+  InvalidId,
   LotList,
   OrderLink,
   SerialLink,
-  Section,
-  Table,
-  cell,
-  plantTime,
+  TRACE_BACK,
+  TraceLoading,
+  TraceNotFound,
+  UnitStatusBadge,
+  idTitle,
   tracePolling,
-  unitStatus,
 } from './trace-common.tsx';
 
-function Summary({ trace }: { readonly trace: CartonTraceDto }) {
-  const carton = trace.carton;
+type Member = CartonTraceDto['units'][number];
+
+/** The carton's state as badges (`carton-status` keeps the raw status): closed or filling, held. */
+function CartonStatus({ carton }: { readonly carton: CartonTraceDto['carton'] }) {
   return (
-    <div className="mt-3" data-testid="carton-summary">
+    <span
+      data-testid="carton-status"
+      data-status={carton.status}
+      className="flex flex-wrap items-center gap-2"
+    >
+      {carton.status === 'closed' ? (
+        <Badge tone="neutral" icon="check">
+          Closed
+        </Badge>
+      ) : (
+        <Badge tone="info" title="Still filling">
+          Open
+        </Badge>
+      )}
       {carton.held ? (
-        <p
-          role="status"
-          data-testid="carton-held"
-          className="mb-2 rounded border border-red-700 bg-red-50 p-2 text-sm font-semibold text-red-950"
-        >
-          Held: a member is in an open or rejected quality hold, so the carton is blocked from
-          shipping.
-        </p>
+        <Badge tone="alarm" icon="ban">
+          Held
+        </Badge>
       ) : null}
-      <Facts
-        items={[
-          ['Order', <OrderLink key="o" order={carton.orderId} />],
-          ['Product', carton.product],
-          [
-            'Status',
-            <span key="s" data-testid="carton-status" data-status={carton.status}>
-              {carton.status === 'closed' ? 'Closed' : 'Open (still filling)'}
-              {carton.held ? ', held' : ''}
-            </span>,
-          ],
-          [
-            'Members',
-            <span key="m" data-testid="carton-members">
-              {carton.members} of {carton.capacity}
-            </span>,
-          ],
-          ['Closed', plantTime(carton.closedAt)],
-        ]}
-      />
-    </div>
+    </span>
   );
 }
 
-function Members({ trace }: { readonly trace: CartonTraceDto }) {
-  return (
-    <Section id="carton-units-section" title="Members">
-      <p className="text-sm text-slate-700">In placement order (the packing cycles’ plant time).</p>
-      {trace.units.length === 0 ? (
-        <p className="mt-1 text-sm" data-testid="carton-units-empty">
-          No member yet.
-        </p>
+/** The carton's key facts, in the header. */
+function Summary({
+  trace,
+  run,
+}: {
+  readonly trace: CartonTraceDto;
+  readonly run: number | undefined;
+}) {
+  const carton = trace.carton;
+  const facts: (readonly [string, ReactNode])[] = [
+    ['Order', <OrderLink key="order" order={carton.orderId} />],
+    ['Product', <Code key="product">{carton.product}</Code>],
+    [
+      'Members',
+      <span key="members" data-testid="carton-members" className="tabular-nums">
+        {carton.members} of {carton.capacity}
+      </span>,
+    ],
+    [
+      'Closed',
+      carton.closedAt === null ? (
+        <Missing key="closed" reason="Still filling" />
       ) : (
-        <div className="mt-2">
-          <Table
-            testId="carton-units"
-            caption="Members of the carton"
-            count={trace.units.length}
-            columns={['No.', 'Serial', 'Run', 'Part', 'Status']}
-          >
-            {trace.units.map((unit, index) => (
-              <tr
-                key={unitKey(unit)}
-                data-testid={`carton-unit-${unitKey(unit)}`}
-                data-serial={unit.serial ?? ''}
-                data-status={unit.status}
-                className="border-t border-slate-200"
-              >
-                <td className={`${cell} tabular-nums`}>{index + 1}</td>
-                <th scope="row" className={cell}>
-                  <SerialLink unit={unit} />
-                </th>
-                <td className={`${cell} tabular-nums`}>{unit.epoch}</td>
-                <td className={`${cell} tabular-nums`}>{unit.partId}</td>
-                <td className={cell}>{unitStatus(unit.status)}</td>
-              </tr>
-            ))}
-          </Table>
+        <PlantTime key="closed" at={carton.closedAt} />
+      ),
+    ],
+  ];
+  // The run every member belongs to, once here rather than on each row (T-05).
+  if (run !== undefined)
+    facts.push([
+      'Run',
+      <span key="run" className="tabular-nums">
+        {run}
+      </span>,
+    ]);
+  return <HeaderFacts facts={facts} testId="carton-summary" />;
+}
+
+function memberColumns(trace: CartonTraceDto, run: number | undefined): readonly Column<Member>[] {
+  return [
+    {
+      key: 'place',
+      header: 'No.',
+      numeric: true,
+      // At the row's start, beside the serial it numbers, not pushed to the far edge.
+      align: 'start',
+      cell: (unit) => trace.units.indexOf(unit) + 1,
+    },
+    {
+      key: 'serial',
+      header: 'Serial',
+      rowHeader: true,
+      nowrap: true,
+      cell: (unit) => <SerialLink unit={unit} />,
+    },
+    ...(run === undefined
+      ? [{ key: 'run', header: 'Run', numeric: true, cell: (unit: Member) => unit.epoch }]
+      : []),
+    { key: 'part', header: 'Part', numeric: true, cell: (unit) => unit.partId },
+    {
+      key: 'status',
+      header: 'Status',
+      nowrap: true,
+      cell: (unit) => <UnitStatusBadge status={unit.status} />,
+    },
+  ];
+}
+
+function Members({
+  trace,
+  run,
+}: {
+  readonly trace: CartonTraceDto;
+  readonly run: number | undefined;
+}) {
+  return (
+    <Section
+      id="carton-units-section-title"
+      testId="carton-units-section"
+      title="Members"
+      description="In placement order (the packing cycles’ plant time). The MES crew of each cycle is on its serial’s page."
+    >
+      {trace.units.length === 0 ? (
+        <div className="rounded-lg border border-line bg-surface">
+          <EmptyState
+            testId="carton-units-empty"
+            title="No member yet"
+            body="Units appear here as their packing cycles are final."
+          />
         </div>
+      ) : (
+        <DataTable
+          caption="Members of the carton"
+          testId="carton-units"
+          rows={trace.units}
+          count={trace.units.length}
+          rowKey={unitKey}
+          rowTestId={(unit) => `carton-unit-${unitKey(unit)}`}
+          rowProps={(unit) => ({ 'data-serial': unit.serial ?? '', 'data-status': unit.status })}
+          rowTone={(unit) => (unit.status === 'scrapped' ? 'alarm' : undefined)}
+          skipToDetails="carton-lots-title"
+          skipLabel="Skip past the members"
+          density="compact"
+          columns={memberColumns(trace, run)}
+        />
       )}
-      <h3 className="mt-4 font-semibold">Lots of its members</h3>
-      <p className="mt-1 text-sm">
-        <LotList lots={trace.lots} testId="carton-lots" />
-      </p>
+    </Section>
+  );
+}
+
+function Lots({ trace }: { readonly trace: CartonTraceDto }) {
+  return (
+    <Section
+      id="carton-lots-title"
+      testId="carton-lots-section"
+      title="Lots of its members"
+      description="Every lot the members consumed, by lot id."
+    >
+      <div className="rounded-lg border border-line bg-surface p-4 text-sm">
+        <LotList
+          lots={trace.lots}
+          testId="carton-lots"
+          layout="inline"
+          none="No lot reported for its members yet."
+        />
+      </div>
     </Section>
   );
 }
 
 function CartonTrace({ carton }: { readonly carton: string }) {
-  const heading = useHeadingFocus<HTMLHeadingElement>();
   const read = useQuery({
     queryKey: queryKeys.traceCarton(carton),
     queryFn: ({ signal }) => getCartonTrace(carton, signal),
@@ -115,51 +199,74 @@ function CartonTrace({ carton }: { readonly carton: string }) {
       (data: CartonTraceDto) => !data.final || data.carton.status === 'open',
     ),
   });
-  const missing = read.error instanceof ApiError && read.error.status === 404;
   const trace = read.data;
+  if (trace === undefined) {
+    if (read.error instanceof ApiError && read.error.status === 404) {
+      return (
+        <TraceNotFound
+          kind="carton"
+          id={carton}
+          detail="Cartons form once their packing cycles are final."
+        />
+      );
+    }
+    if (read.isError) {
+      return (
+        <div data-testid="trace-carton" data-carton={carton}>
+          <PageHeader
+            back={TRACE_BACK}
+            title={idTitle('Carton', carton)}
+            documentTitle={`Carton ${carton}`}
+          />
+          <QueryError what="the carton" error={read.error} onRetry={() => void read.refetch()} />
+        </div>
+      );
+    }
+    return <TraceLoading label="Loading the carton…" />;
+  }
+  const run = singleRun(trace.units);
   return (
-    <section
-      aria-labelledby="trace-carton-title"
+    <div
       data-testid="trace-carton"
       data-carton={carton}
-      data-status={trace?.carton.status ?? ''}
-      data-held={trace ? String(trace.carton.held) : ''}
-      data-members={trace ? String(trace.carton.members) : ''}
-      data-capacity={trace ? String(trace.carton.capacity) : ''}
+      data-status={trace.carton.status}
+      data-held={String(trace.carton.held)}
+      data-members={String(trace.carton.members)}
+      data-capacity={String(trace.carton.capacity)}
     >
-      <BackToSearch />
-      <h1 ref={heading} id="trace-carton-title" tabIndex={-1} className="mt-1 text-2xl font-bold">
-        Carton {carton}
-      </h1>
-      <p className="mt-1 text-sm text-slate-700">
-        A carton formed by the MES’s packing rule on final data: its members and their lots.
-      </p>
-      {read.isPending ? <p className="mt-4">Loading the carton…</p> : null}
-      {missing ? (
-        <p className="mt-4" data-testid="trace-missing">
-          The MES has no carton {carton} (cartons form once their packing cycles are final).
-        </p>
-      ) : read.isError ? (
-        <div className="mt-4">
+      <PageHeader
+        back={TRACE_BACK}
+        id="trace-carton-title"
+        title={idTitle('Carton', carton)}
+        documentTitle={`Carton ${carton}`}
+        status={
+          <span className="flex flex-wrap items-center gap-2">
+            <CartonStatus carton={trace.carton} />
+            <FinalityStatus final={trace.final} />
+          </span>
+        }
+        description="A carton formed by the MES’s packing rule on final data: its members and their lots."
+        meta={<Summary trace={trace} run={run} />}
+      />
+      <FinalityNotice final={trace.final} notFinal={trace.notFinal} />
+      {read.isError ? (
+        <div className="mb-6">
           <QueryError what="the carton" error={read.error} onRetry={() => void read.refetch()} />
         </div>
       ) : null}
-      {trace ? (
-        <>
-          <Finality final={trace.final} notFinal={trace.notFinal} />
-          <Summary trace={trace} />
-          <Members trace={trace} />
-          <Holds
-            holds={trace.holds}
-            what="this carton and its members"
-            subject={{ kind: 'carton', id: carton }}
-          />
-          <p className="mt-6 text-sm text-slate-700">
-            The MES crew of each cycle is on the serial pages (follow a member’s serial).
-          </p>
-        </>
+      {trace.carton.held ? (
+        <HeldNotice testId="carton-held">
+          A member is in an open or rejected quality hold, so the carton is blocked from shipping.
+        </HeldNotice>
       ) : null}
-    </section>
+      <Members trace={trace} run={run} />
+      <Lots trace={trace} />
+      <Holds
+        holds={trace.holds}
+        what="this carton and its members"
+        subject={{ kind: 'carton', id: carton }}
+      />
+    </div>
   );
 }
 
@@ -167,16 +274,6 @@ function CartonTrace({ carton }: { readonly carton: string }) {
 export function TraceCartonRoute() {
   const { carton } = useParams({ from: '/trace/cartons/$carton' });
   useTraceTopics();
-  if (!TRACE_ID.test(carton)) {
-    return (
-      <section>
-        <BackToSearch />
-        <h1 className="mt-1 text-2xl font-bold">Carton</h1>
-        <p className="mt-2" data-testid="trace-invalid">
-          This is not a carton id the MES could know.
-        </p>
-      </section>
-    );
-  }
+  if (!TRACE_ID.test(carton)) return <InvalidId kind="Carton" />;
   return <CartonTrace key={carton} carton={carton} />;
 }

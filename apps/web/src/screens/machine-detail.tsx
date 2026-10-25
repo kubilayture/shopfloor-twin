@@ -1,25 +1,53 @@
 import type { Clock, CurrentStateDto, EquipmentDto, Metrics } from '@shopfloor/contracts/mes-api';
 import { MES_API_LIMITS } from '@shopfloor/contracts/mes-api';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { Link, useParams, useSearch } from '@tanstack/react-router';
-import { getEquipment, getIntervals, getMetrics, getSeries } from '../api/client.ts';
+import { ApiError, getEquipment, getIntervals, getMetrics, getSeries } from '../api/client.ts';
 import { plantClock, queryKeys, usePlantClock } from '../api/queries.ts';
 import { TrendChart } from '../chart/trend-chart.tsx';
-import { useHeadingFocus } from '../components/heading-focus.ts';
 import { QueryError } from '../components/query-error.tsx';
-import { StaleTag, StateBadge } from '../components/state-badge.tsx';
+import { StateBadge } from '../components/state-badge.tsx';
+import { Badge } from '../components/ui/badge.tsx';
+import { Callout } from '../components/ui/callout.tsx';
+import { Card } from '../components/ui/card.tsx';
+import { Code } from '../components/ui/code.tsx';
+import { DataTable, type Column } from '../components/ui/data-table.tsx';
+import { Disclosure } from '../components/ui/disclosure.tsx';
+import { EmptyState } from '../components/ui/empty-state.tsx';
+import { Duration, Missing, PlantTime } from '../components/ui/format.tsx';
+import { NotFound } from '../components/ui/not-found.tsx';
+import { PageHeader } from '../components/ui/page-header.tsx';
+import { Section } from '../components/ui/section.tsx';
+import { SegmentedLinks } from '../components/ui/segmented-links.tsx';
+import { Skeleton } from '../components/ui/skeleton.tsx';
 import { plainText } from '../domain/numbers.ts';
+import { causeWords, metricName } from '../domain/plant.ts';
 import { chartData } from '../domain/series.ts';
-import { isConnectionLost, newest, stateStyle, staleness, timeInState } from '../domain/states.ts';
 import {
-  formatClockTime,
-  formatDuration,
+  isConnectionLost,
+  newest,
+  STATE_ORDER,
+  stateStyle,
+  staleness,
+  timeInState,
+} from '../domain/states.ts';
+import {
+  durationText,
   formatPlantTime,
+  plantRangeText,
   RANGES,
   type RangeKey,
 } from '../domain/time.ts';
-import { stateTotals, timelineBands, withLiveState, type Band } from '../domain/timeline.ts';
+import {
+  stateTotals,
+  timelineBands,
+  timelineTicks,
+  withLiveState,
+  type Band,
+  type StateTotal,
+  type Tick,
+} from '../domain/timeline.ts';
 import type { LiveTelemetry } from '../live/live-cache.ts';
 import {
   useLiveConnection,
@@ -28,167 +56,193 @@ import {
   useLiveTelemetry,
 } from '../live/live-context.tsx';
 
+/**
+ * A machine's detail (UX-2, #322; design system 3.3, 3.4, 5): the page header with the machine's
+ * name, its state badge (and the Stale tag), where it stands and its key facts, and the range
+ * switch (`SegmentedLinks`, M-04) in the filter row; then the state timeline with an axis (M-01),
+ * the time per state and every interval, and the telemetry: the metrics by name with their latest
+ * value and its age (M-02), and a trend per metric. Tables are `DataTable`s, charts are cards
+ * (M-03); an empty chart is an empty state that says when the last sample was (M-05); an unknown
+ * machine is a `NotFound` (M-06).
+ */
+
 /** Buckets per metric: about one per two pixels of a wide chart. */
 const CHART_POINTS = 600;
 const INTERVALS_REFRESH_MS = 15_000;
 const SERIES_REFRESH_MS = 30_000;
+/**
+ * A latest value older than this (plant time) says how old it is (M-02): telemetry is sent on
+ * change, so a quiet signal can be hours old while its machine stands.
+ */
+export const SAMPLE_AGE_SHOWN_MS = 15 * 60_000;
 
 interface Window {
   readonly from: number;
   readonly to: number;
 }
 
-function RangePicker({ id, range }: { id: string; range: RangeKey }) {
+const BACK = { label: 'Plant overview', link: { to: '/' } } as const;
+
+function RangeSwitch({ id, range }: { readonly id: string; readonly range: RangeKey }) {
   return (
-    <nav aria-label="Time range">
-      <ul className="flex flex-wrap gap-2">
-        {(Object.keys(RANGES) as RangeKey[]).map((key) => (
-          <li key={key}>
-            <Link
-              to="/equipment/$id"
-              params={{ id }}
-              search={{ range: key }}
-              aria-current={key === range ? 'page' : undefined}
-              className={`inline-block rounded border px-3 py-1 text-sm ${
-                key === range
-                  ? 'border-slate-900 bg-slate-900 text-white'
-                  : 'border-slate-400 bg-white text-slate-900 hover:bg-slate-100'
-              }`}
-            >
-              {RANGES[key].label}
-            </Link>
-          </li>
-        ))}
-      </ul>
-    </nav>
+    <SegmentedLinks
+      label="Time range"
+      current={range}
+      items={(Object.keys(RANGES) as RangeKey[]).map((key) => ({
+        key,
+        label: RANGES[key].label,
+        to: '/equipment/$id',
+        params: { id },
+        search: { range: key },
+      }))}
+    />
   );
 }
 
-/** Time without a stored state: hatched, so no state colour can be mistaken for it. */
-const NO_DATA_PATTERN = {
-  backgroundImage: 'repeating-linear-gradient(135deg, #ffffff 0 5px, #64748b 5px 7px)',
-} as const;
+/** A cause in words with its code beside it (O-02), or nothing reported. */
+function Cause({ cause }: { readonly cause: string | null }) {
+  if (cause === null) return <Missing reason="No cause reported" />;
+  return (
+    <span className="inline-flex flex-wrap items-baseline gap-x-2">
+      <span>{causeWords(cause)}</span> <Code className="text-ink-secondary">{cause}</Code>
+    </span>
+  );
+}
 
-function Timeline({ bands, window }: { bands: readonly Band[]; window: Window }) {
-  const states = [...new Set(bands.map((band) => band.state))].sort();
+/**
+ * Time without a stored state: hatched in `surface` and `line-strong`, so no state's fill can be
+ * mistaken for it. Written out in full for Tailwind's scanner; a class, not an inline style.
+ */
+const NO_DATA_HATCH =
+  'bg-[repeating-linear-gradient(135deg,var(--color-surface)_0_5px,var(--color-line-strong)_5px_7px)]';
+
+/** The tick's label sits centred under it, or inside the bar's ends near an edge. */
+function tickAlign(tick: Tick): string {
+  if (tick.left < 6) return 'items-start';
+  if (tick.left > 94) return '-translate-x-full items-end';
+  return '-translate-x-1/2 items-center';
+}
+
+function Axis({ ticks }: { readonly ticks: readonly Tick[] }) {
+  const dated = ticks.some((tick) => tick.date !== undefined);
+  return (
+    <div
+      aria-hidden="true"
+      data-testid="timeline-axis"
+      className={`relative w-full text-2xs text-ink-secondary ${dated ? 'h-10' : 'h-6'}`}
+    >
+      {ticks.map((tick, index) => (
+        <div
+          key={tick.at}
+          data-tick={new Date(tick.at).toISOString()}
+          className={`absolute top-0 flex flex-col ${tickAlign(tick)} ${
+            // Below `sm` every other tick, unless it carries a date.
+            index % 2 === 1 && tick.date === undefined ? 'max-sm:hidden' : ''
+          }`}
+          style={{ left: `${String(tick.left)}%` }}
+        >
+          <span className="h-1.5 w-px bg-line-strong" />
+          <span className="whitespace-nowrap tabular-nums">{tick.time}</span>
+          {tick.date === undefined ? null : (
+            <span className="whitespace-nowrap font-semibold text-ink">{tick.date}</span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const byStateOrder = (a: string, b: string) => {
+  const rank = (state: string) => {
+    const index = STATE_ORDER.indexOf(state);
+    return index === -1 ? STATE_ORDER.length : index;
+  };
+  return rank(a) - rank(b) || a.localeCompare(b);
+};
+
+function Timeline({ bands, window }: { readonly bands: readonly Band[]; readonly window: Window }) {
+  const states = [...new Set(bands.map((band) => band.state))].sort(byStateOrder);
   return (
     <div>
       <div
         role="img"
-        aria-label={`State timeline from ${formatPlantTime(window.from)} to ${formatPlantTime(window.to)}; the table below lists every interval`}
+        aria-label={`State timeline from ${formatPlantTime(window.from)} to ${formatPlantTime(window.to)}; the tables below list the time per state and every interval`}
         data-testid="state-timeline"
-        className="relative h-10 w-full overflow-hidden rounded border border-slate-500"
-        style={NO_DATA_PATTERN}
+        className={`relative h-10 w-full overflow-hidden rounded-sm border border-line-strong ${NO_DATA_HATCH}`}
       >
         {bands.map((band) => (
           <div
             key={`${String(band.epoch)}-${String(band.start)}-${band.state}`}
             data-state={band.state}
-            title={`${stateStyle(band.state).label}${band.cause ? ` (${band.cause})` : ''}: ${formatPlantTime(band.start)} – ${formatPlantTime(band.end)}`}
+            title={`${stateStyle(band.state).label}${band.cause ? ` (${causeWords(band.cause)})` : ''}: ${formatPlantTime(band.start)} – ${formatPlantTime(band.end)}`}
             className={`absolute inset-y-0 ${stateStyle(band.state).band}`}
             style={{ left: `${String(band.left)}%`, width: `${String(band.width)}%` }}
           />
         ))}
       </div>
-      <div className="mt-1 flex justify-between text-xs text-slate-600" aria-hidden="true">
-        <span>{formatClockTime(window.from)}</span>
-        <span>{formatClockTime(window.to)}</span>
-      </div>
-      {states.length > 0 ? (
-        <ul aria-label="Legend" className="mt-2 flex flex-wrap gap-2">
-          {states.map((state) => (
-            <li key={state}>
-              <StateBadge state={state} />
-            </li>
-          ))}
-          <li className="flex items-center gap-1 text-sm">
-            <span
-              aria-hidden="true"
-              className="inline-block h-4 w-6 rounded border border-slate-500"
-              style={NO_DATA_PATTERN}
-            />
-            No data
+      <Axis ticks={timelineTicks(window)} />
+      <ul aria-label="Legend" className="mt-2 flex flex-wrap items-center gap-2">
+        {states.map((state) => (
+          <li key={state}>
+            <StateBadge state={state} />
           </li>
-        </ul>
-      ) : null}
+        ))}
+        <li className="flex items-center gap-1.5 text-xs text-ink-secondary">
+          <span
+            aria-hidden="true"
+            className={`inline-block h-4 w-6 rounded-sm border border-line-strong ${NO_DATA_HATCH}`}
+          />
+          No data
+        </li>
+      </ul>
     </div>
   );
 }
 
-function StateTotals({ bands, label }: { bands: readonly Band[]; label: string }) {
-  const totals = stateTotals(bands);
-  if (totals.length === 0) return null;
-  return (
-    <table className="mt-4 w-full max-w-md text-sm">
-      <caption className="text-left font-medium">Time per state, {label.toLowerCase()}</caption>
-      <thead>
-        <tr className="border-b border-slate-300 text-left">
-          <th scope="col" className="py-1">
-            State
-          </th>
-          <th scope="col" className="py-1 text-right">
-            Time
-          </th>
-          <th scope="col" className="py-1 text-right">
-            Share
-          </th>
-        </tr>
-      </thead>
-      <tbody>
-        {totals.map((total) => (
-          <tr key={total.state} className="border-b border-slate-200">
-            <th scope="row" className="py-1 text-left font-normal">
-              {stateStyle(total.state).label}
-            </th>
-            <td className="py-1 text-right tabular-nums">{formatDuration(total.ms)}</td>
-            <td className="py-1 text-right tabular-nums">{(total.share * 100).toFixed(1)} %</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
+const TOTAL_COLUMNS: readonly Column<StateTotal>[] = [
+  {
+    key: 'state',
+    header: 'State',
+    rowHeader: true,
+    cell: (total) => <StateBadge state={total.state} />,
+  },
+  { key: 'time', header: 'Time', numeric: true, cell: (total) => durationText(total.ms) },
+  {
+    key: 'share',
+    header: 'Share',
+    numeric: true,
+    cell: (total) => `${(total.share * 100).toFixed(1)} %`,
+  },
+];
 
-function IntervalTable({ bands }: { bands: readonly Band[] }) {
-  return (
-    <details className="mt-4">
-      <summary className="cursor-pointer text-sm font-medium">
-        Intervals as a table ({String(bands.length)})
-      </summary>
-      <div className="mt-2 overflow-x-auto">
-        <table className="w-full text-sm [&_td]:px-2 [&_th]:px-2">
-          <thead>
-            <tr className="border-b border-slate-300 text-left">
-              <th scope="col">Start</th>
-              <th scope="col">End</th>
-              <th scope="col">State</th>
-              <th scope="col">Cause</th>
-              <th scope="col" className="text-right">
-                Duration
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {bands.map((band) => (
-              <tr
-                key={`${String(band.epoch)}-${String(band.start)}-${band.state}`}
-                className="border-b border-slate-200"
-              >
-                <td>{formatPlantTime(band.start)}</td>
-                <td>
-                  {formatPlantTime(band.end)}
-                  {band.provisional ? ' (open)' : ''}
-                </td>
-                <td>{stateStyle(band.state).label}</td>
-                <td>{band.cause ?? '—'}</td>
-                <td className="text-right tabular-nums">{formatDuration(band.end - band.start)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </details>
-  );
+function intervalColumns(clock: number): readonly Column<Band>[] {
+  return [
+    {
+      key: 'start',
+      header: 'Start',
+      nowrap: true,
+      cell: (band) => <PlantTime at={band.start} clock={clock} />,
+    },
+    {
+      key: 'end',
+      header: 'End',
+      nowrap: true,
+      cell: (band) => (
+        <>
+          <PlantTime at={band.end} clock={clock} />
+          {band.provisional ? <span className="text-ink-secondary"> (open)</span> : null}
+        </>
+      ),
+    },
+    { key: 'state', header: 'State', cell: (band) => <StateBadge state={band.state} /> },
+    { key: 'cause', header: 'Cause', priority: 2, cell: (band) => <Cause cause={band.cause} /> },
+    {
+      key: 'elapsed',
+      header: 'Duration',
+      numeric: true,
+      cell: (band) => durationText(band.end - band.start),
+    },
+  ];
 }
 
 /** Least time between interval reads caused by pushed state changes. */
@@ -240,11 +294,11 @@ function StateSection({
   window,
   clockKnown,
 }: {
-  id: string;
-  range: RangeKey;
-  current: CurrentStateDto | undefined;
-  window: Window | undefined;
-  clockKnown: boolean;
+  readonly id: string;
+  readonly range: RangeKey;
+  readonly current: CurrentStateDto | undefined;
+  readonly window: Window | undefined;
+  readonly clockKnown: boolean;
 }) {
   const queryClient = useQueryClient();
   useRefetchIntervalsOnStateChange(id, current);
@@ -262,39 +316,82 @@ function StateSection({
     window && intervals.data
       ? timelineBands(withLiveState(intervals.data.intervals, current, window.to), window)
       : [];
+  const label = RANGES[range].label;
   return (
-    <section aria-labelledby="timeline-title" className="mt-8">
-      <h2 id="timeline-title" className="text-xl font-semibold">
-        State timeline
-      </h2>
-      <div className="mt-3">
-        {!clockKnown || intervals.isPending ? <p>Loading intervals…</p> : null}
-        {intervals.isError ? (
-          <QueryError
-            what="the state intervals"
-            error={intervals.error}
-            onRetry={() => void intervals.refetch()}
+    <Section
+      id="timeline-title"
+      title="State timeline"
+      description={
+        window ? `${label}: ${plantRangeText(window.from, window.to)}` : `${label}, plant time`
+      }
+    >
+      {!clockKnown || intervals.isPending ? (
+        <Skeleton shape="text" rows={2} label="Loading intervals…" />
+      ) : null}
+      {intervals.isError ? (
+        <QueryError
+          what="the state intervals"
+          error={intervals.error}
+          onRetry={() => void intervals.refetch()}
+        />
+      ) : null}
+      {clockKnown && !window ? (
+        <Card padding="compact">
+          <EmptyState
+            title="No plant clock yet"
+            body="Nothing has reported, so there is no time to draw the states against."
+            icon="clock"
           />
-        ) : null}
-        {intervals.data?.truncated ? (
-          <p className="text-sm text-amber-900">
-            The range holds more intervals than the page shows; the latest are left out.
-          </p>
-        ) : null}
-        {window && intervals.data ? (
-          bands.length === 0 ? (
-            <p>No state intervals in this range.</p>
+        </Card>
+      ) : null}
+      {window && intervals.data ? (
+        <div className="flex flex-col gap-4">
+          {intervals.data.truncated ? (
+            <Callout tone="warn">
+              The range holds more intervals than the page shows; the latest are left out.
+            </Callout>
+          ) : null}
+          {bands.length === 0 ? (
+            <Card padding="compact">
+              <EmptyState
+                title="No state intervals in this range"
+                body="The machine reported no state in this time; try a longer range."
+                icon="clock"
+              />
+            </Card>
           ) : (
             <>
-              <Timeline bands={bands} window={window} />
-              <StateTotals bands={bands} label={RANGES[range].label} />
-              <IntervalTable bands={bands} />
+              <Card padding="compact">
+                <Timeline bands={bands} window={window} />
+              </Card>
+              <Section level={3} title="Time per state">
+                <DataTable
+                  caption={`Time per state, ${label.toLowerCase()}`}
+                  testId="state-totals"
+                  columns={TOTAL_COLUMNS}
+                  rows={stateTotals(bands)}
+                  rowKey={(total) => total.state}
+                  rowProps={(total) => ({ 'data-state': total.state })}
+                  density="compact"
+                />
+              </Section>
+              <Disclosure summary={`Every interval (${String(bands.length)})`}>
+                <DataTable
+                  caption={`State intervals, ${label.toLowerCase()}`}
+                  testId="state-intervals"
+                  columns={intervalColumns(window.to)}
+                  rows={bands}
+                  rowKey={(band) => `${String(band.epoch)}-${String(band.start)}-${band.state}`}
+                  rowProps={(band) => ({ 'data-state': band.state })}
+                  density="compact"
+                  pageSize={50}
+                />
+              </Disclosure>
             </>
-          )
-        ) : null}
-        {clockKnown && !window ? <p>No plant clock yet: nothing has reported.</p> : null}
-      </div>
-    </section>
+          )}
+        </div>
+      ) : null}
+    </Section>
   );
 }
 
@@ -310,59 +407,73 @@ function latestOf(
   return metric.latest;
 }
 
-function MetricTable({
-  metrics,
-  live,
-}: {
-  metrics: Metrics['metrics'];
-  live: LiveTelemetry | undefined;
-}) {
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full max-w-2xl text-sm [&_td]:px-2 [&_th]:px-2">
-        <caption className="text-left font-medium">Metrics and latest values</caption>
-        <thead>
-          <tr className="border-b border-slate-300 text-left">
-            <th scope="col">Metric</th>
-            <th scope="col">Unit</th>
-            <th scope="col" className="text-right">
-              Latest
-            </th>
-            <th scope="col">At</th>
-          </tr>
-        </thead>
-        <tbody>
-          {metrics.map((metric) => {
-            const latest = latestOf(metric, live);
-            return (
-              <tr key={metric.metric} className="border-b border-slate-200">
-                <th scope="row" className="text-left font-mono font-normal">
-                  {metric.metric}
-                </th>
-                <td>{metric.unit}</td>
-                <td className="text-right tabular-nums" data-testid={`latest-${metric.metric}`}>
-                  {plainText(latest.value)}
-                </td>
-                <td>
-                  <time dateTime={latest.t}>{formatPlantTime(latest.t)}</time>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
+interface MetricRow {
+  readonly metric: string;
+  readonly unit: string;
+  readonly latest: { readonly t: string; readonly value: number };
+}
+
+/** How old a latest value is against the plant clock, when that is worth saying. */
+function sampleAge(t: string, clock: number | undefined): number | undefined {
+  if (clock === undefined) return undefined;
+  const age = clock - Date.parse(t);
+  return age > SAMPLE_AGE_SHOWN_MS ? age : undefined;
+}
+
+function metricColumns(clock: number | undefined): readonly Column<MetricRow>[] {
+  return [
+    {
+      key: 'metric',
+      header: 'Metric',
+      rowHeader: true,
+      cell: (row) => (
+        <span className="flex flex-col">
+          <span className="text-ink">{metricName(row.metric)}</span>{' '}
+          <Code className="text-xs text-ink-secondary">{row.metric}</Code>
+        </span>
+      ),
+    },
+    {
+      key: 'latest',
+      header: 'Latest',
+      numeric: true,
+      cell: (row) => (
+        <>
+          <span data-testid={`latest-${row.metric}`}>{plainText(row.latest.value)}</span>
+          <span className="text-ink-secondary"> {row.unit}</span>
+        </>
+      ),
+    },
+    {
+      key: 'at',
+      header: 'Last sample',
+      cell: (row) => {
+        const age = sampleAge(row.latest.t, clock);
+        return (
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <PlantTime at={row.latest.t} clock={clock} />
+            {age === undefined ? null : (
+              <Badge tone="warn" icon="clock" data-testid={`age-${row.metric}`}>
+                {durationText(age)} old
+              </Badge>
+            )}
+          </span>
+        );
+      },
+    },
+  ];
 }
 
 function TelemetrySection({
   id,
   range,
   window,
+  clock,
 }: {
-  id: string;
-  range: RangeKey;
-  window: Window | undefined;
+  readonly id: string;
+  readonly range: RangeKey;
+  readonly window: Window | undefined;
+  readonly clock: number | undefined;
 }) {
   const queryClient = useQueryClient();
   useLiveSubscription(`telemetry:${id}`);
@@ -389,27 +500,48 @@ function TelemetrySection({
     enabled: names.length > 0 && window !== undefined,
     refetchInterval: SERIES_REFRESH_MS,
   });
+  const rows: MetricRow[] = (metrics.data?.metrics ?? []).map((metric) => ({
+    metric: metric.metric,
+    unit: metric.unit,
+    latest: latestOf(metric, live),
+  }));
+  const latestAt = new Map(rows.map((row) => [row.metric, row.latest.t]));
 
   return (
-    <section aria-labelledby="telemetry-title" className="mt-8">
-      <h2 id="telemetry-title" className="text-xl font-semibold">
-        Telemetry
-      </h2>
-      <div className="mt-3 flex flex-col gap-4">
-        {metrics.isPending ? <p>Loading metrics…</p> : null}
+    <Section
+      id="telemetry-title"
+      title="Telemetry"
+      description="Each metric's latest value and its trend: minimum to maximum, and the average."
+    >
+      <div className="flex flex-col gap-4">
         {metrics.isError ? (
           <QueryError
             what="the metrics"
             error={metrics.error}
             onRetry={() => void metrics.refetch()}
           />
-        ) : null}
-        {metrics.data?.metrics.length === 0 ? <p>This machine sent no telemetry yet.</p> : null}
-        {metrics.data && metrics.data.metrics.length > 0 ? (
-          <MetricTable metrics={metrics.data.metrics} live={live} />
-        ) : null}
+        ) : (
+          <DataTable
+            caption="Metrics and latest values"
+            testId="metrics"
+            columns={metricColumns(clock)}
+            rows={rows}
+            rowKey={(row) => row.metric}
+            loading={metrics.isPending ? 'Loading metrics…' : undefined}
+            density="compact"
+            empty={
+              <EmptyState
+                title="No telemetry yet"
+                body="This machine sent no telemetry yet."
+                icon="info"
+              />
+            }
+          />
+        )}
         {metrics.data && metrics.data.metrics.length > shown.length ? (
-          <p className="text-sm">Trends show the first {String(MES_API_LIMITS.metrics)} metrics.</p>
+          <p className="text-sm text-ink-secondary">
+            Trends show the first {String(MES_API_LIMITS.metrics)} metrics.
+          </p>
         ) : null}
         {series.isError ? (
           <QueryError
@@ -418,65 +550,126 @@ function TelemetrySection({
             onRetry={() => void series.refetch()}
           />
         ) : null}
+        {names.length > 0 && window && series.isPending ? (
+          <Skeleton shape="chart" label="Loading trends…" />
+        ) : null}
         {window && series.data ? (
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-            {series.data.series.map((item) => (
-              <TrendChart
-                key={item.metric}
-                label={item.metric}
-                unit={item.unit}
-                window={window}
-                data={chartData(
-                  item.points,
-                  series.data.bucketMs,
-                  live?.[item.metric]?.samples ?? [],
-                  window,
-                )}
-              />
-            ))}
+            {series.data.series.map((item) => {
+              const last = latestAt.get(item.metric);
+              return (
+                <TrendChart
+                  key={item.metric}
+                  label={metricName(item.metric)}
+                  unit={item.unit}
+                  window={window}
+                  empty={
+                    last === undefined ? undefined : (
+                      <>
+                        The last sample was at <PlantTime at={last} />
+                        {Date.parse(last) < window.from ? ', before this range.' : '.'}
+                      </>
+                    )
+                  }
+                  data={chartData(
+                    item.points,
+                    series.data.bucketMs,
+                    live?.[item.metric]?.samples ?? [],
+                    window,
+                  )}
+                />
+              );
+            })}
           </div>
         ) : null}
       </div>
-    </section>
+    </Section>
   );
 }
 
-function Header({
+/** Where the machine stands and its state's facts, as "label value" pairs (design system 3.3). */
+function Facts({
+  equipment,
+  current,
+  clock,
+}: {
+  readonly equipment: EquipmentDto;
+  readonly current: CurrentStateDto | undefined;
+  readonly clock: Clock | null;
+}) {
+  const fact = (term: string, detail: ReactNode) => (
+    <div className="flex min-w-0 items-baseline gap-1.5">
+      <dt className="text-ink-secondary">{term}</dt>
+      <dd className="min-w-0">{detail}</dd>
+    </div>
+  );
+  return (
+    <dl className="flex flex-wrap gap-x-5 gap-y-1">
+      {fact(
+        'Where',
+        <>
+          {equipment.area.name} › {equipment.workCenter.name} · {equipment.operation} ·{' '}
+          <Code>{equipment.id}</Code>
+        </>,
+      )}
+      {current ? (
+        <>
+          {fact('In state', <Duration ms={timeInState(current, clock)} seconds />)}
+          {fact('Since', <PlantTime at={current.since} clock={clock?.watermark} />)}
+          {current.cause === null ? null : fact('Cause', <Cause cause={current.cause} />)}
+        </>
+      ) : (
+        fact(
+          'State',
+          <span className="text-ink-secondary">This machine has not reported yet.</span>,
+        )
+      )}
+    </dl>
+  );
+}
+
+function MachineHeader({
   equipment,
   current,
   clock,
   connectionLost,
+  range,
 }: {
-  equipment: EquipmentDto;
-  current: CurrentStateDto | undefined;
-  clock: Clock | null;
-  connectionLost: boolean;
+  readonly equipment: EquipmentDto;
+  readonly current: CurrentStateDto | undefined;
+  readonly clock: Clock | null;
+  readonly connectionLost: boolean;
+  readonly range: RangeKey;
 }) {
   const stale = current ? staleness(current, clock, connectionLost) : undefined;
-  const heading = useHeadingFocus<HTMLHeadingElement>();
   return (
-    <header>
-      <h1 ref={heading} tabIndex={-1} className="text-2xl font-bold">
-        {equipment.name}
-      </h1>
-      <p className="text-sm text-slate-700">
-        <span className="font-mono">{equipment.id}</span> · {equipment.operation} ·{' '}
-        {equipment.area.name} / {equipment.workCenter.name}
-      </p>
-      <div className="mt-3 flex flex-wrap items-center gap-3">
-        <StateBadge state={current?.state} testId="current-state" size="lg" />
-        {current ? (
-          <span className="text-sm">
-            {current.cause ? `${current.cause} · ` : ''}
-            for {formatDuration(timeInState(current, clock))} since{' '}
-            <time dateTime={current.since}>{formatPlantTime(current.since)}</time>
-          </span>
-        ) : (
-          <span className="text-sm">This machine has not reported yet.</span>
-        )}
-        {stale ? <StaleTag reason={stale} /> : null}
-      </div>
-    </header>
+    <PageHeader
+      back={BACK}
+      title={equipment.name}
+      status={
+        <span className="flex flex-wrap items-center gap-2">
+          <StateBadge
+            state={current?.state}
+            testId="current-state"
+            size="lg"
+            stale={stale}
+            staleTestId="current-stale"
+          />
+          {current?.seq === null ? (
+            <Badge
+              tone="neutral"
+              variant="dashed"
+              size="lg"
+              title="Known from the device's start-up state only; no state change seen yet"
+            >
+              Provisional
+            </Badge>
+          ) : null}
+        </span>
+      }
+      meta={<Facts equipment={equipment} current={current} clock={clock} />}
+      filters={<RangeSwitch id={equipment.id} range={range} />}
+    />
   );
 }
 
@@ -495,42 +688,53 @@ export function MachineDetail() {
   const window =
     clockMs === undefined ? undefined : { from: clockMs - RANGES[range].ms, to: clockMs };
 
-  return (
-    <article>
-      <p className="mb-4 text-sm">
-        <Link to="/" className="text-sky-800 underline">
-          ← Plant overview
-        </Link>
-      </p>
-      {equipment.isPending ? <p>Loading machine…</p> : null}
-      {equipment.isError ? (
+  if (equipment.isPending) {
+    // No `h1` until the machine is read: the heading takes the focus when it mounts.
+    return (
+      <div className="flex flex-col gap-6">
+        <p className="text-sm">
+          <Link to="/" className="text-link underline-offset-4 hover:underline">
+            ‹ {BACK.label}
+          </Link>
+        </p>
+        <Skeleton shape="card" label="Loading machine…" />
+      </div>
+    );
+  }
+  if (equipment.error instanceof ApiError && equipment.error.status === 404) {
+    return <NotFound kind="machine" id={id} back={{ to: '/', label: BACK.label }} />;
+  }
+  if (equipment.isError) {
+    return (
+      <div>
+        <PageHeader
+          back={BACK}
+          title={
+            <>
+              Machine <Code>{id}</Code>
+            </>
+          }
+          documentTitle={`Machine ${id}`}
+        />
         <QueryError
           what={`machine ${id}`}
           error={equipment.error}
           onRetry={() => void equipment.refetch()}
         />
-      ) : null}
-      {equipment.data ? (
-        <>
-          <Header
-            equipment={equipment.data}
-            current={current}
-            clock={clock}
-            connectionLost={connectionLost}
-          />
-          <div className="mt-6">
-            <RangePicker id={id} range={range} />
-          </div>
-          <StateSection
-            id={id}
-            range={range}
-            current={current}
-            window={window}
-            clockKnown={known}
-          />
-          <TelemetrySection id={id} range={range} window={window} />
-        </>
-      ) : null}
-    </article>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <MachineHeader
+        equipment={equipment.data}
+        current={current}
+        clock={clock}
+        connectionLost={connectionLost}
+        range={range}
+      />
+      <StateSection id={id} range={range} current={current} window={window} clockKnown={known} />
+      <TelemetrySection id={id} range={range} window={window} clock={clockMs} />
+    </div>
   );
 }

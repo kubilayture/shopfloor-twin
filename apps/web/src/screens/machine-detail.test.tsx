@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TrendChartProps } from '../chart/trend-chart.tsx';
-import { current, EPOCH, EQUIPMENT, PLANT, fakeFetch, json } from '../test/fixtures.ts';
+import { current, EPOCH, EQUIPMENT, PLANT, fakeFetch, json, problem } from '../test/fixtures.ts';
 import { renderApp } from '../test/render-app.tsx';
 
 vi.mock('../chart/uplot-chart.tsx', () => ({
@@ -101,6 +101,14 @@ describe('machine detail', () => {
       ['Running', expect.closeTo((55 / 60) * 100, 6), expect.closeTo((5 / 60) * 100, 6)],
     ]);
     expect(bands.map((band) => band.dataset.state)).toEqual(['Down', 'Running']);
+    // A band is the state's fill with 4 px top and bottom edges in its border colour (2.4): the
+    // timeline's own look, not the badge's (#345 review).
+    for (const band of bands) {
+      const key = band.dataset.state?.toLowerCase();
+      expect(band.className.split(' ')).toEqual(
+        expect.arrayContaining(['border-y-4', `border-state-${key ?? ''}-border`]),
+      );
+    }
 
     const intervalQuery = requests.find((url) => url.pathname.endsWith('/intervals'));
     expect(intervalQuery?.searchParams.get('to')).toBe(PLANT.clock.watermark);
@@ -110,6 +118,46 @@ describe('machine detail', () => {
     expect(within(totals).getByRole('rowheader', { name: 'Running' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Last hour' }).getAttribute('aria-current')).toBe(
       'page',
+    );
+
+    // The page header: the name as the h1, the state's facts, the way back.
+    expect(screen.getByRole('link', { name: '‹ Plant overview' }).getAttribute('href')).toBe('/');
+    expect(screen.getByText(/Machining › Cell M1/)).toBeTruthy();
+    // The axis: a tick every 10 min over the hour, at round times of day, no date on one day.
+    const ticks = [
+      ...screen.getByTestId('timeline-axis').querySelectorAll<HTMLElement>('[data-tick]'),
+    ];
+    expect(ticks.map((tick) => tick.textContent)).toEqual([
+      '08:10',
+      '08:20',
+      '08:30',
+      '08:40',
+      '08:50',
+      '09:00',
+      '09:10',
+    ]);
+  });
+
+  it('dates the axis where the plant day changes on a range that spans days', async () => {
+    vi.stubGlobal('fetch', routes());
+    const app = await renderApp('/equipment/cnc-01?range=24h');
+    await app.open();
+    const axis = await screen.findByTestId('timeline-axis');
+    const ticks = [...axis.querySelectorAll<HTMLElement>('[data-tick]')].map(
+      (tick) => tick.textContent,
+    );
+    expect(ticks).toEqual([
+      '12:00Wed 14 Oct',
+      '15:00',
+      '18:00',
+      '21:00',
+      '00:00Thu 15 Oct',
+      '03:00',
+      '06:00',
+      '09:00',
+    ]);
+    expect(screen.getByTestId('state-timeline').getAttribute('aria-label')).toContain(
+      'Wed 14 Oct, 09:10:00 to Thu 15 Oct, 09:10:00',
     );
   });
 
@@ -145,7 +193,9 @@ describe('machine detail', () => {
     const app = await renderApp('/equipment/cnc-01?range=1h');
     await app.open();
     expect((await screen.findByTestId('latest-spindle-load')).textContent).toBe('42.5');
-    expect(screen.getByRole('rowheader', { name: 'spindle-load' })).toBeTruthy();
+    // The metric by its name, its id beside it (M-02); the latest value is fresh: no age.
+    expect(screen.getByRole('rowheader', { name: 'Spindle load spindle-load' })).toBeTruthy();
+    expect(screen.queryByTestId('age-spindle-load')).toBeNull();
     expect(app.factory.last.sent).toContainEqual({ type: 'subscribe', topic: 'telemetry:cnc-01' });
 
     const chart = await screen.findByTestId('chart-percent');
@@ -204,7 +254,8 @@ describe('machine detail', () => {
     const app = await renderApp('/equipment/cnc-01');
     await app.open();
     await screen.findByTestId('current-state');
-    const picker = screen.getByRole('navigation', { name: 'Time range' });
+    // A row of links in a named group (SegmentedLinks, M-04), the current one aria-current.
+    const picker = screen.getByRole('group', { name: 'Time range' });
     expect(
       within(picker).getByRole('link', { name: 'Last 8 h' }).getAttribute('aria-current'),
     ).toBe('page');
@@ -214,12 +265,82 @@ describe('machine detail', () => {
     });
   });
 
-  it('shows the problem the MES reported for an unknown machine', async () => {
+  it('says an unknown machine is not there, with the way back (M-06)', async () => {
     vi.stubGlobal('fetch', routes());
     const app = await renderApp('/equipment/nope');
     await app.open();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Machine nope' })).toBeTruthy();
+    expect(screen.getByText('The MES has no machine with this id.')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Plant overview' }).getAttribute('href')).toBe('/');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(document.title).toBe('Machine nope · ShopFloor Twin');
+  });
+
+  it('shows what the MES said when the machine cannot be read, under its heading', async () => {
+    vi.stubGlobal(
+      'fetch',
+      fakeFetch({
+        '/api/v1/plant': () => json(PLANT),
+        '/api/v1/equipment': () => json({ equipment: EQUIPMENT }),
+        '/api/v1/equipment/cnc-01': () =>
+          problem(503, 'Service Unavailable', 'the database is busy', '/api/v1/equipment/cnc-01'),
+      }),
+    );
+    const app = await renderApp('/equipment/cnc-01');
+    await app.open();
     const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toContain('Could not load machine nope');
-    expect(alert.textContent).toContain('Unknown equipment, metric or route');
+    expect(alert.textContent).toContain('Could not load machine cnc-01');
+    expect(alert.textContent).toContain('the database is busy');
+    expect(screen.getByRole('heading', { level: 1, name: 'Machine cnc-01' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+  });
+
+  it('says how old a latest value is, and when an empty trend last had a sample (M-02, M-05)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      fakeFetch({
+        '/api/v1/plant': () => json(PLANT),
+        '/api/v1/equipment/cnc-01': () => json(CNC),
+        '/api/v1/equipment/cnc-01/intervals': (url) =>
+          json({
+            equipment: 'cnc-01',
+            from: url.searchParams.get('from'),
+            to: url.searchParams.get('to'),
+            truncated: false,
+            next: null,
+            intervals: [],
+          }),
+        '/api/v1/equipment/cnc-01/telemetry/metrics': () =>
+          json({
+            equipment: 'cnc-01',
+            metrics: [
+              {
+                metric: 'coolant-temperature',
+                unit: '°C',
+                latest: { t: at(-3 * 24 * 60 - 130), value: 22 },
+              },
+            ],
+          }),
+        '/api/v1/equipment/cnc-01/telemetry': (url) =>
+          json({
+            equipment: 'cnc-01',
+            from: url.searchParams.get('from'),
+            to: url.searchParams.get('to'),
+            bucketMs: 60_000,
+            series: [{ metric: 'coolant-temperature', unit: '°C', points: [] }],
+          }),
+      }),
+    );
+    const app = await renderApp('/equipment/cnc-01?range=1h');
+    await app.open();
+    const age = await screen.findByTestId('age-coolant-temperature');
+    // 3 d 2 h 20 min before the plant clock (06:10 on the 15th).
+    expect(age.textContent).toBe('3 d 2 h old');
+    expect(screen.getByRole('rowheader', { name: /^Coolant temperature/ })).toBeTruthy();
+    const empty = await screen.findByText('No samples in this range.');
+    const figure = empty.closest('figure');
+    expect(figure?.textContent).toContain('Coolant temperature');
+    expect(figure?.textContent).toContain('The last sample was at Mon 12 Oct, 06:50:00');
+    expect(figure?.textContent).toContain('before this range');
   });
 });

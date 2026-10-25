@@ -394,7 +394,7 @@ Shape: `radius-sm`, `text-xs` 600 (`md`: 13 px), 2 px × 6 px padding, a 1 px bo
 ```ts
 interface CardProps {
   title?: React.ReactNode; // h2 or h3 by `headingLevel`
-  headingLevel?: 2 | 3;
+  headingLevel?: 2 | 3 | 4; // 4: an item card under a level-3 section (a machine card), text-base
   description?: string;
   actions?: React.ReactNode; // top-right
   status?: React.ReactNode; // a badge beside the title (finality)
@@ -439,6 +439,7 @@ interface Column<Row> {
   nowrap?: boolean; // default true for numeric, ids, dates, badges
   priority?: 1 | 2 | 3; // which columns survive on narrow screens (1 always)
   sticky?: boolean; // first column sticky on horizontal scroll
+  rowHeader?: boolean; // the cell names its row: th scope="row" (a state, a metric)
 }
 interface DataTableProps<Row> {
   caption: string; // visually hidden <caption>, as today
@@ -861,3 +862,33 @@ The bar for every issue. The harness of UX-1g reports it with axe on every route
 4. Every state of the screen designed: loading (skeleton), empty, error, not found where an id is in the URL, data, read-only role.
 5. Checked at 1440, 1280, 1024, 768 and 390, keyboard only once, and with the visual and accessibility harness (UX-1g, report-only until UX-F1) on the touched routes.
 6. Structural selectors and asserted texts survive too, not only test ids: element types and id prefixes a spec counts (`article[data-testid^="machine-"]`), element ids (`#line-title`), cell positions (`td.nth(1)`), child elements (`plant-clock`'s `<time>`), literal texts a spec asserts, and test ids that must stay **absent** (`operator-name`, `coded-by`, `note-author`). Each issue in [`ux-plan.md`](ux-plan.md) lists the ones it touches.
+
+## 10. Screen migration pattern
+
+How a screen moves onto the system, as UX-2 (#322) did for the overview and the machine detail (`screens/overview.tsx`, `screens/machine-detail.tsx`). Every later screen issue (UX-3 … UX-11) follows it; where a screen needs something else, its pull request says why.
+
+**Page structure.**
+
+1. `PageHeader` first, always (3.3): `title` is the thing's name ("Horizontal machining centre 1"), never its code; `back` names the parent ("Plant overview"); `status` holds the badges that qualify the whole page (the state badge with its Stale tag); `description` one line; `meta` the key facts as an inline `dl` of "label value" pairs (names before codes, the code last in `Code`); `filters` the view switches (`SegmentedLinks` for one that changes the URL) and the result summary. A dashboard passes `size="dashboard"`; a page whose `h1` labels a wrapping `section` passes `id`.
+2. Then `Section`s: `h2` per part of the page, `level={3}` inside one. A section's `id` is its heading's id, so an id a spec reads (`#timeline-title`, `#line-title`) is passed as `id`. The section's `description` says what the part shows or its scope ("Last 8 h: Mon 12 Oct, 17:26 – Tue 13 Oct, 01:26").
+3. Inside a section: a `Card` for a group of facts or a chart, a `DataTable` for a list (it brings its own frame), never a bare table beside carded content (M-03). A self-contained item (a machine) is `Card as="article"` with the heading level that continues the outline (`headingLevel={4}` under an `h3`); `tone` only for an abnormal item (the state's `tone` when `stateStyle(state).abnormal`).
+4. A summary of the page's items (the overview's "Machines by state") goes first, as its own section, abnormal first; its test ids never share a prefix a spec counts (`overview-summary`, `summary-state-<state>`, not `machine-…`).
+
+**Every state.**
+
+| State                 | Pattern                                                                                                                                                                                                                    |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Loading               | `Skeleton` in the content's shape (`card`, `table`, `chart`, `text`) with today's loading text as its label ("Loading machine…"); on a detail page the back link, no `h1` yet (the heading takes the focus when it mounts) |
+| Error                 | `QueryError` (retry only when it can help); on a detail page under a `PageHeader` that names what was asked ("Machine <code>cnc-01</code>"), so the page still has its `h1`                                                |
+| Not found (id in URL) | `NotFound` for a 404 (`kind`, `id`, `back`): heading, "No machine cnc-01", the way back; no alert                                                                                                                          |
+| Empty                 | `EmptyState` with a title and one sentence, inside a `Card` or as a `DataTable`'s `empty`; never a lone "none"; an empty chart is an empty state at the chart's height that says when the last value was                   |
+| Data                  | the content; values through the formatters (`Duration`, `PlantTime` with the plant clock, `Missing`), codes through `codeWords` / `causeWords` / `metricName` with the `Code` beside them                                  |
+| Read-only role        | the same page; actions the role cannot take are absent or a one-line `Callout`                                                                                                                                             |
+
+**Responsive.** Card grids are `grid-cols-1 md:grid-cols-2 lg:grid-cols-3`; facts are label-above-value pairs or wrapping inline pairs, never a fixed label column (O-05); `DataTable` columns that can go get `priority` 2 or 3; axis labels thin out below `sm`. Each screen is looked at in 1440, 1280, 1024, 768 and 390 with no horizontal page scroll.
+
+**Test contracts.** Before changing a screen, grep `e2e/browser` and the screen's unit tests for its test ids, `data-*`, roles, names, ids, element types and asserted texts (the issue lists them; grep again). Keep each on the same element type (a machine card stays an `article`); a new test id never starts with a prefix a spec counts. When the design system changes a role or a name on purpose (the range switch went from `navigation` to `group`; an unknown machine is a `NotFound`, not an alert), the unit test changes in the same pull request and the description lists it. The screen joins `FILES` in `components/ui/classes.test.ts`, so every class it draws must be one Tailwind generates from the tokens. A primitive that lacks something the screen needs is extended in the primitive, with its own unit test (UX-2: `Card` `headingLevel={4}`, `DataTable` `rowHeader`, `TrendChart` `empty`), never worked around in the screen.
+
+**Screenshots.** Before and after, at 1440 and 390 (1280 too for list-and-detail screens), each state that changed, on a disposable Compose stack with a generated env file and its own project name and image tag (the "before" built from `main`, the "after" by rebuilding only the web image), never on the owner's `shopfloor-demo`; saved to the audit folder under the issue number as `<before|after>-<screen>-<width>.png`; the stack, its volumes, images and generated secrets removed afterwards.
+
+**Harness.** Once UX-1g has merged, the pull request runs the reconciliation with `RECONCILE_A11Y=1 A11Y_ROUTES=<its routes>` and attaches the before and after diff of `e2e/results/a11y/report.json` for those routes (no new serious or critical axe finding); until then it says so.

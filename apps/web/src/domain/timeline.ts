@@ -1,4 +1,5 @@
 import type { CurrentStateDto, IntervalDto } from '@shopfloor/contracts/mes-api';
+import { formatClockTime, plantDayLabel, plantDayOf, plantOffsetMs } from './time.ts';
 
 export interface Band {
   readonly epoch: number;
@@ -106,4 +107,56 @@ export function stateTotals(bands: readonly Band[]): StateTotal[] {
   return [...totals]
     .map(([state, ms]) => ({ state, ms, share: covered === 0 ? 0 : ms / covered }))
     .sort((a, b) => b.ms - a.ms || a.state.localeCompare(b.state));
+}
+
+/** A tick of the timeline's axis (M-01). */
+export interface Tick {
+  readonly at: number;
+  /** Position as a percentage of the window. */
+  readonly left: number;
+  /** The plant time of day, `14:00`. */
+  readonly time: string;
+  /**
+   * The plant day, `Tue 13 Oct`, on the first tick and on the first tick of each new day, only
+   * when the window spans more than one plant day.
+   */
+  readonly date?: string;
+}
+
+const MINUTE = 60_000;
+/** Tick steps, smallest first: the first that gives at most `MAX_TICKS` ticks is taken. */
+const TICK_STEPS = [5, 10, 15, 30, 60, 120, 180, 360, 720, 1440].map((minutes) => minutes * MINUTE);
+export const MAX_TICKS = 8;
+
+/**
+ * The axis ticks of a timeline window (M-01): at whole steps of plant time (every 10 min over an
+ * hour, every hour over 8 h, every 3 h over 24 h), so the labels are round times of day; with the
+ * date where the plant day changes when the window spans days, so "Last 24 h" never reads as two
+ * equal times.
+ */
+export function timelineTicks(window: Window): Tick[] {
+  const span = window.to - window.from;
+  if (span <= 0) return [];
+  const step = TICK_STEPS.find((candidate) => span / candidate <= MAX_TICKS) ?? span;
+  const spansDays = plantDayOf(window.from) !== plantDayOf(window.to);
+  // Whole steps of the plant zone's local time (Europe/Istanbul has kept one offset since 2016;
+  // the offset is still read per tick so a zone with a change would land on its local hours).
+  const offset = plantOffsetMs(window.from);
+  const ticks: Tick[] = [];
+  let previousDay: string | undefined;
+  for (let local = Math.ceil((window.from + offset) / step) * step; ; local += step) {
+    const at = local - plantOffsetMs(local - offset);
+    if (at > window.to) break;
+    if (at < window.from) continue;
+    const day = plantDayOf(at);
+    const date = spansDays && day !== previousDay ? plantDayLabel(day) : undefined;
+    previousDay = day;
+    ticks.push({
+      at,
+      left: ((at - window.from) / span) * 100,
+      time: formatClockTime(at),
+      ...(date === undefined ? {} : { date }),
+    });
+  }
+  return ticks;
 }

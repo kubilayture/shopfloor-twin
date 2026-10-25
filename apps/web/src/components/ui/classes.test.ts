@@ -35,6 +35,9 @@ const FILES = [
   // The chart frames (UX-1f, #320).
   'chart/echart.tsx',
   'chart/trend-chart.tsx',
+  // The migrated screens (UX-2 on): a screen on the tokens draws only classes Tailwind generates.
+  'screens/overview.tsx',
+  'screens/machine-detail.tsx',
 ];
 
 /** Utility prefixes: a literal with one of these is a class list. */
@@ -141,6 +144,8 @@ const PASSED_IN = ['line-through'];
 const NOT_CLASSES = new Set(['top', 'bottom', 'text', 'p', 'group', 'size']);
 /** UX-1d1 (#318): a header cell's `scope="col"`. */
 NOT_CLASSES.add('col');
+/** UX-2 (#322): a row header cell's `scope: 'row'`. */
+NOT_CLASSES.add('row');
 
 const CLASSES = [...new Set([...FILES.flatMap(harvest), ...PASSED_IN])]
   .filter((c) => !NOT_CLASSES.has(c))

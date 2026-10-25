@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { current, EPOCH } from '../test/fixtures.ts';
-import { isConnectionLost, isNewer, newest, staleness, stateStyle, timeInState } from './states.ts';
+import {
+  isConnectionLost,
+  isNewer,
+  newest,
+  staleness,
+  stateCounts,
+  stateStyle,
+  timeInState,
+} from './states.ts';
 
 describe('isNewer and newest', () => {
   it('orders by epoch, then seq (an anchor has none), then start', () => {
@@ -49,5 +57,57 @@ describe('stateStyle', () => {
   it('labels every state and falls back to the raw name', () => {
     expect(stateStyle('PlannedStop').label).toBe('Planned stop');
     expect(stateStyle('Warp').label).toBe('Warp');
+  });
+});
+
+describe('abnormal states and the overview summary (UX-2)', () => {
+  it('calls only the states that cost output and need a person abnormal, each in its tone', () => {
+    const abnormal = ['Starved', 'Blocked', 'Stopped', 'Down'];
+    for (const state of [
+      'Running',
+      'Idle',
+      'Setup',
+      'PlannedStop',
+      'Maintenance',
+      'Off',
+      'Warp',
+      ...abnormal,
+    ]) {
+      expect(stateStyle(state).abnormal, state).toBe(abnormal.includes(state));
+    }
+    expect(abnormal.map((state) => stateStyle(state).tone)).toEqual([
+      'warn',
+      'caution',
+      'alarm',
+      'alarm',
+    ]);
+    expect(stateStyle('Maintenance').tone).toBe('info');
+    expect(stateStyle('Running').tone).toBe('neutral');
+  });
+
+  it('counts machines per state, the most severe abnormal first, no data last', () => {
+    expect(
+      stateCounts([
+        'Running',
+        undefined,
+        'Starved',
+        'Idle',
+        'Down',
+        'Starved',
+        'Warp',
+        'Maintenance',
+        'Blocked',
+      ]),
+    ).toEqual([
+      { state: 'Down', count: 1 },
+      { state: 'Blocked', count: 1 },
+      { state: 'Starved', count: 2 },
+      { state: 'Maintenance', count: 1 },
+      { state: 'Running', count: 1 },
+      { state: 'Idle', count: 1 },
+      { state: 'Warp', count: 1 },
+      { state: 'no-data', count: 1 },
+    ]);
+    expect(stateCounts([])).toEqual([]);
   });
 });

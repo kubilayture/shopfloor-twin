@@ -5,12 +5,51 @@ import { listEquipment } from '../api/client.ts';
 import { queryKeys, usePlantClock } from '../api/queries.ts';
 import { QueryError } from '../components/query-error.tsx';
 import { StateBadge } from '../components/state-badge.tsx';
+import { Badge } from '../components/ui/badge.tsx';
+import { Card, CARD_TONE_BAR } from '../components/ui/card.tsx';
+import { Code } from '../components/ui/code.tsx';
+import { EmptyState } from '../components/ui/empty-state.tsx';
+import { Duration, PlantTime } from '../components/ui/format.tsx';
 import { PageHeader } from '../components/ui/page-header.tsx';
 import { Section } from '../components/ui/section.tsx';
-import { groupEquipment } from '../domain/plant.ts';
-import { isConnectionLost, newest, staleness, timeInState } from '../domain/states.ts';
-import { formatDuration, formatPlantTime } from '../domain/time.ts';
+import { Skeleton } from '../components/ui/skeleton.tsx';
+import { causeWords, groupEquipment } from '../domain/plant.ts';
+import {
+  isConnectionLost,
+  NO_DATA,
+  NO_DATA_STATE,
+  newest,
+  staleness,
+  stateCounts,
+  stateStyle,
+  timeInState,
+} from '../domain/states.ts';
 import { useLiveConnection, useLiveStates } from '../live/live-context.tsx';
+
+/**
+ * The plant overview (UX-2, #322; design system 2.4, 3.3, 3.4): the page header, a summary of
+ * machines per state with the abnormal ones first (O-01, O-04), then each area (`h2`) and work
+ * center (`h3`) with a card per machine (`article`, `h4`). Only an abnormal machine's card has
+ * colour: the 4 px left bar in its state's border colour (G-13). A stale state keeps its badge
+ * and gets the `warn` Stale tag beside it with the full reason as visible text.
+ *
+ * Test contracts: the cards stay `article[data-testid="machine-<id>"]` (the demo walkthrough
+ * counts them), the badges `state-<id>` with `data-state` (`no-data` before the first report),
+ * `stale-<id>` only while stale, `time-in-state-<id>`; the summary uses `overview-summary` and
+ * `summary-state-<state>`, never an id starting with `machine-`.
+ */
+
+/** "1 machine", "3 machines". */
+const machines = (count: number) => `${String(count)} ${count === 1 ? 'machine' : 'machines'}`;
+
+function Cause({ cause }: { readonly cause: string }) {
+  const words = causeWords(cause);
+  return (
+    <span className="flex flex-wrap items-baseline gap-x-2">
+      <span>{words}</span> <Code className="text-ink-secondary">{cause}</Code>
+    </span>
+  );
+}
 
 function MachineCard({
   equipment,
@@ -18,33 +57,38 @@ function MachineCard({
   clock,
   connectionLost,
 }: {
-  equipment: EquipmentDto;
-  current: CurrentStateDto | undefined;
-  clock: Clock | null;
-  connectionLost: boolean;
+  readonly equipment: EquipmentDto;
+  readonly current: CurrentStateDto | undefined;
+  readonly clock: Clock | null;
+  readonly connectionLost: boolean;
 }) {
-  const headingId = `machine-${equipment.id}`;
   const stale = current ? staleness(current, clock, connectionLost) : undefined;
+  const style = current ? stateStyle(current.state) : NO_DATA;
   return (
-    <li>
-      <article
-        aria-labelledby={headingId}
-        data-testid={`machine-${equipment.id}`}
-        className="flex h-full flex-col gap-2 rounded-lg border border-slate-300 bg-white p-4 shadow-sm"
-      >
-        <h4 id={headingId} className="font-semibold leading-tight">
+    <li className="min-w-0">
+      <Card
+        as="article"
+        headingLevel={4}
+        padding="compact"
+        testId={`machine-${equipment.id}`}
+        tone={style.abnormal ? style.tone : undefined}
+        className="h-full"
+        title={
           <Link
             to="/equipment/$id"
             params={{ id: equipment.id }}
             search={{ range: '8h' }}
-            className="text-sky-900 underline-offset-2 hover:underline"
+            className="text-link underline-offset-4 hover:underline"
           >
             {equipment.name}
           </Link>
-        </h4>
-        <p className="text-xs text-slate-600">
-          <span className="font-mono">{equipment.id}</span> · {equipment.operation}
-        </p>
+        }
+        description={
+          <>
+            <Code>{equipment.id}</Code> · {equipment.operation}
+          </>
+        }
+      >
         <div className="flex flex-wrap items-center gap-2">
           <StateBadge
             state={current?.state}
@@ -53,32 +97,97 @@ function MachineCard({
             staleTestId={`stale-${equipment.id}`}
           />
           {current?.seq === null ? (
-            <span
+            <Badge
+              tone="neutral"
+              variant="dashed"
               title="Known from the device's start-up state only; no state change seen yet"
-              className="rounded border border-slate-500 px-1.5 text-xs text-slate-700"
             >
               Provisional
-            </span>
+            </Badge>
           ) : null}
         </div>
         {current ? (
-          <dl className="grid grid-cols-[auto_1fr] gap-x-3 text-sm">
-            <dt className="text-slate-600">Cause</dt>
-            <dd>{current.cause ?? '—'}</dd>
-            <dt className="text-slate-600">In state</dt>
-            <dd className="tabular-nums" data-testid={`time-in-state-${equipment.id}`}>
-              {formatDuration(timeInState(current, clock))}
-            </dd>
-            <dt className="text-slate-600">Since</dt>
-            <dd>
-              <time dateTime={current.since}>{formatPlantTime(current.since)}</time>
-            </dd>
+          <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+            <div className="min-w-0">
+              <dt className="text-xs font-medium text-ink-secondary">In state</dt>
+              <dd>
+                <Duration
+                  ms={timeInState(current, clock)}
+                  seconds
+                  testId={`time-in-state-${equipment.id}`}
+                />
+              </dd>
+            </div>
+            <div className="min-w-0">
+              <dt className="text-xs font-medium text-ink-secondary">Since</dt>
+              <dd>
+                <PlantTime at={current.since} clock={clock?.watermark} />
+              </dd>
+            </div>
+            {current.cause === null ? null : (
+              <div className="col-span-2 min-w-0">
+                <dt className="text-xs font-medium text-ink-secondary">Cause</dt>
+                <dd>
+                  <Cause cause={current.cause} />
+                </dd>
+              </div>
+            )}
           </dl>
         ) : (
-          <p className="text-sm text-slate-700">This machine has not reported yet.</p>
+          <p className="mt-3 text-sm text-ink-secondary">This machine has not reported yet.</p>
         )}
-      </article>
+      </Card>
     </li>
+  );
+}
+
+/**
+ * Machines per state, the abnormal states first (O-01): one tile per state that has a machine,
+ * the count in large figures beside the state's badge; an abnormal state's tile has its bar.
+ */
+function Summary({ states }: { readonly states: readonly (string | undefined)[] }) {
+  const counts = stateCounts(states);
+  const attention = counts
+    .filter((item) => stateStyle(item.state).abnormal)
+    .reduce((sum, item) => sum + item.count, 0);
+  return (
+    <Section
+      id="summary-title"
+      title="Machines by state"
+      testId="overview-summary"
+      description={`${machines(states.length)}; ${
+        attention === 0
+          ? 'none needs'
+          : `${String(attention)} ${attention === 1 ? 'needs' : 'need'}`
+      } attention`}
+    >
+      <ul className="flex flex-wrap gap-3">
+        {counts.map(({ state, count }) => {
+          const style = state === NO_DATA_STATE ? NO_DATA : stateStyle(state);
+          return (
+            <li
+              key={state}
+              data-testid={`summary-state-${state}`}
+              data-state={state}
+              data-count={String(count)}
+              className={`flex min-w-36 items-center gap-3 rounded-lg border border-line bg-surface px-4 py-2 ${
+                style.abnormal ? CARD_TONE_BAR[style.tone] : ''
+              }`}
+            >
+              <span className="sr-only">
+                {style.label}: {machines(count)}
+              </span>
+              <span aria-hidden="true" className="text-2xl font-semibold tabular-nums text-ink">
+                {count}
+              </span>
+              <span aria-hidden="true">
+                <StateBadge state={state === NO_DATA_STATE ? undefined : state} />
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </Section>
   );
 }
 
@@ -90,6 +199,11 @@ export function Overview() {
   const live = useLiveStates();
   const { clock } = usePlantClock();
   const connectionLost = isConnectionLost(useLiveConnection().status);
+  const items = (equipment.data ?? []).map((item) => ({
+    item,
+    current: newest(item.current, live?.states[item.id]),
+  }));
+  const currentOf = new Map(items.map(({ item, current }) => [item.id, current]));
 
   return (
     <section aria-labelledby="overview-title">
@@ -99,38 +213,57 @@ export function Overview() {
         size="dashboard"
         description="Every machine's state as it reports it, by area and work center."
       />
-      {equipment.isPending ? <p>Loading equipment…</p> : null}
+      {equipment.isPending ? (
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+          <Skeleton shape="card" label="Loading equipment…" />
+        </div>
+      ) : null}
       {equipment.isError ? (
-        <div>
-          <QueryError
-            what="the equipment"
-            error={equipment.error}
-            onRetry={() => void equipment.refetch()}
+        <QueryError
+          what="the equipment"
+          error={equipment.error}
+          onRetry={() => void equipment.refetch()}
+        />
+      ) : null}
+      {equipment.data?.length === 0 ? (
+        <div className="rounded-lg border border-line bg-surface">
+          <EmptyState
+            title="No machines yet"
+            body="No equipment yet: master data is not seeded."
+            icon="info"
           />
         </div>
       ) : null}
-      {equipment.data?.length === 0 ? <p>No equipment yet: master data is not seeded.</p> : null}
-      <div>
-        {groupEquipment(equipment.data ?? []).map((area) => (
-          <Section key={area.id} id={`area-${area.id}`} title={area.name}>
-            {area.workCenters.map((center) => (
-              <Section key={center.id} level={3} id={`wc-${center.id}`} title={center.name}>
-                <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {center.equipment.map((item) => (
-                    <MachineCard
-                      key={item.id}
-                      equipment={item}
-                      current={newest(item.current, live?.states[item.id])}
-                      clock={clock}
-                      connectionLost={connectionLost}
-                    />
-                  ))}
-                </ul>
-              </Section>
-            ))}
-          </Section>
-        ))}
-      </div>
+      {items.length > 0 ? (
+        <>
+          <Summary states={items.map(({ current }) => current?.state)} />
+          {groupEquipment(equipment.data ?? []).map((area) => (
+            <Section key={area.id} id={`area-${area.id}`} title={area.name}>
+              {area.workCenters.map((center) => (
+                <Section
+                  key={center.id}
+                  level={3}
+                  id={`wc-${center.id}`}
+                  title={center.name}
+                  description={machines(center.equipment.length)}
+                >
+                  <ul className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+                    {center.equipment.map((item) => (
+                      <MachineCard
+                        key={item.id}
+                        equipment={item}
+                        current={currentOf.get(item.id)}
+                        clock={clock}
+                        connectionLost={connectionLost}
+                      />
+                    ))}
+                  </ul>
+                </Section>
+              ))}
+            </Section>
+          ))}
+        </>
+      ) : null}
     </section>
   );
 }

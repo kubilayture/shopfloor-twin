@@ -39,8 +39,71 @@ describe('plant overview', () => {
     expect(screen.getByRole('status').textContent).toContain('Live');
 
     const card = screen.getByTestId('machine-cnc-01');
+    expect(card.tagName).toBe('ARTICLE');
     const link = within(card).getByRole('link', { name: 'Machine cnc-01' });
     expect(link.getAttribute('href')).toBe('/equipment/cnc-01?range=8h');
+    expect(within(card).getByRole('heading', { level: 4, name: 'Machine cnc-01' })).toBeTruthy();
+    // Normal states have no colour on the card (ISA-101): no left bar.
+    expect(card.className).not.toContain('border-l-4');
+    // No cause, no "Cause —" (O-02).
+    expect(within(card).queryByText('Cause')).toBeNull();
+    // The walkthrough counts the cards by `article[data-testid^="machine-"]`: only the cards.
+    expect(document.querySelectorAll('[data-testid^="machine-"]')).toHaveLength(EQUIPMENT.length);
+    expect(document.querySelectorAll('article[data-testid^="machine-"]')).toHaveLength(
+      EQUIPMENT.length,
+    );
+  });
+
+  it('sums the machines per state, the abnormal ones first, and raises an abnormal card', async () => {
+    vi.stubGlobal('fetch', fakeFetch(api));
+    const app = await renderApp('/');
+    await app.open();
+    await screen.findByTestId('state-cnc-01');
+    const summary = screen.getByTestId('overview-summary');
+    expect(
+      within(summary).getByRole('heading', { level: 2, name: 'Machines by state' }),
+    ).toBeTruthy();
+    const tiles = () =>
+      [...summary.querySelectorAll<HTMLElement>('[data-testid^="summary-state-"]')].map((tile) => [
+        tile.dataset.state,
+        tile.dataset.count,
+      ]);
+    expect(tiles()).toEqual([
+      ['Running', '1'],
+      ['Idle', '1'],
+      ['no-data', '1'],
+    ]);
+    expect(summary.textContent).toContain('3 machines; none needs attention');
+    expect(within(summary).getByText('Running: 1 machine')).toBeTruthy();
+
+    await app.push({
+      type: 'state',
+      equipment: 'asm-01',
+      current: current({ state: 'Starved', cause: 'MATERIAL:BLANK-VB', seq: 12 }),
+    });
+    await app.push({
+      type: 'state',
+      equipment: 'wsh-01',
+      current: current({ state: 'Down', cause: 'HEATER-FAULT', seq: 13 }),
+    });
+    expect(tiles()).toEqual([
+      ['Down', '1'],
+      ['Starved', '1'],
+      ['Running', '1'],
+    ]);
+    expect(summary.textContent).toContain('3 machines; 2 need attention');
+    expect(screen.getByTestId('summary-state-Down').className).toContain('border-l-alarm-border');
+    expect(screen.getByTestId('summary-state-Running').className).not.toContain('border-l-4');
+    // The abnormal card's 4 px bar in its state's border colour (G-13).
+    const asm = screen.getByTestId('machine-asm-01');
+    expect(asm.className.split(' ')).toEqual(
+      expect.arrayContaining(['border-l-4', 'border-l-warn-border']),
+    );
+    expect(screen.getByTestId('machine-wsh-01').className).toContain('border-l-alarm-border');
+    // Causes as words, the code beside them.
+    expect(within(asm).getByText('Material missing: BLANK-VB')).toBeTruthy();
+    expect(within(asm).getByText('MATERIAL:BLANK-VB')).toBeTruthy();
+    expect(within(screen.getByTestId('machine-wsh-01')).getByText('Heater fault')).toBeTruthy();
   });
 
   it('subscribes to states and applies the snapshot and pushed deltas', async () => {
@@ -66,6 +129,7 @@ describe('plant overview', () => {
     );
     expect(screen.getByTestId('state-asm-01').dataset.state).toBe('Starved');
     expect(screen.getByText('no-parts')).toBeTruthy();
+    expect(screen.getByText('No parts')).toBeTruthy();
     expect(screen.getByText('Provisional')).toBeTruthy();
     expect(screen.getByTestId('time-in-state-cnc-01').textContent).toBe('20 min 00 s');
 
@@ -159,6 +223,8 @@ describe('plant overview', () => {
     );
     await renderApp('/');
     expect(await screen.findByText(/master data is not seeded/)).toBeTruthy();
+    expect(screen.getByText('No machines yet')).toBeTruthy();
+    expect(screen.queryByTestId('overview-summary')).toBeNull();
     expect(screen.getByTestId('plant-clock').textContent).toContain('no data yet');
   });
 

@@ -40,6 +40,9 @@ const ROUTES: readonly (readonly [route: string, path: string, title: string])[]
   ['/console', '/console', 'Simulation console'],
 ];
 
+/** Screens that name the document better once their data is read (UX-7: the work center's name). */
+const RENDERED: Readonly<Record<string, string>> = { '/terminal/cell-m1': 'Terminal Cell M1' };
+
 describe('route titles', () => {
   it('are given for every route of the app, and the list above walks them all', () => {
     const routes = Object.values(createAppRouter().routesById).filter(
@@ -78,7 +81,7 @@ describe('route titles', () => {
     for (const [, path, title] of ROUTES) {
       const view = await renderApp(path, { session: path === '/login' ? null : admin });
       await waitFor(() => {
-        expect(document.title, path).toBe(`${title} · ShopFloor Twin`);
+        expect(document.title, path).toBe(`${RENDERED[path] ?? title} · ShopFloor Twin`);
       });
       view.unmount();
     }

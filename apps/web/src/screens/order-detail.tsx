@@ -99,6 +99,24 @@ const SECTIONS: readonly SectionNavItem[] = [
 const happened = (value: string | null): ReactNode =>
   value === null ? null : <PlantTime at={value} />;
 
+/**
+ * Counts by key (`cnc-01: 3, cnc-02: 1`), or the one "nothing" of design system 6.3 (`Missing`,
+ * an em dash with its reason) when there is none.
+ */
+function Counts({
+  counts,
+  none,
+}: {
+  readonly counts: Readonly<Record<string, number>>;
+  readonly none: string;
+}) {
+  return Object.values(counts).some((value) => value !== 0) ? (
+    <>{countsText(counts)}</>
+  ) : (
+    <Missing reason={none} />
+  );
+}
+
 /** An empty section's one line, in the frame tables and cards have (design system 4.11). */
 function EmptyBlock({
   testId,
@@ -154,15 +172,21 @@ function OrderFacts({ order }: { readonly order: OrderDto }) {
   ];
   return (
     <div data-testid="order-summary" data-version={String(order.version)} className="mt-2">
-      <DescriptionList facts={facts} label="Order facts" />
+      <DescriptionList facts={facts} columns="compact" label="Order facts" />
     </div>
   );
 }
 
-/** The variant of an order action (design system 4.1): cancel `danger`, the first other `primary`. */
-function variantOf(action: OrderLevelAction, offered: readonly OrderLevelAction[]): ButtonVariant {
+/**
+ * The variant of an order action (design system 4.1): the forward step of the flow (release,
+ * dispatch, close) `primary`; cancel `danger`; a re-dispatch, a recovery after a failed or
+ * abandoned command, `secondary`.
+ */
+const FORWARD: readonly OrderLevelAction[] = ['release', 'dispatch', 'close'];
+
+function variantOf(action: OrderLevelAction): ButtonVariant {
   if (action === 'cancel') return 'danger';
-  return offered.find((other) => other !== 'cancel') === action ? 'primary' : 'secondary';
+  return FORWARD.includes(action) ? 'primary' : 'secondary';
 }
 
 /**
@@ -174,28 +198,21 @@ function HeaderActions({
   id,
   offered,
   formOpen,
-  noneApplies,
   canHold,
   onOpen,
 }: {
   readonly id: string;
   readonly offered: readonly OrderLevelAction[];
   readonly formOpen: boolean;
-  readonly noneApplies: boolean;
   readonly canHold: boolean;
   readonly onOpen: (action: OrderLevelAction) => void;
 }) {
+  // The primary action last, on the right (design system 3.3).
   const ordered = [...offered].sort(
-    (a, b) =>
-      Number(variantOf(a, offered) === 'primary') - Number(variantOf(b, offered) === 'primary'),
+    (a, b) => Number(variantOf(a) === 'primary') - Number(variantOf(b) === 'primary'),
   );
   return (
     <>
-      {noneApplies ? (
-        <p className="self-center text-sm text-ink-secondary" data-testid="order-no-actions">
-          No action applies to an order in this status.
-        </p>
-      ) : null}
       {canHold ? (
         <Link
           to="/quality/holds/new"
@@ -211,7 +228,7 @@ function HeaderActions({
         : ordered.map((action) => (
             <Button
               key={action}
-              variant={variantOf(action, offered)}
+              variant={variantOf(action)}
               data-testid={`action-${action}`}
               onClick={() => {
                 onOpen(action);
@@ -248,8 +265,8 @@ function CommandRow({
       detail:
         command.acceptedAt === null ? null : (
           <span>
-            <PlantTime at={command.acceptedAt} /> (seq {command.acceptedSeq ?? '–'}, by{' '}
-            {command.acceptedBy ?? '–'})
+            <PlantTime at={command.acceptedAt} /> (seq {command.acceptedSeq ?? '—'}, by{' '}
+            {command.acceptedBy ?? '—'})
           </span>
         ),
     },
@@ -414,9 +431,19 @@ const OPERATION_COLUMNS: readonly Column<OperationRow>[] = [
     numeric: true,
     cell: (row) => <span data-testid={`good-${row.operation}`}>{row.good}</span>,
   },
-  { key: 'scrap', header: 'Scrap by reason', priority: 2, cell: (row) => countsText(row.scrap) },
+  {
+    key: 'scrap',
+    header: 'Scrap by reason',
+    priority: 2,
+    cell: (row) => <Counts counts={row.scrap} none="No scrap" />,
+  },
   { key: 'rework', header: 'Rework', numeric: true, priority: 3, cell: (row) => row.rework },
-  { key: 'material', header: 'Material', priority: 3, cell: (row) => countsText(row.material) },
+  {
+    key: 'material',
+    header: 'Material',
+    priority: 3,
+    cell: (row) => <Counts counts={row.material} none="No material" />,
+  },
   {
     key: 'complete',
     header: 'Complete',
@@ -495,8 +522,11 @@ function Wip({ execution }: { readonly execution: OrderExecutionDto }) {
     { term: 'Lost', detail: counts(execution.units.lost) },
     { term: 'Packed good', detail: counts(execution.packedGood) },
     { term: 'Rework passes', detail: counts(execution.reworkPasses) },
-    { term: 'WIP by position', detail: countsText(execution.wip) },
-    { term: 'Blanks in a CNC', detail: countsText(execution.inMachine) },
+    { term: 'WIP by position', detail: <Counts counts={execution.wip} none="No unit in WIP" /> },
+    {
+      term: 'Blanks in a CNC',
+      detail: <Counts counts={execution.inMachine} none="No blank in a CNC" />,
+    },
     { term: 'Complete', detail: notComplete(execution.completedAt) },
   ];
   return (
@@ -524,11 +554,15 @@ function Incidents({
   execution,
 }: {
   readonly detail: OrderDetailDto;
-  readonly execution: readonly (Omit<IncidentRow, 'key' | 'type'> & { readonly id: number })[];
+  readonly execution: {
+    readonly incidents: readonly (Omit<IncidentRow, 'key' | 'type'> & { readonly id: number })[];
+    readonly error: unknown;
+    readonly refetch: () => void;
+  };
 }) {
   const rows: IncidentRow[] = [
     ...detail.incidents.map((incident) => ({ ...incident, key: `o${String(incident.id)}` })),
-    ...execution.map((incident) => ({
+    ...execution.incidents.map((incident) => ({
       ...incident,
       type: 'routing-violation' as const,
       key: `e${String(incident.id)}`,
@@ -541,7 +575,16 @@ function Incidents({
       title="Incidents"
       description="What went wrong on the order's path, newest first; open ones need a person."
     >
-      {rows.length === 0 ? (
+      {execution.error ? (
+        <div className="mb-3">
+          <QueryError
+            what="the order's routing incidents"
+            error={execution.error}
+            onRetry={execution.refetch}
+          />
+        </div>
+      ) : null}
+      {rows.length === 0 && execution.error ? null : rows.length === 0 ? (
         <EmptyBlock testId="incidents-empty" title="No incident for this order" />
       ) : (
         <ul className="flex flex-col gap-2 text-sm" aria-label="Incidents">
@@ -597,7 +640,12 @@ const CONFIRMATION_COLUMNS: readonly Column<ConfirmationDto>[] = [
     cell: (row) => (row.kind === 'final' ? 'Final' : 'Correction (deltas)'),
   },
   { key: 'yield', header: 'Yield', numeric: true, cell: (row) => row.yield },
-  { key: 'scrap', header: 'Scrap by reason', priority: 2, cell: (row) => countsText(row.scrap) },
+  {
+    key: 'scrap',
+    header: 'Scrap by reason',
+    priority: 2,
+    cell: (row) => <Counts counts={row.scrap} none="No scrap" />,
+  },
   {
     key: 'rework',
     header: 'Rework passes',
@@ -605,7 +653,12 @@ const CONFIRMATION_COLUMNS: readonly Column<ConfirmationDto>[] = [
     priority: 3,
     cell: (row) => row.reworkPasses,
   },
-  { key: 'material', header: 'Material', priority: 3, cell: (row) => countsText(row.material) },
+  {
+    key: 'material',
+    header: 'Material',
+    priority: 3,
+    cell: (row) => <Counts counts={row.material} none="No material" />,
+  },
   {
     key: 'confirmed',
     header: 'Confirmed',
@@ -685,7 +738,7 @@ const SCRAP_COLUMNS: readonly Column<ScrapRecordDto>[] = [
     cell: (record) =>
       record.codedReason ? (
         <>
-          <Code>{record.codedReason}</Code> by {record.codedBy ?? '–'}
+          <Code>{record.codedReason}</Code> by {record.codedBy ?? '—'}
         </>
       ) : (
         <Badge tone="warn" variant="outline">
@@ -1023,12 +1076,11 @@ function OrderDetail({ id }: { readonly id: string }) {
           </span>
         }
         actions={
-          anyPermission || canHold ? (
+          (offered.length > 0 && open === undefined) || canHold ? (
             <HeaderActions
               id={id}
               offered={offered}
               formOpen={open !== undefined}
-              noneApplies={anyPermission && offered.length === 0 && open === undefined}
               canHold={canHold}
               onOpen={(action) => {
                 startAction(draftFor(action, order));
@@ -1071,6 +1123,7 @@ function OrderDetail({ id }: { readonly id: string }) {
             commands={commands}
             targets={dispatchTargets(equipment.data ?? [], detail.routing)}
             initial={open}
+            headingLevel={2}
             onWritten={onWritten}
             onClose={(result) => {
               const closed = open;
@@ -1103,7 +1156,14 @@ function OrderDetail({ id }: { readonly id: string }) {
           }}
         />
         <OrderHolds id={id} />
-        <Incidents detail={detail} execution={executionIncidents.data?.incidents ?? []} />
+        <Incidents
+          detail={detail}
+          execution={{
+            incidents: executionIncidents.data?.incidents ?? [],
+            error: executionIncidents.error,
+            refetch: () => void executionIncidents.refetch(),
+          }}
+        />
         <Confirmations confirmations={detail.confirmations} />
         <Scrap id={id} />
         <ErpMessages detail={detail} />

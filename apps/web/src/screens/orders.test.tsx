@@ -785,4 +785,85 @@ describe('orders on the design system (UX-6a, #328)', () => {
     await renderApp('/orders/-bad');
     expect((await screen.findByTestId('order-missing')).textContent).toContain('-bad');
   });
+
+  it('opens an action form under the header as an h2, so the outline never skips a level', async () => {
+    vi.stubGlobal('fetch', orderMes(orderState([order('PO-1001')])).fetch);
+    await renderApp('/orders/PO-1001');
+    fireEvent.click(await screen.findByTestId('action-release'));
+    expect(screen.getByRole('heading', { level: 2, name: 'Release' })).toBeTruthy();
+    const levels = within(screen.getByRole('main'))
+      .getAllByRole('heading')
+      .map((heading) => Number(heading.tagName.slice(1)));
+    expect(levels[0]).toBe(1);
+    // Each heading at most one level below the one before it.
+    expect(levels.slice(1).every((level, i) => level - (levels[i] ?? 0) <= 1)).toBe(true);
+  });
+
+  it('makes only the forward step primary: a re-dispatch is secondary (design system 4.1)', async () => {
+    const running = order('PO-1001', { status: 'in-progress', remaining: 5 });
+    vi.stubGlobal('fetch', orderMes(orderState([running])).fetch);
+    await renderApp('/orders/PO-1001');
+    const redispatch = await screen.findByTestId('action-redispatch');
+    expect(redispatch.className).not.toContain('bg-accent');
+    expect(redispatch.className).toContain('border-line-strong');
+  });
+
+  it('makes close the primary action of a completed order, and says nothing when none applies', async () => {
+    const completed = order('PO-1001', { status: 'completed' });
+    const closed = order('PO-1002', { status: 'closed' });
+    vi.stubGlobal('fetch', orderMes(orderState([completed, closed])).fetch);
+    const app = await renderApp('/orders/PO-1001');
+    expect((await screen.findByTestId('action-close')).className).toContain('bg-accent');
+    await settle(() => {
+      app.history.push('/orders/PO-1002');
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('order-detail').dataset.order).toBe('PO-1002');
+    });
+    await screen.findByTestId('order-header');
+    expect(screen.queryByText(/No action applies/)).toBeNull();
+    expect(within(screen.getByTestId('order-header')).queryAllByRole('button')).toEqual([]);
+  });
+
+  it('shows one dash for "nothing" in the operations table', async () => {
+    const base = order('PO-1001', { status: 'in-progress' });
+    const state = orderState([base], {
+      executions: {
+        'PO-1001': execution('PO-1001', {
+          operations: [
+            {
+              operation: 'OP10',
+              workCenter: 'cell-m1',
+              in: 0,
+              good: 0,
+              scrap: {},
+              rework: 0,
+              material: {},
+              completedAt: null,
+            },
+          ],
+        }),
+      },
+    });
+    vi.stubGlobal('fetch', orderMes(state).fetch);
+    await renderApp('/orders/PO-1001');
+    const row = await screen.findByTestId('operation-OP10');
+    expect(row.textContent).not.toContain('–');
+    expect(row.querySelectorAll('[data-missing]')).toHaveLength(3);
+  });
+
+  it('says when the routing incidents could not be read, never "No incident"', async () => {
+    const server = orderMes(orderState([order('PO-1001')]));
+    vi.stubGlobal('fetch', (input: string, init?: RequestInit) =>
+      input.includes('/api/v1/execution-incidents')
+        ? Promise.resolve(problem(500, 'Internal Server Error', 'down', '/x'))
+        : server.fetch(input, init),
+    );
+    await renderApp('/orders/PO-1001');
+    const section = await screen.findByTestId('order-incidents');
+    await waitFor(() => {
+      expect(within(section).getByRole('alert').textContent).toContain('routing incidents');
+    });
+    expect(within(section).queryByTestId('incidents-empty')).toBeNull();
+  });
 });

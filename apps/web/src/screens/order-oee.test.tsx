@@ -84,6 +84,10 @@ describe('order OEE on the order detail (#233)', () => {
     expect(job.dataset.oee).toBe('0.6300');
     expect(job.textContent).toContain('its accepted fact');
     expect(within(section).queryByTestId('order-oee-pending')).toBeNull();
+    // Its sideways scroll box is a named tab stop (axe scrollable-region-focusable, #328).
+    const jobs = within(section).getByRole('region', { name: 'OEE per job of the order' });
+    expect(jobs.tabIndex).toBe(0);
+    expect(within(jobs).getByTestId('order-oee-jobs')).toBeTruthy();
     // UX-1c (#315): every ratio element (OEE, A, P, Q, the jobs, FPY, the order's line OEE)
     // carries its visible four decimals in data-decimal; the headline percentages too.
     const ratios = [...section.querySelectorAll<HTMLElement>('[data-fraction]')];

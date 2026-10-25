@@ -81,6 +81,18 @@ describe('abnormal states and the overview summary (UX-2)', () => {
       'alarm',
       'alarm',
     ]);
+    // The bar is the state's own border colour, in both themes (2.4), not the tone's.
+    for (const [state, key] of [
+      ['Starved', 'starved'],
+      ['Blocked', 'blocked'],
+      ['Stopped', 'stopped'],
+      ['Down', 'down'],
+    ] as const) {
+      expect(stateStyle(state).bar, state).toBe(`border-l-4 border-l-state-${key}-border`);
+    }
+    for (const state of ['Running', 'Idle', 'Maintenance', 'Warp']) {
+      expect(stateStyle(state).bar, state).toBeUndefined();
+    }
     expect(stateStyle('Maintenance').tone).toBe('info');
     expect(stateStyle('Running').tone).toBe('neutral');
   });

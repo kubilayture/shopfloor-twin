@@ -1,7 +1,16 @@
 import type { IntervalDto } from '@shopfloor/contracts/mes-api';
 import { describe, expect, it } from 'vitest';
 import { current, EPOCH } from '../test/fixtures.ts';
-import { MAX_TICKS, stateTotals, timelineBands, timelineTicks, withLiveState } from './timeline.ts';
+import { plantDayOf } from './time.ts';
+import {
+  MAX_TICKS,
+  MIN_DATE_GAP,
+  NARROW_TICKS,
+  stateTotals,
+  timelineBands,
+  timelineTicks,
+  withLiveState,
+} from './timeline.ts';
 
 const T0 = Date.parse('2026-10-15T06:00:00.000Z');
 const at = (minutes: number): string => new Date(T0 + minutes * 60_000).toISOString();
@@ -162,6 +171,54 @@ describe('timelineTicks', () => {
     for (const hours of [0.25, 1, 2, 5, 8, 12, 24, 48, 24 * 7]) {
       expect(ticksOf(hours).length, String(hours)).toBeLessThanOrEqual(MAX_TICKS);
       expect(ticksOf(hours).length, String(hours)).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('timelineTicks on a narrow axis and near midnight (#359 review)', () => {
+  it('leaves the leading date out when the day changes soon after it', () => {
+    // 24 h up to Fri 16 Oct, 18:24 plant time: 21:00 then midnight 3 h (12.5 %) later.
+    const to = Date.parse('2026-10-16T15:24:00.000Z');
+    const ticks = timelineTicks({ from: to - 24 * 3_600_000, to });
+    expect(ticks[0]).toMatchObject({ time: '21:00' });
+    expect(ticks[0]?.date).toBeUndefined();
+    expect(
+      ticks.filter((tick) => tick.date).map((tick) => `${tick.date ?? ''} ${tick.time}`),
+    ).toEqual(['Fri 16 Oct 00:00']);
+  });
+
+  it('takes a smaller budget: about four ticks below sm', () => {
+    const to = Date.parse('2026-10-15T06:10:00.000Z');
+    const times = (hours: number) =>
+      timelineTicks({ from: to - hours * 3_600_000, to }, { maxTicks: NARROW_TICKS }).map(
+        (tick) => tick.time,
+      );
+    expect(times(1)).toEqual(['08:15', '08:30', '08:45', '09:00']);
+    expect(times(8)).toEqual(['02:00', '04:00', '06:00', '08:00']);
+    expect(times(24)).toEqual(['12:00', '18:00', '00:00', '06:00']);
+  });
+
+  it('never puts two dates closer than MIN_DATE_GAP, at either budget, wherever the window ends', () => {
+    const start = Date.parse('2026-10-14T00:00:00.000Z');
+    for (let end = start; end < start + 2 * 86_400_000; end += 37 * 60_000) {
+      for (const hours of [1, 8, 24]) {
+        for (const maxTicks of [NARROW_TICKS, MAX_TICKS]) {
+          const window = { from: end - hours * 3_600_000, to: end };
+          const ticks = timelineTicks(window, { maxTicks });
+          const label = `${new Date(end).toISOString()} ${String(hours)} h ${String(maxTicks)}`;
+          expect(ticks.length, label).toBeLessThanOrEqual(maxTicks);
+          const dated = ticks.filter((tick) => tick.date !== undefined);
+          for (let i = 1; i < dated.length; i += 1) {
+            expect((dated[i]?.left ?? 0) - (dated[i - 1]?.left ?? 0), label).toBeGreaterThanOrEqual(
+              MIN_DATE_GAP,
+            );
+          }
+          // A window that spans days still names a day.
+          if (plantDayOf(window.from) !== plantDayOf(window.to) && ticks.length > 0) {
+            expect(dated.length, label).toBeGreaterThan(0);
+          }
+        }
+      }
     }
   });
 });

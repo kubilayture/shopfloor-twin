@@ -43,6 +43,7 @@ import {
 import {
   stateTotals,
   timelineBands,
+  NARROW_TICKS,
   timelineTicks,
   withLiveState,
   type Band,
@@ -72,8 +73,10 @@ const CHART_POINTS = 600;
 const INTERVALS_REFRESH_MS = 15_000;
 const SERIES_REFRESH_MS = 30_000;
 /**
- * A latest value older than this (plant time) says how old it is (M-02): telemetry is sent on
- * change, so a quiet signal can be hours old while its machine stands.
+ * A latest value older than this (plant time) says how old it is (M-02). Telemetry is sent on
+ * change, so a quiet signal can be hours old while its machine stands: that age is a neutral
+ * qualifier. It is abnormal (`warn`) only when the value is older than the range shown, or when
+ * the machine is Running and the signal has been silent this long.
  */
 export const SAMPLE_AGE_SHOWN_MS = 15 * 60_000;
 
@@ -114,22 +117,32 @@ function tickAlign(tick: Tick): string {
   return '-translate-x-1/2 items-center';
 }
 
-function Axis({ ticks }: { readonly ticks: readonly Tick[] }) {
+/**
+ * The timeline's axis: ticks at round plant times, dated where the plant day changes. Two of them,
+ * one shown per width: `MAX_TICKS` from `sm`, `NARROW_TICKS` below it, so labels and dates never
+ * run into each other on a phone.
+ */
+function Axis({
+  ticks,
+  testId,
+  className,
+}: {
+  readonly ticks: readonly Tick[];
+  readonly testId: string;
+  readonly className: string;
+}) {
   const dated = ticks.some((tick) => tick.date !== undefined);
   return (
     <div
       aria-hidden="true"
-      data-testid="timeline-axis"
-      className={`relative w-full text-2xs text-ink-secondary ${dated ? 'h-10' : 'h-6'}`}
+      data-testid={testId}
+      className={`relative w-full text-2xs text-ink-secondary ${dated ? 'h-10' : 'h-6'} ${className}`}
     >
-      {ticks.map((tick, index) => (
+      {ticks.map((tick) => (
         <div
           key={tick.at}
           data-tick={new Date(tick.at).toISOString()}
-          className={`absolute top-0 flex flex-col ${tickAlign(tick)} ${
-            // Below `sm` every other tick, unless it carries a date.
-            index % 2 === 1 && tick.date === undefined ? 'max-sm:hidden' : ''
-          }`}
+          className={`absolute top-0 flex flex-col ${tickAlign(tick)}`}
           style={{ left: `${String(tick.left)}%` }}
         >
           <span className="h-1.5 w-px bg-line-strong" />
@@ -171,7 +184,12 @@ function Timeline({ bands, window }: { readonly bands: readonly Band[]; readonly
           />
         ))}
       </div>
-      <Axis ticks={timelineTicks(window)} />
+      <Axis ticks={timelineTicks(window)} testId="timeline-axis" className="max-sm:hidden" />
+      <Axis
+        ticks={timelineTicks(window, { maxTicks: NARROW_TICKS })}
+        testId="timeline-axis-narrow"
+        className="sm:hidden"
+      />
       <ul aria-label="Legend" className="mt-2 flex flex-wrap items-center gap-2">
         {states.map((state) => (
           <li key={state}>
@@ -409,14 +427,51 @@ interface MetricRow {
   readonly latest: { readonly t: string; readonly value: number };
 }
 
-/** How old a latest value is against the plant clock, when that is worth saying. */
-function sampleAge(t: string, clock: number | undefined): number | undefined {
-  if (clock === undefined) return undefined;
-  const age = clock - Date.parse(t);
-  return age > SAMPLE_AGE_SHOWN_MS ? age : undefined;
+interface SampleAge {
+  readonly ms: number;
+  /** Older than the range, or silent while the machine runs. */
+  readonly abnormal: boolean;
 }
 
-function metricColumns(clock: number | undefined): readonly Column<MetricRow>[] {
+/** How old a latest value is against the plant clock, when that is worth saying. */
+function sampleAge(
+  t: string,
+  clock: number | undefined,
+  rangeMs: number,
+  running: boolean,
+): SampleAge | undefined {
+  if (clock === undefined) return undefined;
+  const ms = clock - Date.parse(t);
+  if (ms <= SAMPLE_AGE_SHOWN_MS) return undefined;
+  return { ms, abnormal: ms > rangeMs || running };
+}
+
+function Age({ age, metric }: { readonly age: SampleAge; readonly metric: string }) {
+  if (age.abnormal) {
+    return (
+      <Badge
+        tone="warn"
+        icon="clock"
+        data-testid={`age-${metric}`}
+        data-tone="warn"
+        title="No newer sample: older than the range shown, or silent while the machine runs"
+      >
+        {durationText(age.ms)} old
+      </Badge>
+    );
+  }
+  return (
+    <span data-testid={`age-${metric}`} data-tone="neutral" className="text-ink-secondary">
+      {durationText(age.ms)} ago
+    </span>
+  );
+}
+
+function metricColumns(
+  clock: number | undefined,
+  rangeMs: number,
+  running: boolean,
+): readonly Column<MetricRow>[] {
   return [
     {
       key: 'metric',
@@ -425,7 +480,7 @@ function metricColumns(clock: number | undefined): readonly Column<MetricRow>[] 
       cell: (row) => (
         <span className="flex flex-col">
           <span className="text-ink">{metricName(row.metric)}</span>{' '}
-          <Code className="text-xs text-ink-secondary">{row.metric}</Code>
+          <Code className="whitespace-nowrap text-xs text-ink-secondary">{row.metric}</Code>
         </span>
       ),
     },
@@ -444,15 +499,11 @@ function metricColumns(clock: number | undefined): readonly Column<MetricRow>[] 
       key: 'at',
       header: 'Last sample',
       cell: (row) => {
-        const age = sampleAge(row.latest.t, clock);
+        const age = sampleAge(row.latest.t, clock, rangeMs, running);
         return (
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <PlantTime at={row.latest.t} clock={clock} />
-            {age === undefined ? null : (
-              <Badge tone="warn" icon="clock" data-testid={`age-${row.metric}`}>
-                {durationText(age)} old
-              </Badge>
-            )}
+            {age === undefined ? null : <Age age={age} metric={row.metric} />}
           </span>
         );
       },
@@ -465,11 +516,14 @@ function TelemetrySection({
   range,
   window,
   clock,
+  running,
 }: {
   readonly id: string;
   readonly range: RangeKey;
   readonly window: Window | undefined;
   readonly clock: number | undefined;
+  /** The machine is Running: a silent signal is then abnormal. */
+  readonly running: boolean;
 }) {
   const queryClient = useQueryClient();
   useLiveSubscription(`telemetry:${id}`);
@@ -520,7 +574,7 @@ function TelemetrySection({
           <DataTable
             caption="Metrics and latest values"
             testId="metrics"
-            columns={metricColumns(clock)}
+            columns={metricColumns(clock, rangeMs, running)}
             rows={rows}
             rowKey={(row) => row.metric}
             loading={metrics.isPending ? 'Loading metrics…' : undefined}
@@ -730,7 +784,13 @@ export function MachineDetail() {
         range={range}
       />
       <StateSection id={id} range={range} current={current} window={window} clockKnown={known} />
-      <TelemetrySection id={id} range={range} window={window} clock={clockMs} />
+      <TelemetrySection
+        id={id}
+        range={range}
+        window={window}
+        clock={clockMs}
+        running={current?.state === 'Running'}
+      />
     </div>
   );
 }

@@ -26,7 +26,8 @@ describe('words for the plant model codes', () => {
   it('says a cause in words, keeping material and product ids', () => {
     expect(causeWords('TOOL-CHANGE')).toBe('Tool change');
     expect(causeWords('MATERIAL:BLANK-VB')).toBe('Material missing: BLANK-VB');
-    expect(causeWords('CHANGEOVER none→VB-100')).toBe('Changeover from none to VB-100');
+    expect(causeWords('CHANGEOVER none→VB-100')).toBe('Changeover to VB-100');
+    expect(causeWords('CHANGEOVER VB-100→VB-200')).toBe('Changeover from VB-100 to VB-200');
     expect(causeWords('CHANGEOVER VB-100')).toBe('Changeover VB-100');
   });
 });

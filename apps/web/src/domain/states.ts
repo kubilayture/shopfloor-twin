@@ -26,6 +26,11 @@ export interface StateStyle {
    * (G-13, O-01), and the overview's summary lists it first.
    */
   readonly abnormal: boolean;
+  /**
+   * An abnormal state's 4 px left bar in its own border colour (design system 2.4), in both
+   * themes; none for the normal states.
+   */
+  readonly bar?: string;
 }
 
 // Each class written out in full: Tailwind finds class names in the source.
@@ -83,6 +88,7 @@ const STYLES: Readonly<Record<string, StateStyle>> = {
     label: 'Starved',
     tone: 'warn',
     abnormal: true,
+    bar: 'border-l-4 border-l-state-starved-border',
     className: 'bg-state-starved-fill text-state-starved-ink border-state-starved-border',
     band: 'bg-state-starved-fill border-y-4 border-state-starved-border',
     icon: 'triangle-left',
@@ -91,6 +97,7 @@ const STYLES: Readonly<Record<string, StateStyle>> = {
     label: 'Blocked',
     tone: 'caution',
     abnormal: true,
+    bar: 'border-l-4 border-l-state-blocked-border',
     className: 'bg-state-blocked-fill text-state-blocked-ink border-state-blocked-border',
     band: 'bg-state-blocked-fill border-y-4 border-state-blocked-border',
     icon: 'play-bar',
@@ -99,6 +106,7 @@ const STYLES: Readonly<Record<string, StateStyle>> = {
     label: 'Stopped',
     tone: 'alarm',
     abnormal: true,
+    bar: 'border-l-4 border-l-state-stopped-border',
     className: 'bg-state-stopped-fill text-state-stopped-ink border-state-stopped-border',
     band: 'bg-state-stopped-fill border-y-4 border-state-stopped-border',
     icon: 'stop',
@@ -107,6 +115,7 @@ const STYLES: Readonly<Record<string, StateStyle>> = {
     label: 'Down',
     tone: 'alarm',
     abnormal: true,
+    bar: 'border-l-4 border-l-state-down-border',
     className: 'bg-state-down-fill text-state-down-ink border-state-down-border',
     band: 'bg-state-down-fill border-y-4 border-state-down-border',
     icon: 'close',

@@ -51,6 +51,22 @@ describe('EmptyState', () => {
 });
 
 describe('Skeleton', () => {
+  it('repeats its shape in a grid, and without a label is a decorative, hidden block', () => {
+    render(
+      <>
+        <Skeleton shape="stat" count={3} gridClassName="flex gap-3" label="Loading equipment…" />
+        <Skeleton shape="card" count={3} gridClassName="grid" testId="cards" delayMs={0} />
+      </>,
+    );
+    expect(screen.getAllByRole('status')).toHaveLength(1);
+    const cards = screen.getByTestId('cards');
+    expect(cards.getAttribute('role')).toBeNull();
+    expect(cards.getAttribute('aria-hidden')).toBe('true');
+    expect(cards.querySelector('.sr-only')).toBeNull();
+    const grid = cards.querySelector('.grid');
+    expect(grid?.children).toHaveLength(3);
+  });
+
   it('is a status with the loading text at once, and shows its shapes only after 300 ms', () => {
     vi.useFakeTimers();
     render(<Skeleton shape="table" label="Loading OEE…" testId="oee-loading" />);

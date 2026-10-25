@@ -92,14 +92,16 @@ describe('plant overview', () => {
       ['Running', '1'],
     ]);
     expect(summary.textContent).toContain('3 machines; 2 need attention');
-    expect(screen.getByTestId('summary-state-Down').className).toContain('border-l-alarm-border');
+    expect(screen.getByTestId('summary-state-Down').className).toContain(
+      'border-l-state-down-border',
+    );
     expect(screen.getByTestId('summary-state-Running').className).not.toContain('border-l-4');
     // The abnormal card's 4 px bar in its state's border colour (G-13).
     const asm = screen.getByTestId('machine-asm-01');
     expect(asm.className.split(' ')).toEqual(
-      expect.arrayContaining(['border-l-4', 'border-l-warn-border']),
+      expect.arrayContaining(['border-l-4', 'border-l-state-starved-border']),
     );
-    expect(screen.getByTestId('machine-wsh-01').className).toContain('border-l-alarm-border');
+    expect(screen.getByTestId('machine-wsh-01').className).toContain('border-l-state-down-border');
     // Causes as words, the code beside them.
     expect(within(asm).getByText('Material missing: BLANK-VB')).toBeTruthy();
     expect(within(asm).getByText('MATERIAL:BLANK-VB')).toBeTruthy();
@@ -180,6 +182,8 @@ describe('plant overview', () => {
       await app.drop();
       expect(screen.getByRole('status').textContent).toContain('Reconnecting');
       expect(screen.getByTestId('stale-cnc-01').textContent).toBe('Stale: live connection lost');
+      // The summary's counts are as stale as the cards: it says so beside its heading.
+      expect(screen.getByTestId('summary-stale').textContent).toBe('Stale: live connection lost');
 
       await settle(() => {
         vi.advanceTimersByTime(1_000);
@@ -188,9 +192,11 @@ describe('plant overview', () => {
       expect(app.factory.sockets).toHaveLength(2);
       expect(app.factory.last.sent).toEqual([{ type: 'subscribe', topic: 'states' }]);
       expect(screen.queryByTestId('stale-cnc-01')).toBeNull();
+      expect(screen.queryByTestId('summary-stale')).toBeNull();
 
       await app.push({ type: 'clock', epoch: EPOCH + 60, watermark: '2026-10-15T06:00:00.000Z' });
       expect(screen.getByTestId('stale-cnc-01').textContent).toBe('Stale: from an earlier run');
+      expect(screen.getByTestId('summary-stale').textContent).toBe('Stale: from an earlier run');
     } finally {
       vi.useRealTimers();
     }
@@ -236,6 +242,21 @@ describe('plant overview', () => {
     expect(screen.getByText('No machines yet')).toBeTruthy();
     expect(screen.queryByTestId('overview-summary')).toBeNull();
     expect(screen.getByTestId('plant-clock').textContent).toContain('no data yet');
+  });
+
+  it('loads in the shape of the page: summary tiles and a row of cards, one status', async () => {
+    vi.stubGlobal(
+      'fetch',
+      fakeFetch({ ...api, '/api/v1/equipment': () => new Promise<Response>(() => undefined) }),
+    );
+    await renderApp('/');
+    const loading = await screen.findByTestId('overview-loading');
+    const status = within(loading).getByRole('status');
+    expect(status.textContent).toBe('Loading equipment…');
+    expect(within(loading).getAllByRole('status')).toHaveLength(1);
+    expect(
+      [...loading.querySelectorAll<HTMLElement>('[data-shape]')].map((el) => el.dataset.shape),
+    ).toEqual(['stat', 'card']);
   });
 
   it('shows a page for unknown paths', async () => {

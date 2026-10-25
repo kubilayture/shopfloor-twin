@@ -136,6 +136,13 @@ describe('machine detail', () => {
       '09:00',
       '09:10',
     ]);
+    // Below sm another axis with half the ticks takes its place (#359 review).
+    expect(screen.getByTestId('timeline-axis').className).toContain('max-sm:hidden');
+    const narrow = screen.getByTestId('timeline-axis-narrow');
+    expect(narrow.className).toContain('sm:hidden');
+    expect(
+      [...narrow.querySelectorAll<HTMLElement>('[data-tick]')].map((tick) => tick.textContent),
+    ).toEqual(['08:15', '08:30', '08:45', '09:00']);
   });
 
   it('dates the axis where the plant day changes on a range that spans days', async () => {
@@ -336,11 +343,71 @@ describe('machine detail', () => {
     const age = await screen.findByTestId('age-coolant-temperature');
     // 3 d 2 h 20 min before the plant clock (06:10 on the 15th).
     expect(age.textContent).toBe('3 d 2 h old');
+    // Older than the range shown: abnormal, whatever the machine does.
+    expect(age.dataset.tone).toBe('warn');
+    await app.push({
+      type: 'state',
+      equipment: 'cnc-01',
+      current: current({ state: 'Idle', since: at(9), seq: 11 }),
+    });
+    expect(screen.getByTestId('age-coolant-temperature').dataset.tone).toBe('warn');
     expect(screen.getByRole('rowheader', { name: /^Coolant temperature/ })).toBeTruthy();
     const empty = await screen.findByText('No samples in this range.');
     const figure = empty.closest('figure');
     expect(figure?.textContent).toContain('Coolant temperature');
     expect(figure?.textContent).toContain('The last sample was at Mon 12 Oct, 06:50:00');
     expect(figure?.textContent).toContain('before this range');
+  });
+
+  it('keeps the age of a quiet signal neutral, and warns only when the machine runs (#359 review)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      fakeFetch({
+        '/api/v1/plant': () => json(PLANT),
+        '/api/v1/equipment/cnc-01': () => json(CNC),
+        '/api/v1/equipment/cnc-01/intervals': (url) =>
+          json({
+            equipment: 'cnc-01',
+            from: url.searchParams.get('from'),
+            to: url.searchParams.get('to'),
+            truncated: false,
+            next: null,
+            intervals: [],
+          }),
+        '/api/v1/equipment/cnc-01/telemetry/metrics': () =>
+          json({
+            equipment: 'cnc-01',
+            // 20 min before the plant clock (at(10)), well inside the 8 h range.
+            metrics: [{ metric: 'spindle-load', unit: '%', latest: { t: at(-10), value: 0 } }],
+          }),
+        '/api/v1/equipment/cnc-01/telemetry': (url) =>
+          json({
+            equipment: 'cnc-01',
+            from: url.searchParams.get('from'),
+            to: url.searchParams.get('to'),
+            bucketMs: 60_000,
+            series: [{ metric: 'spindle-load', unit: '%', points: [] }],
+          }),
+      }),
+    );
+    const app = await renderApp('/equipment/cnc-01?range=8h');
+    await app.open();
+    // Running and silent for 20 min: abnormal, the amber tag.
+    const running = await screen.findByTestId('age-spindle-load');
+    expect(screen.getByTestId('current-state').dataset.state).toBe('Running');
+    expect(running.dataset.tone).toBe('warn');
+    expect(running.textContent).toBe('20 min old');
+    expect(running.className).toContain('bg-warn-soft');
+
+    // Idle: a quiet on-change signal is normal; its age is plain secondary text.
+    await app.push({
+      type: 'state',
+      equipment: 'cnc-01',
+      current: current({ state: 'Idle', since: at(9), seq: 11 }),
+    });
+    const idle = screen.getByTestId('age-spindle-load');
+    expect(idle.dataset.tone).toBe('neutral');
+    expect(idle.textContent).toBe('20 min ago');
+    expect(idle.className).not.toContain('warn');
   });
 });

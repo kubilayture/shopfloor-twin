@@ -5,9 +5,9 @@ import { listEquipment } from '../api/client.ts';
 import { queryKeys, usePlantClock } from '../api/queries.ts';
 import { CauseText } from '../components/cause-text.tsx';
 import { QueryError } from '../components/query-error.tsx';
-import { StateBadge } from '../components/state-badge.tsx';
+import { StaleTag, StateBadge } from '../components/state-badge.tsx';
 import { Badge } from '../components/ui/badge.tsx';
-import { Card, CARD_TONE_BAR } from '../components/ui/card.tsx';
+import { Card } from '../components/ui/card.tsx';
 import { Code } from '../components/ui/code.tsx';
 import { EmptyState } from '../components/ui/empty-state.tsx';
 import { Duration, PlantTime } from '../components/ui/format.tsx';
@@ -22,6 +22,7 @@ import {
   newest,
   staleness,
   stateCounts,
+  type Staleness,
   stateStyle,
   timeInState,
 } from '../domain/states.ts';
@@ -63,8 +64,7 @@ function MachineCard({
         headingLevel={4}
         padding="compact"
         testId={`machine-${equipment.id}`}
-        tone={style.abnormal ? style.tone : undefined}
-        className="h-full"
+        className={`h-full ${style.bar ?? ''}`}
         title={
           <Link
             to="/equipment/$id"
@@ -137,7 +137,14 @@ function MachineCard({
  * Machines per state, the abnormal states first (O-01): one tile per state that has a machine,
  * the count in large figures beside the state's badge; an abnormal state's tile has its bar.
  */
-function Summary({ states }: { readonly states: readonly (string | undefined)[] }) {
+function Summary({
+  states,
+  stale,
+}: {
+  readonly states: readonly (string | undefined)[];
+  /** Why the counts may be out of date: the Stale tag beside the heading. */
+  readonly stale: Staleness;
+}) {
   const counts = stateCounts(states);
   const attention = counts
     .filter((item) => stateStyle(item.state).abnormal)
@@ -147,6 +154,7 @@ function Summary({ states }: { readonly states: readonly (string | undefined)[] 
       id="summary-title"
       title="Machines by state"
       testId="overview-summary"
+      status={stale === undefined ? undefined : <StaleTag reason={stale} testId="summary-stale" />}
       description={`${machines(states.length)}; ${
         attention === 0
           ? 'none needs'
@@ -163,7 +171,7 @@ function Summary({ states }: { readonly states: readonly (string | undefined)[] 
               data-state={state}
               data-count={String(count)}
               className={`flex min-w-36 items-center gap-3 rounded-lg border border-line bg-surface px-4 py-2 ${
-                style.abnormal ? CARD_TONE_BAR[style.tone] : ''
+                style.bar ?? ''
               }`}
             >
               <span className="sr-only">
@@ -181,6 +189,21 @@ function Summary({ states }: { readonly states: readonly (string | undefined)[] 
       </ul>
     </Section>
   );
+}
+
+/**
+ * Whether the summary's counts may be out of date: the live connection is lost, or a counted
+ * state is from an earlier run. The summary then says so beside its heading, as each card does.
+ */
+function summaryStaleness(
+  states: readonly (CurrentStateDto | undefined)[],
+  clock: Clock | null,
+  connectionLost: boolean,
+): Staleness {
+  if (connectionLost) return 'disconnected';
+  return states.some((current) => current && staleness(current, clock, false) === 'older-run')
+    ? 'older-run'
+    : undefined;
 }
 
 export function Overview() {
@@ -206,8 +229,19 @@ export function Overview() {
         description="Every machine's state as it reports it, by area and work center."
       />
       {equipment.isPending ? (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-          <Skeleton shape="card" label="Loading equipment…" />
+        // The page's own shape: the summary's tiles, then a work center's three cards.
+        <div className="flex flex-col gap-8" data-testid="overview-loading">
+          <Skeleton
+            shape="stat"
+            count={3}
+            gridClassName="flex flex-wrap gap-3 *:w-36 *:rounded-lg *:border *:border-line *:bg-surface *:px-4 *:py-3"
+            label="Loading equipment…"
+          />
+          <Skeleton
+            shape="card"
+            count={3}
+            gridClassName="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3"
+          />
         </div>
       ) : null}
       {equipment.isError ? (
@@ -218,17 +252,24 @@ export function Overview() {
         />
       ) : null}
       {equipment.data?.length === 0 ? (
-        <div className="rounded-lg border border-line bg-surface">
+        <Card padding="compact">
           <EmptyState
             title="No machines yet"
             body="No equipment yet: master data is not seeded."
             icon="info"
           />
-        </div>
+        </Card>
       ) : null}
       {items.length > 0 ? (
         <>
-          <Summary states={items.map(({ current }) => current?.state)} />
+          <Summary
+            states={items.map(({ current }) => current?.state)}
+            stale={summaryStaleness(
+              items.map(({ current }) => current),
+              clock,
+              connectionLost,
+            )}
+          />
           {groupEquipment(equipment.data ?? []).map((area) => (
             <Section key={area.id} id={`area-${area.id}`} title={area.name}>
               {area.workCenters.map((center) => (

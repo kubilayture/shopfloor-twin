@@ -49,10 +49,12 @@ export function codeWords(code: string): string {
 /** The cause vocabulary's parameterised forms (docs/simulation-model.md "Causes"). */
 const MATERIAL_PREFIX = 'MATERIAL:';
 const CHANGEOVER_PREFIX = 'CHANGEOVER ';
+/** A changeover's "from" when no product was loaded. */
+const NO_PRODUCT = 'none';
 
 /**
  * A state's cause as words (O-02): `NO-ORDER` is "No order", `MATERIAL:BLANK-VB` "Material
- * missing: BLANK-VB", `CHANGEOVER none→VB-100` "Changeover from none to VB-100". Material and
+ * missing: BLANK-VB", `CHANGEOVER none→VB-100` "Changeover to VB-100". Material and
  * product ids stay as they are: they are identifiers, not words.
  */
 export function causeWords(cause: string): string {
@@ -61,9 +63,11 @@ export function causeWords(cause: string): string {
   }
   if (cause.startsWith(CHANGEOVER_PREFIX)) {
     const [from, to] = cause.slice(CHANGEOVER_PREFIX.length).split('→');
-    return to === undefined
-      ? `Changeover ${from ?? ''}`.trim()
-      : `Changeover from ${from ?? ''} to ${to}`;
+    if (to === undefined) return `Changeover ${from ?? ''}`.trim();
+    // `none` stands for no product loaded: a sentinel, not a product (#359 review).
+    return from === NO_PRODUCT || from === undefined || from === ''
+      ? `Changeover to ${to}`
+      : `Changeover from ${from} to ${to}`;
   }
   return codeWords(cause);
 }

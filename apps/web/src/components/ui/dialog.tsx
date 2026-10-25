@@ -30,14 +30,24 @@ import { focusableIn } from './overlay.ts';
  *   owner's own close is not taken for the browser's (H1).
  *
  * `variant="sheet"` is the full-height side sheet of list-and-detail screens below 1440 px
- * (design system 3.4): 440 px from the right, the full width below `md`.
+ * (design system 3.4): 440 px from the right, the full width below `md`. `size="touch"` is the
+ * operator terminal's (UX-7, #330): a 20 px title, 16 px text and a 56 px close button.
  */
+export type DialogSize = 'md' | 'touch';
+
+/** Title, text and close button per size; written out in full for Tailwind. */
+const SIZE = {
+  md: { title: 'text-lg', text: 'text-sm', close: 'sm' },
+  touch: { title: 'text-xl', text: 'text-base', close: 'touch' },
+} as const;
+
 export interface DialogProps {
   readonly open: boolean;
   readonly onClose: () => void;
   readonly title: ReactNode;
   readonly description?: ReactNode;
   readonly variant?: 'modal' | 'sheet' | undefined;
+  readonly size?: DialogSize | undefined;
   readonly initialFocus?: RefObject<HTMLElement | null>;
   /** Buttons, the primary last. */
   readonly footer?: ReactNode;
@@ -73,11 +83,13 @@ export function Dialog({
   title,
   description,
   variant = 'modal',
+  size = 'md',
   initialFocus,
   footer,
   testId,
   children,
 }: DialogProps) {
+  const look = SIZE[size];
   const dialog = useRef<HTMLDialogElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
   const content = useRef<HTMLDivElement>(null);
@@ -185,11 +197,11 @@ export function Dialog({
         <div className={`flex max-h-[inherit] flex-col${variant === 'sheet' ? ' h-full' : ''}`}>
           <header className="flex items-start justify-between gap-3 border-b border-line-subtle px-5 py-4">
             <div className="min-w-0">
-              <h2 id={titleId} className="text-lg font-semibold">
+              <h2 id={titleId} className={`${look.title} font-semibold`}>
                 {title}
               </h2>
               {description === undefined ? null : (
-                <div id={descriptionId} className="mt-1 text-sm text-ink-secondary">
+                <div id={descriptionId} className={`mt-1 ${look.text} text-ink-secondary`}>
                   {description}
                 </div>
               )}
@@ -199,12 +211,14 @@ export function Dialog({
               icon="close"
               label="Close"
               variant="ghost"
-              size="sm"
+              size={look.close}
               onClick={onClose}
             />
           </header>
           <div ref={content} className="flex min-h-0 flex-1 flex-col">
-            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4 text-sm">{children}</div>
+            <div className={`min-h-0 flex-1 overflow-y-auto px-5 py-4 ${look.text}`}>
+              {children}
+            </div>
             {footer === undefined ? null : (
               <footer className="flex flex-wrap justify-end gap-2 border-t border-line-subtle px-5 py-3">
                 {footer}
@@ -233,6 +247,8 @@ export interface ConfirmDialogProps {
   readonly onConfirm: () => void | Promise<void>;
   readonly onCancel: () => void;
   readonly pending?: boolean | undefined;
+  /** `touch`: the operator terminal's 56 px buttons and larger text (UX-7, #330). */
+  readonly size?: DialogSize | undefined;
   readonly testId?: string | undefined;
 }
 
@@ -261,6 +277,7 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
   pending = false,
+  size = 'md',
   testId,
 }: ConfirmDialogProps) {
   const cancel = useRef<HTMLButtonElement>(null);
@@ -282,16 +299,24 @@ export function ConfirmDialog({
       onClose={ask}
       title={title}
       description={body}
+      size={size}
       initialFocus={tone === 'danger' ? cancel : confirm}
       testId={testId}
       footer={
         <>
-          <Button ref={cancel} variant="secondary" onClick={ask} aria-disabled={busy || undefined}>
+          <Button
+            ref={cancel}
+            variant="secondary"
+            size={size}
+            onClick={ask}
+            aria-disabled={busy || undefined}
+          >
             Cancel
           </Button>
           <Button
             ref={confirm}
             variant={tone === 'danger' ? 'dangerSolid' : 'primary'}
+            size={size}
             loading={busy}
             onClick={() => {
               const result = onConfirm();

@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { current, EPOCH } from '../test/fixtures.ts';
-import { isConnectionLost, isNewer, newest, staleness, stateStyle, timeInState } from './states.ts';
+import {
+  abnormalTone,
+  isConnectionLost,
+  isNewer,
+  newest,
+  staleness,
+  stateStyle,
+  timeInState,
+  worstTone,
+} from './states.ts';
 
 describe('isNewer and newest', () => {
   it('orders by epoch, then seq (an anchor has none), then start', () => {
@@ -49,5 +58,29 @@ describe('stateStyle', () => {
   it('labels every state and falls back to the raw name', () => {
     expect(stateStyle('PlannedStop').label).toBe('Planned stop');
     expect(stateStyle('Warp').label).toBe('Warp');
+  });
+});
+
+describe('abnormalTone and worstTone (UX-7)', () => {
+  it('gives the states that cost output their tone, the normal ones none', () => {
+    expect(['Starved', 'Blocked', 'Stopped', 'Down'].map(abnormalTone)).toEqual([
+      'warn',
+      'caution',
+      'alarm',
+      'alarm',
+    ]);
+    expect(
+      ['Running', 'Idle', 'Setup', 'PlannedStop', 'Maintenance', 'Off', 'Weird', undefined].map(
+        abnormalTone,
+      ),
+    ).toEqual(Array.from({ length: 8 }, () => undefined));
+  });
+
+  it('picks alarm over caution over warn, and none from normal states', () => {
+    expect(worstTone(['warn', undefined, 'alarm', 'caution'])).toBe('alarm');
+    expect(worstTone(['warn', 'caution'])).toBe('caution');
+    expect(worstTone([undefined, 'warn'])).toBe('warn');
+    expect(worstTone([undefined, 'neutral', 'info'])).toBeUndefined();
+    expect(worstTone([])).toBeUndefined();
   });
 });

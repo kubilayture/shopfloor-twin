@@ -1,5 +1,5 @@
 import type { Clock, CurrentStateDto } from '@shopfloor/contracts/mes-api';
-import type { Glyph } from './tones.ts';
+import type { Glyph, Tone } from './tones.ts';
 
 /**
  * How a state looks (design system 2.4, UX-1c #315): a word, always, on the state's token colours;
@@ -99,6 +99,27 @@ const UNKNOWN_BAND = 'bg-neutral-soft border-y-4 border-neutral-border';
 
 export function stateStyle(state: string): StateStyle {
   return STYLES[state] ?? { label: state, className: UNKNOWN, band: UNKNOWN_BAND };
+}
+
+/**
+ * The tone of a state that costs output (design system 2.4: Starved, Blocked, Stopped, Down), for
+ * the 4 px bar of an abnormal machine's card; undefined for the normal ones and for no data.
+ */
+const ABNORMAL: Readonly<Record<string, Tone>> = {
+  Starved: 'warn',
+  Blocked: 'caution',
+  Stopped: 'alarm',
+  Down: 'alarm',
+};
+
+export function abnormalTone(state: string | undefined): Tone | undefined {
+  return state === undefined ? undefined : ABNORMAL[state];
+}
+
+/** The most urgent of some tones (alarm, then caution, then warn), for a group of machines. */
+export function worstTone(tones: readonly (Tone | undefined)[]): Tone | undefined {
+  for (const tone of ['alarm', 'caution', 'warn'] as const) if (tones.includes(tone)) return tone;
+  return undefined;
 }
 
 /**

@@ -6,16 +6,20 @@ import {
   type TerminalOperationDto,
   type TerminalViewDto,
 } from '@shopfloor/contracts/mes-api';
+import type { EquipmentDto } from '@shopfloor/contracts/mes-api';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { timed } from '../test/timing.ts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { EQUIPMENT, json, problem, sessionOf } from '../test/fixtures.ts';
+import { formatClockSeconds } from '../domain/time.ts';
+import { EQUIPMENT, current, json, problem, sessionOf } from '../test/fixtures.ts';
+import { network, resetNetwork } from '../test/network.ts';
 import { renderApp } from '../test/render-app.tsx';
 import { at, hold, signal } from '../test/quality-fixtures.ts';
 import { operationOf, orderOf, viewOf, withoutCounts } from '../test/terminal-fixtures.ts';
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  resetNetwork();
   try {
     localStorage.clear();
   } catch {
@@ -44,6 +48,8 @@ function terminalMes(
     idleMs?: number;
     /** The plant clock's watermark, if the plant has one. */
     watermark?: string;
+    /** The plant's equipment; the fixtures' by default. */
+    equipment?: EquipmentDto[];
   } = {},
 ) {
   let nextActivity = 500;
@@ -109,7 +115,7 @@ function terminalMes(
       refuse = undefined;
       return problem(409, 'Conflict', r.detail, path, r.type);
     }
-    if (path === '/api/v1/equipment') return json({ equipment: EQUIPMENT });
+    if (path === '/api/v1/equipment') return json({ equipment: options.equipment ?? EQUIPMENT });
     if (path === '/api/v1/plant')
       return json({
         site: { id: 'gebze', name: 'Gebze', enterprise: { id: 'o', name: 'O' } },
@@ -222,6 +228,11 @@ function terminalMes(
     refuseNext: (path: string, type: string, detail: string) => {
       refuse = { path, type, detail };
     },
+    /** The session's idle expiry moves on, as the MES's own use of it does: still valid. */
+    touchSession: () => {
+      if (session)
+        session = { ...session, idleExpiresAt: new Date(Date.now() + 3_600_000).toISOString() };
+    },
   };
 }
 
@@ -330,12 +341,41 @@ describe('the operator terminal (#177)', () => {
       'in 5 · good 4 · scrap 1 · rework 0',
     );
     expect(screen.getByTestId('terminal-wip-O-1').textContent).toBe('3');
+    // Signing off an operation cannot be undone at the terminal: a confirmation first (UX-7).
+    const signOffOp = screen.getByTestId('terminal-sign-off-O-1-OP50');
+    signOffOp.focus();
+    fireEvent.click(signOffOp);
+    const dialog = screen.getByRole('dialog', { name: 'Sign off OP50 of order O-1?' });
+    expect(dialog.dataset.testid).toBe('terminal-confirm-sign-off-O-1-OP50');
+    expect(
+      document.getElementById(dialog.getAttribute('aria-describedby') ?? '')?.textContent,
+    ).toMatch(/cannot be reopened at the terminal/);
+    // Cancel sends nothing.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Sign off OP50 of order O-1?' })).toBeNull();
+    });
+    expect(mes.calls.some((c) => c.path.endsWith('/OP50/sign-off'))).toBe(false);
     fireEvent.click(screen.getByTestId('terminal-sign-off-O-1-OP50'));
+    const confirm = within(
+      screen.getByRole('dialog', { name: 'Sign off OP50 of order O-1?' }),
+    ).getByRole('button', {
+      name: 'Sign off operation',
+    });
+    // 56 px, as every terminal target.
+    expect(confirm.className).toContain('min-h-14');
+    fireEvent.click(confirm);
     await waitFor(() => {
       expect(screen.getByTestId('terminal-op-state-O-1-OP50').textContent).toMatch(
         /Signed off by olga/,
       );
     });
+    expect(mes.calls.filter((c) => c.path.endsWith('/OP50/sign-off'))).toHaveLength(1);
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Sign off OP50 of order O-1?' })).toBeNull();
+    });
+    // The button that opened it is gone: the operation's state takes the focus.
+    expect(document.activeElement).toBe(screen.getByTestId('terminal-op-state-O-1-OP50'));
     // Scrap coding: a reason below the machine reason, a comment.
     fireEvent.click(await screen.findByTestId('terminal-scrap-reason-11-LEAK/POROSITY'));
     fireEvent.change(screen.getByTestId('terminal-scrap-comment-11'), {
@@ -606,6 +646,176 @@ describe('the operator terminal (#177)', () => {
       app.queryClient.getQueryData(['terminal', 'olga', 'line-a1', 'refusal']),
     ).toBeUndefined();
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('starts the live client again after a 4403 close when the session read then is still valid (#341 review)', async () => {
+    const mes = terminalMes();
+    vi.stubGlobal('fetch', mes.fetch);
+    const app = await renderApp('/terminal/line-a1', { session: 'fetch' });
+    await signOnAs('olga');
+    await app.open();
+    expect(app.factory.sockets).toHaveLength(1);
+    // The MES closes the socket for the session (4403): the client stops and the session is read
+    // again; still valid, the screen starts the client again instead of staying "Offline".
+    mes.touchSession();
+    await app.drop(4403);
+    await waitFor(() => {
+      expect(app.factory.sockets).toHaveLength(2);
+    });
+    await app.open();
+    expect(screen.getByTestId('connection-status').dataset.status).toBe('open');
+    expect(app.factory.last.sent).toContainEqual({ type: 'subscribe', topic: 'terminal:line-a1' });
+    expect(screen.getByTestId('terminal-user').textContent).toBe('olga');
+  });
+
+  it('shows its own offline bar once signed on, saying since when the screen stopped updating (#312, UX-7)', async () => {
+    const watermark = '2026-10-15T06:20:00.000Z';
+    const mes = terminalMes({ watermark });
+    const net = network(mes.fetch);
+    vi.stubGlobal('fetch', net.fetch);
+    const app = await renderApp('/terminal/line-a1', { session: 'fetch' });
+    await screen.findByRole('heading', { name: 'Sign on' });
+    // The sign-on page starts no live client and shows no connection state, offline or not.
+    await net.cut();
+    expect(screen.queryByTestId('offline-bar')).toBeNull();
+    await net.restore();
+    await signOnAs('olga');
+    await app.open();
+    await waitFor(() => {
+      expect(screen.getByTestId('terminal-clock').textContent).toMatch(/^Plant time /);
+    });
+    expect(screen.queryByTestId('offline-bar')).toBeNull();
+    await net.cut();
+    const bar = screen.getByTestId('offline-bar');
+    expect([bar.getAttribute('role'), bar.dataset.variant, bar.dataset.reason]).toEqual([
+      'alert',
+      'terminal',
+      'offline',
+    ]);
+    expect(bar.textContent).toContain(
+      `Offline: this screen stopped updating at ${formatClockSeconds(watermark)} plant time.`,
+    );
+    expect(bar.textContent).toContain('a start, pause or scrap code sent meanwhile is not saved');
+    // Under the terminal's top bar, on its widths.
+    expect(bar.firstElementChild?.className).toMatch(/max-w-6xl .*px-4 .*md:px-6/);
+    expect(screen.getByTestId('connection-status').textContent).toBe('Offline');
+    // The screen stays: the operator's view is kept while the network is gone.
+    expect(screen.getByTestId('terminal-title').textContent).toBe('Line A1');
+    await net.restore();
+    await app.open();
+    await waitFor(() => {
+      expect(screen.queryByTestId('offline-bar')).toBeNull();
+    });
+  });
+
+  it('names the work center in its top bar, with its id, and leads back to the picker (X-02, X-04)', async () => {
+    const desk = sessionOf(['operator'], { username: 'ayse' });
+    const mes = terminalMes({ session: desk });
+    vi.stubGlobal('fetch', mes.fetch);
+    const app = await renderApp('/terminal/line-a1', { session: desk, live: 'stopped' });
+    const banner = screen.getByRole('banner');
+    await waitFor(() => {
+      expect(within(banner).getByTestId('terminal-work-center').textContent).toBe('Line A1');
+    });
+    expect(within(banner).getByText('line-a1').tagName).toBe('CODE');
+    expect(document.title).toBe('Terminal Line A1 · ShopFloor Twin');
+    const back = within(banner).getByRole('link', { name: 'Change work center' });
+    expect(back.getAttribute('href')).toBe('/terminal');
+    fireEvent.click(back);
+    await waitFor(() => {
+      expect(app.history.location.pathname).toBe('/terminal');
+    });
+    expect(await screen.findByTestId('terminal-link-line-a1')).toBeDefined();
+  });
+
+  it('offers each work center as a tile to choose by: machines, crew, order in progress, abnormal state (X-01)', async () => {
+    const desk = sessionOf(['supervisor'], { username: 'ayse' });
+    const mes = terminalMes({
+      session: desk,
+      equipment: EQUIPMENT.map((e) =>
+        e.id === 'cnc-01' ? { ...e, current: current({ state: 'Down' }) } : e,
+      ),
+    });
+    mes.view = viewOf({
+      crew: [
+        {
+          id: 121,
+          userId: 21,
+          username: 'olga',
+          workCenter: 'line-a1',
+          epoch: 1,
+          shiftKey: '2026-10-15/A',
+          from: '2026-10-15T04:00:00.000Z',
+          fromPlant: '2026-10-15T04:00:00.000Z',
+          to: null,
+          toPlant: null,
+          endReason: null,
+        },
+      ],
+    });
+    vi.stubGlobal('fetch', mes.fetch);
+    await renderApp('/terminal', { session: desk });
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Operator terminal' }),
+    ).toBeDefined();
+    const line = await screen.findByTestId('terminal-link-line-a1');
+    await waitFor(() => {
+      expect(screen.getByTestId('terminal-tile-crew-line-a1').textContent).toBe('Signed on: olga');
+    });
+    expect(screen.getByTestId('terminal-tile-order-line-a1').textContent).toBe(
+      'In progress: O-1 · VB-100',
+    );
+    expect(line.getAttribute('href')).toBe('/terminal/line-a1');
+    expect(line.dataset.tone).toBe('normal');
+    expect(line.className).not.toContain('border-l-4');
+    // A machine down in Cell M1: its tile carries the alarm bar and the state's word (line order).
+    const cell = screen.getByTestId('terminal-link-cell-m1');
+    expect(cell.dataset.tone).toBe('alarm');
+    expect(cell.className).toContain('border-l-alarm-border');
+    expect(
+      within(screen.getByTestId('terminal-tile-machines-cell-m1'))
+        .getAllByText(/Down|Idle/)
+        .map((e) => e.textContent),
+    ).toEqual(['Down', 'Idle']);
+    // Its view could not be read: the tile says so and still leads to its terminal.
+    await waitFor(() => {
+      expect(screen.getByTestId('terminal-tile-crew-cell-m1').textContent).toMatch(
+        /could not be read/,
+      );
+    });
+    expect(cell.getAttribute('href')).toBe('/terminal/cell-m1');
+  });
+
+  it('draws every control 56 px high, on the shared buttons and fields with the token focus ring (X-05)', async () => {
+    const mes = terminalMes();
+    vi.stubGlobal('fetch', mes.fetch);
+    await renderApp('/terminal/line-a1', { session: 'fetch' });
+    await screen.findByRole('heading', { name: 'Sign on' });
+    const minHeight = (element: HTMLElement) =>
+      element.className.split(/\s+/).find((c) => c.startsWith('min-h-'));
+    expect(
+      [
+        screen.getByTestId('terminal-username'),
+        screen.getByTestId('terminal-password'),
+        screen.getByTestId('terminal-sign-on'),
+      ].map(minHeight),
+    ).toEqual(['min-h-14', 'min-h-14', 'min-h-14']);
+    expect(screen.getByRole('textbox', { name: 'User name' })).toBe(
+      screen.getByTestId('terminal-username'),
+    );
+    await signOnAs('olga');
+    fireEvent.click(screen.getByTestId('terminal-start-O-1-OP30'));
+    fireEvent.click(await screen.findByTestId('terminal-pause-O-1-OP30'));
+    const controls = [
+      ...screen.getAllByRole('button').filter((b) => b.closest('[data-testid="terminal-screen"]')),
+      screen.getByTestId('terminal-scrap-comment-11'),
+    ];
+    expect(controls.length).toBeGreaterThan(10);
+    for (const control of controls) {
+      expect(minHeight(control), control.textContent).toBe('min-h-14');
+      // No outline of its own: the global 2 px `focus` ring (design system 7) draws the focus.
+      expect(control.className, control.textContent).not.toMatch(/outline|sky-/);
+    }
   });
 
   it('when operator A idles out, operator B signs on to a screen with none of A’s drafts or reads', async () => {

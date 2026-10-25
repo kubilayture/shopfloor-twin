@@ -202,6 +202,28 @@ describe('Callout', () => {
     expect(callout?.hasAttribute('role')).toBe(false);
     expect(callout?.querySelector('svg')?.getAttribute('data-icon')).toBe('info');
   });
+
+  it('is larger at the touch size, for the operator terminal (UX-7)', () => {
+    render(
+      <>
+        <Callout tone="warn" title="Held" data-testid="md">
+          Keep it apart.
+        </Callout>
+        <Callout tone="warn" size="touch" title="Held" data-testid="touch">
+          Keep it apart.
+        </Callout>
+      </>,
+    );
+    const md = screen.getByTestId('md');
+    const touch = screen.getByTestId('touch');
+    expect(classesOf(md)).toEqual(expect.arrayContaining(['p-3', 'text-sm']));
+    expect(classesOf(touch)).toEqual(expect.arrayContaining(['p-4', 'text-lg']));
+    expect(classesOf(touch)).not.toContain('text-sm');
+    expect(touch.querySelector('p')?.className).toBe('text-xl font-semibold');
+    expect(md.querySelector('p')?.className).toBe('font-semibold');
+    expect(touch.querySelector('svg')?.getAttribute('width')).toBe('24');
+    expect(md.querySelector('svg')?.getAttribute('width')).toBe('16');
+  });
 });
 
 describe('Code', () => {

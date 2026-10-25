@@ -32,6 +32,8 @@ const segment = encodeURIComponent;
 export const terminalKeys = {
   all: ['terminal'] as const,
   view: (user: string, workCenter: string) => ['terminal', user, workCenter, 'view'] as const,
+  /** The picker's tile of a work center (UX-7): its view as read from the desk. */
+  tile: (user: string, workCenter: string) => ['terminal', user, workCenter, 'tile'] as const,
   scrapReasons: (user: string) => ['terminal', user, 'scrap-reasons'] as const,
   /** Why the sign-on at a work center was refused (kept for the screen that mounts after it). */
   refusal: (user: string, workCenter: string) => ['terminal', user, workCenter, 'refusal'] as const,

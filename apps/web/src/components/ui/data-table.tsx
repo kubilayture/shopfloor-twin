@@ -61,6 +61,11 @@ export interface Column<Row> {
   readonly priority?: 1 | 2 | 3;
   /** Kept in view on horizontal scroll (the first column). */
   readonly sticky?: boolean;
+  /**
+   * The cell names its row (`th scope="row"`, role `rowheader`): the first column of a table whose
+   * rows are things (a state, a metric), so a screen reader says it with every other cell.
+   */
+  readonly rowHeader?: boolean;
 }
 
 export interface DataTableSelection<Row> {
@@ -812,15 +817,19 @@ export function DataTable<Row>({
                   {rowCheck(row)}
                 </td>
               ) : null}
-              {columns.map((column, index) => (
-                <td
-                  key={column.key}
-                  data-cell={`c-${column.key}`}
-                  className={`${bodyCell} ${DENSITY[density]} ${cellClass(column)} ${column.sticky ? `${STICKY_COLUMN} bg-inherit` : ''} ${!selection && index === 0 ? bar : ''}`}
-                >
-                  {column.cell(row)}
-                </td>
-              ))}
+              {columns.map((column, index) => {
+                const Cell = column.rowHeader ? 'th' : 'td';
+                return (
+                  <Cell
+                    key={column.key}
+                    {...(column.rowHeader ? { scope: 'row' } : {})}
+                    data-cell={`c-${column.key}`}
+                    className={`${bodyCell} ${DENSITY[density]} ${cellClass(column)} ${column.rowHeader ? 'font-normal' : ''} ${column.sticky ? `${STICKY_COLUMN} bg-inherit` : ''} ${!selection && index === 0 ? bar : ''}`}
+                  >
+                    {column.cell(row)}
+                  </Cell>
+                );
+              })}
               {actions ? (
                 <td data-cell="actions" className={`${bodyCell} whitespace-nowrap py-1`}>
                   <div className="flex flex-nowrap items-center justify-end gap-1">

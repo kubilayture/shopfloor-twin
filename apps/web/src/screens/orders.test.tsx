@@ -606,3 +606,264 @@ describe('order detail', () => {
     expect((await screen.findByTestId('order-missing')).textContent).toContain('PO-404');
   });
 });
+
+describe('orders on the design system (UX-6a, #328)', () => {
+  // The fixtures' plant clock is 2026-10-15T06:10Z.
+  const late = { dueDate: '2026-10-15T06:00:00.000Z' };
+
+  it('lists priority as a badge and marks an unfinished order past its due date (P-02)', async () => {
+    const overdue = order('PO-1001', { ...late, priority: 1 });
+    const done = order('PO-1002', { ...late, status: 'completed', priority: 4 });
+    const onTime = order('PO-1003', { priority: 2 });
+    vi.stubGlobal('fetch', orderMes(orderState([overdue, done, onTime])).fetch);
+    await renderApp('/orders');
+    const row = await screen.findByTestId('order-row-PO-1001');
+    await waitFor(() => {
+      expect(within(row).queryByTestId('order-overdue')?.textContent).toBe('Overdue');
+    });
+    expect(row.dataset.overdue).toBe('true');
+    expect(row.querySelector('[data-priority]')?.textContent).toBe('1');
+    // Completed late is done, not overdue; due later is not overdue either.
+    for (const id of ['PO-1002', 'PO-1003']) {
+      const other = screen.getByTestId(`order-row-${id}`);
+      expect(within(other).queryByTestId('order-overdue')).toBeNull();
+      expect(other.dataset.overdue).toBe('false');
+    }
+    // The order id is the row's header, its link the way in.
+    expect(within(row).getByRole('rowheader').textContent).toBe('PO-1001');
+    expect(screen.getByTestId('order-link-PO-1001').getAttribute('href')).toBe('/orders/PO-1001');
+    // The filter has its label inline and the count beside it.
+    expect(screen.getByRole('combobox', { name: 'Show' })).toBe(screen.getByTestId('order-filter'));
+    expect(screen.getByText('3 orders')).toBeTruthy();
+    expect(screen.getByRole('heading', { level: 1, name: 'Production orders' })).toBeTruthy();
+  });
+
+  it('shows an empty state that says why, per filter', async () => {
+    vi.stubGlobal('fetch', orderMes(orderState([])).fetch);
+    await renderApp('/orders');
+    expect((await screen.findByTestId('orders-empty')).textContent).toContain('No order yet');
+    fireEvent.change(screen.getByTestId('order-filter'), { target: { value: 'closed' } });
+    await waitFor(() => {
+      expect(screen.getByTestId('orders-empty').textContent).toContain(
+        'No order matches this filter',
+      );
+    });
+  });
+
+  it('heads the detail with the status, the actions beside it and an index of its sections (Q-01)', async () => {
+    const base = order('PO-1001', { ...late, priority: 3 });
+    vi.stubGlobal('fetch', orderMes(orderState([base])).fetch);
+    await renderApp('/orders/PO-1001');
+    const title = await screen.findByRole('heading', { level: 1, name: 'Order PO-1001' });
+    expect(title.id).toBe('order-title');
+    expect(document.title).toBe('Order PO-1001 · ShopFloor Twin');
+    // Status, overdue and actions in the header: the primary action last, cancel as danger.
+    const header = screen.getByTestId('order-header');
+    expect(header.contains(title)).toBe(true);
+    expect(within(header).getByTestId('order-status').dataset.status).toBe('imported');
+    await waitFor(() => {
+      expect(within(header).queryByTestId('order-overdue')).not.toBeNull();
+    });
+    const buttons = within(header)
+      .getAllByRole('button')
+      .map((button) => button.dataset.testid);
+    expect(buttons).toEqual(['action-cancel', 'action-release']);
+    expect(within(header).getByTestId('order-hold-open').textContent).toBe('Hold this order');
+    expect(screen.getByTestId('action-release').className).toContain('bg-accent');
+    expect(screen.getByTestId('action-cancel').className).toContain('text-alarm-ink');
+    // No "Actions" section any more.
+    expect(screen.queryByRole('heading', { name: 'Actions' })).toBeNull();
+    // The index links to every section heading on the page.
+    const index = screen.getByRole('navigation', { name: 'On this page' });
+    const targets = within(index)
+      .getAllByRole('link')
+      .map((link) => link.getAttribute('href')?.slice(1) ?? '');
+    expect(targets).toHaveLength(9);
+    for (const target of targets) {
+      expect(document.getElementById(target)?.tagName, target).toMatch(/^H2$/);
+    }
+    // The facts leave out the steps not taken yet (Q-02).
+    const facts = screen.getByTestId('order-summary').querySelector('dl');
+    const terms = [...(facts?.querySelectorAll('dt') ?? [])].map((dt) => dt.textContent);
+    expect(terms).toEqual([
+      'Blanks dispatched',
+      'Blanks remaining',
+      'Priority',
+      'Planned start',
+      'Version',
+    ]);
+    // The holds section explains itself without HTTP codes (Q-06).
+    expect(screen.getByTestId('order-holds').textContent).not.toMatch(/409/);
+  });
+
+  it('returns the focus to the action that opened a form', async () => {
+    const base = order('PO-1001');
+    vi.stubGlobal('fetch', orderMes(orderState([base])).fetch);
+    await renderApp('/orders/PO-1001');
+    fireEvent.click(await screen.findByTestId('action-cancel'));
+    expect(screen.queryByTestId('action-release')).toBeNull();
+    fireEvent.click(screen.getByTestId('action-back'));
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByTestId('action-cancel'));
+    });
+  });
+
+  it('tells a read-only role in one line, under the header (Q-08)', async () => {
+    vi.stubGlobal('fetch', orderMes(orderState([order('PO-1001')])).fetch);
+    await renderApp('/orders/PO-1001', { session: sessionOf(['operator']) });
+    const note = await screen.findByTestId('order-read-only');
+    expect(note.textContent).toBe('Your role cannot change orders: they are shown read-only.');
+    expect(screen.queryAllByRole('button', { name: /Release|Cancel order|Dispatch/ })).toEqual([]);
+  });
+
+  it('lists ERP messages as a table with a payload per row, and request ids in a disclosure (Q-05, Q-07)', async () => {
+    const base = order('PO-1001');
+    const state = orderState([base], {
+      details: {
+        'PO-1001': detail(base, {
+          erpMessages: [
+            {
+              id: 1,
+              direction: 'in',
+              kind: 'feed-entry',
+              revision: 2,
+              idempotencyKey: null,
+              status: 'revision-refused',
+              detail: 'older than the held revision',
+              attempts: 1,
+              lastError: null,
+              createdAt: '2026-10-22T07:00:00.000Z',
+              updatedAt: '2026-10-22T07:00:00.000Z',
+              payload: { orderNumber: 'PO-1001' },
+            },
+          ],
+          history: [
+            {
+              id: 1,
+              at: '2026-10-22T07:12:03.000Z',
+              plantAt: null,
+              actor: 'sam',
+              roles: ['supervisor'],
+              authenticated: true,
+              action: 'release',
+              before: null,
+              after: null,
+              requestId: 'req-42',
+            },
+          ],
+        }),
+      },
+    });
+    vi.stubGlobal('fetch', orderMes(state).fetch);
+    await renderApp('/orders/PO-1001');
+    const table = await screen.findByRole('table', { name: 'ERP messages' });
+    const row = within(table).getByTestId('erp-message');
+    expect(row.tagName).toBe('TR');
+    expect(row.textContent).toContain('From the ERP');
+    expect(row.textContent).toContain('Revision refused');
+    expect(row.textContent).toContain('(wall time)');
+    const payload = within(row).getByText('Payload').closest('details');
+    expect(payload?.open).toBe(false);
+    expect(payload?.textContent).toContain('"orderNumber": "PO-1001"');
+    const entry = screen.getByTestId('order-history-entry');
+    const request = within(entry).getByText('Request id').closest('details');
+    expect(request?.open).toBe(false);
+    expect(request?.textContent).toContain('req-42');
+  });
+
+  it('shows an unknown order as not found, with the way back (G-21)', async () => {
+    vi.stubGlobal('fetch', orderMes(orderState([])).fetch);
+    await renderApp('/orders/PO-404');
+    expect(await screen.findByRole('heading', { level: 1, name: 'Order PO-404' })).toBeTruthy();
+    expect(screen.getByRole('heading', { level: 2, name: 'No order PO-404' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'All orders' }).getAttribute('href')).toBe('/orders');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('shows an id the MES cannot hold as not found too', async () => {
+    vi.stubGlobal('fetch', orderMes(orderState([])).fetch);
+    await renderApp('/orders/-bad');
+    expect((await screen.findByTestId('order-missing')).textContent).toContain('-bad');
+  });
+
+  it('opens an action form under the header as an h2, so the outline never skips a level', async () => {
+    vi.stubGlobal('fetch', orderMes(orderState([order('PO-1001')])).fetch);
+    await renderApp('/orders/PO-1001');
+    fireEvent.click(await screen.findByTestId('action-release'));
+    expect(screen.getByRole('heading', { level: 2, name: 'Release' })).toBeTruthy();
+    const levels = within(screen.getByRole('main'))
+      .getAllByRole('heading')
+      .map((heading) => Number(heading.tagName.slice(1)));
+    expect(levels[0]).toBe(1);
+    // Each heading at most one level below the one before it.
+    expect(levels.slice(1).every((level, i) => level - (levels[i] ?? 0) <= 1)).toBe(true);
+  });
+
+  it('makes only the forward step primary: a re-dispatch is secondary (design system 4.1)', async () => {
+    const running = order('PO-1001', { status: 'in-progress', remaining: 5 });
+    vi.stubGlobal('fetch', orderMes(orderState([running])).fetch);
+    await renderApp('/orders/PO-1001');
+    const redispatch = await screen.findByTestId('action-redispatch');
+    expect(redispatch.className).not.toContain('bg-accent');
+    expect(redispatch.className).toContain('border-line-strong');
+  });
+
+  it('makes close the primary action of a completed order, and says nothing when none applies', async () => {
+    const completed = order('PO-1001', { status: 'completed' });
+    const closed = order('PO-1002', { status: 'closed' });
+    vi.stubGlobal('fetch', orderMes(orderState([completed, closed])).fetch);
+    const app = await renderApp('/orders/PO-1001');
+    expect((await screen.findByTestId('action-close')).className).toContain('bg-accent');
+    await settle(() => {
+      app.history.push('/orders/PO-1002');
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('order-detail').dataset.order).toBe('PO-1002');
+    });
+    await screen.findByTestId('order-header');
+    expect(screen.queryByText(/No action applies/)).toBeNull();
+    expect(within(screen.getByTestId('order-header')).queryAllByRole('button')).toEqual([]);
+  });
+
+  it('shows one dash for "nothing" in the operations table', async () => {
+    const base = order('PO-1001', { status: 'in-progress' });
+    const state = orderState([base], {
+      executions: {
+        'PO-1001': execution('PO-1001', {
+          operations: [
+            {
+              operation: 'OP10',
+              workCenter: 'cell-m1',
+              in: 0,
+              good: 0,
+              scrap: {},
+              rework: 0,
+              material: {},
+              completedAt: null,
+            },
+          ],
+        }),
+      },
+    });
+    vi.stubGlobal('fetch', orderMes(state).fetch);
+    await renderApp('/orders/PO-1001');
+    const row = await screen.findByTestId('operation-OP10');
+    expect(row.textContent).not.toContain('–');
+    expect(row.querySelectorAll('[data-missing]')).toHaveLength(3);
+  });
+
+  it('says when the routing incidents could not be read, never "No incident"', async () => {
+    const server = orderMes(orderState([order('PO-1001')]));
+    vi.stubGlobal('fetch', (input: string, init?: RequestInit) =>
+      input.includes('/api/v1/execution-incidents')
+        ? Promise.resolve(problem(500, 'Internal Server Error', 'down', '/x'))
+        : server.fetch(input, init),
+    );
+    await renderApp('/orders/PO-1001');
+    const section = await screen.findByTestId('order-incidents');
+    await waitFor(() => {
+      expect(within(section).getByRole('alert').textContent).toContain('routing incidents');
+    });
+    expect(within(section).queryByTestId('incidents-empty')).toBeNull();
+  });
+});

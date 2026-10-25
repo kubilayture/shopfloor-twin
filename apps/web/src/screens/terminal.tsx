@@ -159,84 +159,85 @@ function WorkCenterTile({
   const running = view?.orders.find((o) => o.order.status === 'in-progress')?.order;
   // Named by the work center alone; the rest describes it (UX-7 review L3), so a screen reader
   // reads "Line A1, link" first and the machines, crew and order after it.
-  const nameId = useId();
   const factsId = useId();
   const machinesId = useId();
   const crewId = useId();
   const orderId = useId();
   return (
-    <li>
-      <Link
-        to="/terminal/$workCenter"
-        params={{ workCenter: id }}
-        data-testid={`terminal-link-${id}`}
-        data-tone={tone ?? 'normal'}
-        aria-labelledby={nameId}
-        aria-describedby={`${factsId} ${machinesId} ${crewId} ${orderId}`}
-        className={`flex h-full min-h-14 flex-col gap-3 rounded-lg border border-line bg-surface p-5 text-ink hover:bg-surface-hover motion-safe:transition-colors motion-safe:duration-fast ${tone ? TONE_BAR[tone] : ''}`}
-      >
-        <span className="flex items-start justify-between gap-3">
-          <span className="min-w-0">
-            <span id={nameId} className="block text-xl font-semibold">
-              {name}
-            </span>
-            <span id={factsId} className="block text-sm text-ink-secondary">
-              {area} · <Code>{id}</Code>
-            </span>
+    <li
+      data-testid={`terminal-tile-${id}`}
+      data-tone={tone ?? 'normal'}
+      className={`relative flex h-full flex-col gap-3 rounded-lg border border-line bg-surface p-5 text-ink hover:bg-surface-hover motion-safe:transition-colors motion-safe:duration-fast ${tone ? TONE_BAR[tone] : ''}`}
+    >
+      <span className="flex items-start justify-between gap-3">
+        <span className="min-w-0">
+          {/* The link is the name (its visible text, WCAG 2.5.3); its box covers the whole
+                tile (a 56 px target and more), with the focus ring around the tile. */}
+          <Link
+            to="/terminal/$workCenter"
+            params={{ workCenter: id }}
+            data-testid={`terminal-link-${id}`}
+            aria-describedby={`${factsId} ${machinesId} ${crewId} ${orderId}`}
+            className="block text-xl font-semibold outline-none after:absolute after:inset-0 after:rounded-lg after:content-[''] focus-visible:after:outline-2 focus-visible:after:outline-offset-2 focus-visible:after:outline-focus"
+          >
+            {name}
+          </Link>
+          <span id={factsId} className="block text-sm text-ink-secondary">
+            {area} · <Code>{id}</Code>
           </span>
-          <Icon name="chevron-right" size={24} className="mt-0.5 text-ink-secondary" />
+        </span>
+        <Icon name="chevron-right" size={24} className="mt-0.5 text-ink-secondary" />
+      </span>
+      <span
+        id={machinesId}
+        className="flex flex-col gap-1.5"
+        data-testid={`terminal-tile-machines-${id}`}
+      >
+        {machines.map(({ item, state }, i) => (
+          <span key={item.id} className="flex flex-wrap items-center justify-between gap-2">
+            {/* The space and comma part the words in the link's description, not on screen. */}
+            <span className="min-w-0 text-sm">{item.name}</span> <StateBadge state={state} />
+            {i < machines.length - 1 ? <span className="sr-only">,</span> : null}
+          </span>
+        ))}
+      </span>
+      <span className="mt-auto flex flex-col gap-1 border-t border-line-subtle pt-3 text-sm">
+        <span
+          id={crewId}
+          className="flex items-start gap-2"
+          data-testid={`terminal-tile-crew-${id}`}
+        >
+          <Icon name="user" size={16} className="mt-0.5 text-ink-secondary" />
+          {view === undefined ? (
+            <span className="text-ink-secondary">
+              {rest.error ? 'Crew not known: the work center could not be read' : 'Reading…'}
+            </span>
+          ) : view.crew.length === 0 ? (
+            <span className="text-ink-secondary">Nobody signed on</span>
+          ) : (
+            <span>
+              Signed on:{' '}
+              <span className="font-medium">{view.crew.map((c) => c.username).join(', ')}</span>
+            </span>
+          )}
         </span>
         <span
-          id={machinesId}
-          className="flex flex-col gap-1.5"
-          data-testid={`terminal-tile-machines-${id}`}
+          id={orderId}
+          className="flex items-start gap-2"
+          data-testid={`terminal-tile-order-${id}`}
         >
-          {machines.map(({ item, state }, i) => (
-            <span key={item.id} className="flex flex-wrap items-center justify-between gap-2">
-              {/* The space and comma part the words in the link's description, not on screen. */}
-              <span className="min-w-0 text-sm">{item.name}</span> <StateBadge state={state} />
-              {i < machines.length - 1 ? <span className="sr-only">,</span> : null}
+          <Icon name="play" size={16} className="mt-0.5 text-ink-secondary" />
+          {view === undefined ? (
+            <span className="text-ink-secondary">Order not known</span>
+          ) : running ? (
+            <span>
+              In progress: <Code className="font-medium">{running.id}</Code> · {running.product}
             </span>
-          ))}
+          ) : (
+            <span className="text-ink-secondary">No order in progress</span>
+          )}
         </span>
-        <span className="mt-auto flex flex-col gap-1 border-t border-line-subtle pt-3 text-sm">
-          <span
-            id={crewId}
-            className="flex items-start gap-2"
-            data-testid={`terminal-tile-crew-${id}`}
-          >
-            <Icon name="user" size={16} className="mt-0.5 text-ink-secondary" />
-            {view === undefined ? (
-              <span className="text-ink-secondary">
-                {rest.error ? 'Crew not known: the work center could not be read' : 'Reading…'}
-              </span>
-            ) : view.crew.length === 0 ? (
-              <span className="text-ink-secondary">Nobody signed on</span>
-            ) : (
-              <span>
-                Signed on:{' '}
-                <span className="font-medium">{view.crew.map((c) => c.username).join(', ')}</span>
-              </span>
-            )}
-          </span>
-          <span
-            id={orderId}
-            className="flex items-start gap-2"
-            data-testid={`terminal-tile-order-${id}`}
-          >
-            <Icon name="play" size={16} className="mt-0.5 text-ink-secondary" />
-            {view === undefined ? (
-              <span className="text-ink-secondary">Order not known</span>
-            ) : running ? (
-              <span>
-                In progress: <Code className="font-medium">{running.id}</Code> · {running.product}
-              </span>
-            ) : (
-              <span className="text-ink-secondary">No order in progress</span>
-            )}
-          </span>
-        </span>
-      </Link>
+      </span>
     </li>
   );
 }

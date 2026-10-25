@@ -837,12 +837,17 @@ describe('the operator terminal (#177)', () => {
       'Signed on: olga',
       'In progress: O-1 · VB-100',
     ]);
-    expect(line.dataset.tone).toBe('normal');
-    expect(line.className).not.toContain('border-l-4');
+    const lineTile = screen.getByTestId('terminal-tile-line-a1');
+    expect(lineTile.dataset.tone).toBe('normal');
+    expect(lineTile.className).not.toContain('border-l-4');
+    // The link's visible text is its name (WCAG 2.5.3), its box the whole tile.
+    expect(line.textContent).toBe('Line A1');
+    expect(line.className).toContain('after:inset-0');
     // A machine down in Cell M1: its tile carries the alarm bar and the state's word (line order).
     const cell = screen.getByTestId('terminal-link-cell-m1');
-    expect(cell.dataset.tone).toBe('alarm');
-    expect(cell.className).toContain('border-l-alarm-border');
+    const cellTile = screen.getByTestId('terminal-tile-cell-m1');
+    expect(cellTile.dataset.tone).toBe('alarm');
+    expect(cellTile.className).toContain('border-l-alarm-border');
     expect(
       within(screen.getByTestId('terminal-tile-machines-cell-m1'))
         .getAllByText(/Down|Idle/)

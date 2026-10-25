@@ -1,5 +1,5 @@
-import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import {
   devices,
   test,
@@ -7,8 +7,10 @@ import {
   type Browser,
   type BrowserContext,
   type Page,
+  type Request,
 } from '@playwright/test';
 import {
+  budgetFromEnv,
   duplicateTitles,
   entryKey,
   filterFromEnv,
@@ -17,7 +19,9 @@ import {
   routeSelected,
   statesOf,
   summarize,
+  validateRoutes,
   widthsOf,
+  SHELL,
   zeroCounts,
   type A11yReport,
   type A11yRole,
@@ -65,8 +69,9 @@ import { DISCOVERY, ROUTES, type RouteSpec } from './routes.ts';
  * `A11Y_IDS` (JSON) gives detail ids, the rest are found on the list pages.
  */
 const web = process.env.RECONCILE_WEB_URL ?? '';
-const BUDGET_MS = Number(process.env.A11Y_BUDGET_MS ?? 15 * 60_000);
-const RESULTS = process.env.A11Y_RESULTS ?? join(import.meta.dirname, '../../results/a11y');
+const RESULTS = process.env.A11Y_RESULTS
+  ? resolve(process.env.INIT_CWD ?? process.cwd(), process.env.A11Y_RESULTS)
+  : join(import.meta.dirname, '../../results/a11y');
 const SCREENS = 'screens';
 /** Keyboard sampling widths: the desktop and the phone (the drawer layout). */
 const KEYBOARD_WIDTHS = [1440, 390];
@@ -89,18 +94,42 @@ const message = (error: unknown) =>
 
 const fileSafe = (text: string) => text.replace(/[^A-Za-z0-9_-]+/g, '-');
 
+/**
+ * Records every request other than GET and HEAD a context sends into `writes`, the login
+ * (`POST /api/v1/session`) excepted: the harness must read only, so each is a finding.
+ */
+function watchWrites(context: BrowserContext, writes: string[]): void {
+  context.on('request', (request: Request) => {
+    const method = request.method();
+    if (method === 'GET' || method === 'HEAD') return;
+    const { pathname } = new URL(request.url());
+    if (method === 'POST' && pathname === '/api/v1/session') return;
+    writes.push(`${method} ${pathname}`);
+  });
+}
+
 test('visual and accessibility harness (report-only)', async ({ browser }) => {
   test.skip(web === '', 'runs inside pnpm test:reconcile with RECONCILE_A11Y=1');
+  // A typo in a variable throws here: the run cannot check what it was asked to.
+  const BUDGET_MS = budgetFromEnv(process.env);
   test.setTimeout(BUDGET_MS + 10 * 60_000);
   const filter = filterFromEnv(process.env);
+  validateRoutes(filter, ROUTES);
   const started = Date.now();
   const startedAt = new Date(started).toISOString();
   const overBudget = () => Date.now() - started > BUDGET_MS;
+  // A previous run's output in the same folder (a before/after pair kept apart) goes first.
+  await rm(join(RESULTS, SCREENS), { recursive: true, force: true });
+  await rm(join(RESULTS, 'report.json'), { force: true });
+  await rm(join(RESULTS, 'summary.md'), { force: true });
   await mkdir(join(RESULTS, SCREENS), { recursive: true });
 
   const entries: Entry[] = [];
   const skipped: Skipped[] = [];
   const notReached: Skipped[] = [];
+  const loginFailed: Skipped[] = [];
+  let loginFailedPages = 0;
+  const writes: string[] = [];
   const keyboard: KeyboardSample[] = [];
   const overlays: OverlayCheck[] = [];
   const touchScroll: TouchScrollCheck[] = [];
@@ -112,7 +141,7 @@ test('visual and accessibility harness (report-only)', async ({ browser }) => {
   const roles = rolesOf(filter);
   const states = statesOf(filter);
   const routes = ROUTES.filter((r) => routeSelected(filter, r.id, r.path));
-  const shell = filter.routes.length === 0 || filter.routes.includes('shell');
+  const shell = filter.routes.length === 0 || filter.routes.includes(SHELL);
 
   const write = async () => {
     const report: A11yReport = {
@@ -130,12 +159,16 @@ test('visual and accessibility harness (report-only)', async ({ browser }) => {
         failed: entries.filter((e) => e.error !== undefined).length,
         skipped,
         notReached,
+        notReachedPages: notReached.length * widths.length,
+        loginFailed,
+        loginFailedPages,
       },
       entries,
       titles: { byRoute: titles, duplicates: duplicateTitles(titles) },
       keyboard,
       overlays,
       touchScroll,
+      writes,
     };
     await writeFile(join(RESULTS, 'report.json'), `${JSON.stringify(report, null, 1)}\n`);
     await writeFile(join(RESULTS, 'summary.md'), summarize(report));
@@ -158,10 +191,16 @@ test('visual and accessibility harness (report-only)', async ({ browser }) => {
   /** A context for `role`, logged in (not for `signed-out`), its page at 1440 px. */
   const session = async (role: A11yRole): Promise<{ context: BrowserContext; page: Page }> => {
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-    const page = await context.newPage();
-    if (role === 'supervisor') await logIn(page);
-    else if (role !== 'signed-out') await logIn(page, accounts.get(role));
-    return { context, page };
+    watchWrites(context, writes);
+    try {
+      const page = await context.newPage();
+      if (role === 'supervisor') await logIn(page);
+      else if (role !== 'signed-out') await logIn(page, accounts.get(role));
+      return { context, page };
+    } catch (error) {
+      await context.close();
+      throw error;
+    }
   };
 
   // The ids of the detail routes: A11Y_IDS first, then the first link of each list page.
@@ -237,6 +276,7 @@ test('visual and accessibility harness (report-only)', async ({ browser }) => {
           state: item.state,
           role: item.role,
           width,
+          theme: 'light',
           url: item.url,
           title: '',
           screenshot: null,
@@ -255,6 +295,7 @@ test('visual and accessibility harness (report-only)', async ({ browser }) => {
         state: item.state,
         role: item.role,
         width,
+        theme: 'light' as const,
         url: item.url,
       };
       try {
@@ -298,6 +339,7 @@ test('visual and accessibility harness (report-only)', async ({ browser }) => {
     }
   };
 
+  const failedRoles = new Set<A11yRole>();
   /** Runs a tier, one context per role; past the budget the rest goes to `notReached`. */
   const runTier = async (items: readonly Item[]) => {
     const sessions = new Map<A11yRole, { context: BrowserContext; page: Page }>([
@@ -315,18 +357,25 @@ test('visual and accessibility harness (report-only)', async ({ browser }) => {
           });
           continue;
         }
+        // A role whose login failed once is not tried again: its pages count as lost to it.
+        if (failedRoles.has(item.role)) {
+          loginFailedPages += widths.length;
+          continue;
+        }
         let s = sessions.get(item.role);
         if (!s) {
           try {
             s = await session(item.role);
           } catch (error) {
-            skipped.push({
+            failedRoles.add(item.role);
+            loginFailed.push({
               route: '*',
               state: item.state,
               role: item.role,
               reason: `login failed: ${message(error)}`,
             });
-            accounts.set(item.role, undefined);
+            loginFailedPages += widths.length;
+            await write();
             continue;
           }
           sessions.set(item.role, s);
@@ -374,13 +423,25 @@ test('visual and accessibility harness (report-only)', async ({ browser }) => {
   // The nav drawer at each drawer width, and touch scrolling behind it.
   if (shell && !overBudget()) {
     for (const width of DRAWER_WIDTHS.filter((w) => widths.includes(w))) {
-      await page.setViewportSize({ width, height: heightFor(width) });
-      await page.goto('/');
-      await settle(page);
-      overlays.push(await checkDrawer(page, 'overview', width));
+      // A drawer that cannot be checked is a finding, never a failed run.
+      try {
+        await page.setViewportSize({ width, height: heightFor(width) });
+        await page.goto('/');
+        await settle(page);
+        overlays.push(await checkDrawer(page, 'overview', width));
+      } catch (error) {
+        overlays.push({
+          route: 'overview',
+          width,
+          kind: 'nav drawer',
+          trigger: 'Menu',
+          checks: {},
+          findings: [`could not be checked: ${message(error)}`],
+        });
+      }
     }
-    touchScroll.push(await chromiumTouchScroll(browser));
-    touchScroll.push(await webkitTouchScroll());
+    touchScroll.push(await chromiumTouchScroll(browser, writes));
+    touchScroll.push(await webkitTouchScroll(writes));
   }
   await write();
 
@@ -419,7 +480,7 @@ async function longPage(page: Page): Promise<string | undefined> {
  * (`Input.synthesizeScrollGesture`) on the backdrop and inside the nav while the drawer is open;
  * the page behind must not move.
  */
-async function chromiumTouchScroll(browser: Browser): Promise<TouchScrollCheck> {
+async function chromiumTouchScroll(browser: Browser, writes: string[]): Promise<TouchScrollCheck> {
   const engine = 'Chromium, phone emulation';
   const context = await browser.newContext({
     viewport: { width: 390, height: 844 },
@@ -427,6 +488,7 @@ async function chromiumTouchScroll(browser: Browser): Promise<TouchScrollCheck> 
     hasTouch: true,
     deviceScaleFactor: 2,
   });
+  watchWrites(context, writes);
   try {
     const page = await context.newPage();
     await logIn(page);
@@ -442,7 +504,7 @@ async function chromiumTouchScroll(browser: Browser): Promise<TouchScrollCheck> 
     await page.evaluate(() => {
       window.scrollTo(0, 0);
     });
-    await menuButton(page).tap();
+    await menuButton(page).tap({ timeout: 3_000 });
     await frames(page, 400);
     const cdp = await context.newCDPSession(page);
     const gesture = (x: number) =>
@@ -483,30 +545,38 @@ async function chromiumTouchScroll(browser: Browser): Promise<TouchScrollCheck> 
  *
  * TLS: WebKit takes no SPKI pin and the stack's dev CA is not in the system's trust store; rather
  * than `ignoreHTTPSErrors` (never, playwright.config.ts), every request is routed through the
- * test runner, which trusts the dev CA (NODE_EXTRA_CA_CERTS). The live WebSocket is not routed, so
- * the page may show itself offline; the drawer does not depend on it.
+ * test runner, which trusts the stack's dev CA (NODE_EXTRA_CA_CERTS): a CA trust, weaker than
+ * Chromium's pin to the one key, acceptable for a stack on 127.0.0.1. Only the stack's own origin
+ * is fetched; any other request is aborted. The live WebSocket is not routed, so the page may show
+ * itself offline; the drawer does not depend on it.
  */
-async function webkitTouchScroll(): Promise<TouchScrollCheck> {
+async function webkitTouchScroll(writes: string[]): Promise<TouchScrollCheck> {
   const engine = 'WebKit, iPhone 15 profile';
   let browser: Browser;
   try {
     browser = await webkit.launch();
-  } catch {
+  } catch (error) {
     return {
       engine,
       route: '-',
       ran: false,
       detail: {},
       findings: [
-        'WebKit is not installed (pnpm --filter @shopfloor/e2e exec playwright install webkit)',
+        `WebKit did not launch (${message(error)}); to install it: pnpm --filter @shopfloor/e2e playwright:install:webkit`,
       ],
     };
   }
   try {
     const context = await browser.newContext({ ...devices['iPhone 15'], baseURL: web });
+    watchWrites(context, writes);
     const origin = new URL(web).origin;
     await context.route('**/*', async (route) => {
       const request = route.request();
+      // The runner fetches for the stack's own origin only; it is no proxy to anywhere else.
+      if (new URL(request.url()).origin !== origin) {
+        await route.abort();
+        return;
+      }
       // WebKit leaves `Origin` out of an intercepted request's headers; the MES refuses a write
       // without it (ADR-0023), so the page's own origin goes back on, as the browser sends it.
       const write = !['GET', 'HEAD'].includes(request.method());
@@ -529,7 +599,7 @@ async function webkitTouchScroll(): Promise<TouchScrollCheck> {
     await page.evaluate(() => {
       window.scrollTo(0, 0);
     });
-    await menuButton(page).tap();
+    await menuButton(page).tap({ timeout: 3_000 });
     await frames(page, 400);
     let wheel = 'not supported';
     try {

@@ -7,22 +7,37 @@
  */
 import { readFile, writeFile } from 'node:fs/promises';
 import { ROUTES } from '../browser/a11y/routes.ts';
-import { diffMarkdown, filterFromEnv, routeSelected, type A11yReport } from './a11y-report.ts';
+import {
+  diffMarkdown,
+  filterFromEnv,
+  routeSelected,
+  validateRoutes,
+  type A11yFilter,
+  type A11yReport,
+} from './a11y-report.ts';
 
 const [beforePath, afterPath, outPath] = process.argv.slice(2);
 if (beforePath === undefined || afterPath === undefined) {
   console.error('usage: a11y:diff <before report.json> <after report.json> [out.md]');
   process.exit(2);
 }
-const filter = filterFromEnv(process.env);
-// Path prefixes (`/orders`) become the ids of the routes they select, as in the run.
+// A typo is refused; path prefixes become the ids of the routes they select.
+let filter: A11yFilter;
+try {
+  filter = filterFromEnv(process.env);
+  validateRoutes(filter, ROUTES);
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(2);
+}
 const routes =
   filter.routes.length === 0
     ? []
     : ROUTES.filter((r) => routeSelected(filter, r.id, r.path)).map((r) => r.id);
 if (filter.routes.length > 0 && routes.length === 0) {
-  console.error(`A11Y_ROUTES selects no route: ${filter.routes.join(', ')}`);
-  process.exit(2);
+  // Only `shell`: its checks are not pages, so there is nothing to compare.
+  console.log(`A11Y_ROUTES=${filter.routes.join(',')} selects no page: nothing to diff.`);
+  process.exit(0);
 }
 const read = async (path: string) => JSON.parse(await readFile(path, 'utf8')) as A11yReport;
 const markdown = diffMarkdown(await read(beforePath), await read(afterPath), {

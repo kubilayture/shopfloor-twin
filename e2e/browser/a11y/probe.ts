@@ -445,7 +445,7 @@ export async function checkDrawer(page: Page, route: string, width: number): Pro
       const r = el.getBoundingClientRect();
       return r.right > 0 && r.width > 0;
     }, nav);
-  await button.click();
+  await button.click({ timeout: 3_000 });
   await frames(page, 400);
   checks.opens = await isOpen();
   if (checks.opens) {
@@ -466,7 +466,7 @@ export async function checkDrawer(page: Page, route: string, width: number): Pro
     await frames(page, 400);
     checks.escapeCloses = !(await isOpen());
     checks.focusReturns = await button.evaluate((el) => el === document.activeElement);
-    await button.click();
+    await button.click({ timeout: 3_000 });
     await frames(page, 400);
     if (await isOpen()) {
       const box = await page.evaluate(

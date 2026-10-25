@@ -11,6 +11,9 @@ import {
   iosLockFinding,
   longestTableRun,
   routeSelected,
+  validateRoutes,
+  budgetFromEnv,
+  entryKey,
   summarize,
   zeroCounts,
   type A11yReport,
@@ -56,12 +59,16 @@ const report = (entries: Entry[], over: Partial<A11yReport> = {}): A11yReport =>
     failed: 0,
     skipped: [],
     notReached: [],
+    notReachedPages: 0,
+    loginFailed: [],
+    loginFailedPages: 0,
   },
   entries,
   titles: { byRoute: {}, duplicates: [] },
   keyboard: [],
   overlays: [],
   touchScroll: [],
+  writes: [],
   ...over,
 });
 
@@ -80,6 +87,12 @@ describe('filterFromEnv', () => {
       states: [],
     });
     expect(filterFromEnv({})).toEqual({ routes: [], roles: [], widths: [], states: [] });
+    expect(filterFromEnv({ A11Y_WIDTHS: '1440,1440,390', A11Y_ROUTES: 'orders,orders' })).toEqual({
+      routes: ['orders'],
+      roles: [],
+      widths: [1440, 390],
+      states: [],
+    });
   });
 
   it('refuses an unknown role, width or state rather than checking nothing', () => {
@@ -87,6 +100,52 @@ describe('filterFromEnv', () => {
     expect(() => filterFromEnv({ A11Y_WIDTHS: 'wide' })).toThrow(/not a width/);
     expect(() => filterFromEnv({ A11Y_WIDTHS: '200' })).toThrow(/not a width/);
     expect(() => filterFromEnv({ A11Y_STATES: 'loading' })).toThrow(/unknown state/);
+  });
+});
+
+describe('validateRoutes', () => {
+  const routes = [
+    { id: 'orders', path: '/orders' },
+    { id: 'order', path: '/orders/$id' },
+    { id: 'overview', path: '/' },
+  ];
+  const filter = (r: string[]) => ({ routes: r, roles: [], widths: [], states: [] });
+
+  it('accepts shell, route ids and path prefixes that select a route', () => {
+    expect(() => {
+      validateRoutes(filter(['shell', 'order', '/orders', '/']), routes);
+    }).not.toThrow();
+    expect(() => {
+      validateRoutes(filter([]), routes);
+    }).not.toThrow();
+  });
+
+  it('names every entry that is none of them, in a mixed list too', () => {
+    expect(() => {
+      validateRoutes(filter(['orders', 'ordrs', '/ordr', '/trace']), routes);
+    }).toThrow(/no route ordrs, \/ordr, \/trace /);
+    expect(() => {
+      validateRoutes(filter(['Shell']), routes);
+    }).toThrow(/no route Shell /);
+  });
+});
+
+describe('budgetFromEnv', () => {
+  it('is 15 minutes by default and refuses anything but a positive whole number', () => {
+    expect(budgetFromEnv({})).toBe(900_000);
+    expect(budgetFromEnv({ A11Y_BUDGET_MS: '' })).toBe(900_000);
+    expect(budgetFromEnv({ A11Y_BUDGET_MS: '60000' })).toBe(60_000);
+    for (const bad of ['15m', '0', '-1', '1.5']) {
+      expect(() => budgetFromEnv({ A11Y_BUDGET_MS: bad })).toThrow(/A11Y_BUDGET_MS/);
+    }
+  });
+});
+
+describe('entryKey', () => {
+  it('reads a missing theme as light, so reports from before the field still match', () => {
+    expect(entryKey(entry())).toBe('orders|data|supervisor|1440|light');
+    expect(entryKey(entry({ theme: 'light' }))).toBe(entryKey(entry()));
+    expect(entryKey(entry({ theme: 'dark' }))).toBe('orders|data|supervisor|1440|dark');
   });
 });
 
@@ -194,14 +253,14 @@ describe('diffReports', () => {
   it('lists only the pages that changed (by key), with the rules each side has alone', () => {
     expect(diffReports(before, after)).toEqual([
       {
-        key: 'orders|data|supervisor|1440',
+        key: 'orders|data|supervisor|1440|light',
         before: { ...zeroCounts(), serious: 1 },
         after: { ...zeroCounts(), critical: 1 },
         added: ['aria-valid-attr'],
         removed: ['color-contrast'],
       },
       {
-        key: 'order|data|supervisor|1440',
+        key: 'order|data|supervisor|1440|light',
         before: null,
         after: zeroCounts(),
         added: [],
@@ -216,7 +275,7 @@ describe('diffReports', () => {
       diffReports(before, failed, { routes: ['orders'], roles: [], widths: [1440], states: [] }),
     ).toEqual([
       {
-        key: 'orders|data|supervisor|1440',
+        key: 'orders|data|supervisor|1440|light',
         before: { ...zeroCounts(), serious: 1 },
         after: null,
         added: [],
@@ -234,9 +293,11 @@ describe('diffReports', () => {
     expect(md).toContain('**After:** 1 critical, 0 serious, 0 moderate, 1 minor.');
     expect(md).toContain('more critical or serious rules than before:** 1.');
     expect(md).toContain(
-      '| orders, data, supervisor, 1440 | 0/1/0/0 | 1/0/0/0 | aria-valid-attr | color-contrast |',
+      '| orders, data, supervisor, 1440, light | 0/1/0/0 | 1/0/0/0 | aria-valid-attr | color-contrast |',
     );
-    expect(md).toContain('| order, data, supervisor, 1440 | not measured | 0/0/0/0 | – | – |');
+    expect(md).toContain(
+      '| order, data, supervisor, 1440, light | not measured | 0/0/0/0 | – | – |',
+    );
     expect(diffMarkdown(before, before)).toContain('No page changed.');
     // A page worse on serious alone counts too; one better on both does not.
     const serious = report([
@@ -274,6 +335,11 @@ describe('summarize', () => {
             failed: 1,
             skipped: [],
             notReached: [{ route: 'oee', state: 'data', role: 'operator', reason: 'budget' }],
+            notReachedPages: 5,
+            loginFailed: [
+              { route: '*', state: 'data', role: 'quality', reason: 'login failed: x' },
+            ],
+            loginFailedPages: 2,
           },
           titles: {
             byRoute: { orders: 'Orders', order: 'Orders' },
@@ -284,13 +350,24 @@ describe('summarize', () => {
     );
     expect(md).toContain('(**stopped by the budget**)');
     expect(md).toContain('2 of 10 pages measured');
-    expect(md).toContain('1 failed to load, 7 not reached within the budget; 0 route');
+    expect(md).toContain(
+      '1 failed to load, 5 not reached within the budget, 2 lost to a failed login (quality); 0 route',
+    );
+    expect(md).toContain('None: the harness only read.');
     expect(md).toContain('0 critical, 1 serious, 0 moderate, 0 minor');
     expect(md).toContain('| orders | 2 | 0 | 1 | 0 | 0 | 390 | color-contrast |');
     expect(md).not.toContain('| oee |');
     expect(md).toContain('| color-contrast | serious | 1 | 1 | color-contrast help |');
     expect(md).toContain('"Orders" (order, orders)');
     expect(md).toContain('- operator / data: 1 routes, at every width');
+  });
+});
+
+describe('summarize, writes', () => {
+  it('reports each write the harness caused', () => {
+    expect(summarize(report([], { writes: ['POST /api/v1/alarms/x/ack'] }))).toContain(
+      '**The harness caused 1:** POST /api/v1/alarms/x/ack.',
+    );
   });
 });
 
@@ -311,13 +388,21 @@ describe('iosLockFinding', () => {
 
 describe('the route catalogue', () => {
   it("lists every route of the web app's router, once", async () => {
-    const dir = join(REPO, 'apps/web/src/routes');
-    const files = (await readdir(dir)).filter((f) => f.endsWith('.ts') && !f.includes('.test.'));
+    const dir = join(REPO, 'apps/web/src');
+    const files = (await readdir(dir, { recursive: true })).filter(
+      (f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f),
+    );
     const paths: string[] = [];
+    let creates = 0;
     for (const file of files) {
       const text = await readFile(join(dir, file), 'utf8');
-      for (const m of text.matchAll(/^\s+path: '([^']+)',$/gm)) if (m[1]) paths.push(m[1]);
+      const calls = [...text.matchAll(/\bcreateRoute\(/g)].length;
+      if (calls === 0) continue;
+      creates += calls;
+      for (const m of text.matchAll(/\bpath:\s*['"`]([^'"`]+)['"`]/g)) if (m[1]) paths.push(m[1]);
     }
+    // Every createRoute( has a path found here: an unmatched spelling fails loudly.
+    expect(paths).toHaveLength(creates);
     const listed = ROUTES.map((r) => r.path).filter((p) => p !== '/*');
     expect(paths.length).toBeGreaterThan(20);
     expect([...listed].sort()).toEqual([...paths].sort());

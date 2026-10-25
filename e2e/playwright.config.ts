@@ -40,7 +40,8 @@ import { WEB_SPKI_ENV, chromiumSpkiArgument } from '@shopfloor/test-kit/tls';
  * The visual and accessibility harness (UX-1g, #321; browser/a11y) has `a11y`: report-only, run by
  * the reconciliation after its passes when RECONCILE_A11Y=1 (e2e/results/a11y).
  * Every run holds the host-wide heavy-suite lock (#228, src/playwright-lock.ts).
- * Chromium only. On failure: a trace and a screenshot in e2e/results/<pass>/playwright/<project>.
+ * Chromium for every project; `a11y` also launches WebKit's iPhone profile for its touch-scroll
+ * check when WebKit is installed (`pnpm --filter @shopfloor/e2e playwright:install:webkit`). On failure: a trace and a screenshot in e2e/results/<pass>/playwright/<project>.
  *
  * TLS (P9-14): the web front serves a certificate of the stack's own dev CA, which Chromium doesn't
  * trust. The harness passes the SPKI hash of that certificate (RECONCILE_WEB_SPKI, from the pki

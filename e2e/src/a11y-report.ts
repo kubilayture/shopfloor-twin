@@ -39,12 +39,18 @@ export interface Violation {
 
 export type ImpactCounts = Record<Impact, number>;
 
-/** One route in one state, as one role, at one width. */
+/** The colour themes; only `light` until UX-12 ships the switch (UX-F1 adds `dark`). */
+export const THEMES = ['light', 'dark'] as const;
+export type Theme = (typeof THEMES)[number];
+
+/** One route in one state, as one role, at one width (in one theme). */
 export interface Entry {
   readonly route: string;
   readonly state: PageState;
   readonly role: A11yRole;
   readonly width: number;
+  /** Absent in a report from before the field: `light`, so diffs across it keep matching. */
+  readonly theme?: Theme;
   /** The path loaded, with its query. */
   readonly url: string;
   readonly title: string;
@@ -115,11 +121,19 @@ export interface A11yReport {
   readonly axe: { readonly version: string; readonly tags: readonly string[] };
   readonly filter: A11yFilter;
   readonly coverage: {
+    /** Pages: route × state × role × width. */
     readonly planned: number;
     readonly measured: number;
+    /** Pages that failed to load or to measure. */
     readonly failed: number;
+    /** Combinations without an id for their detail route (each at every width, not planned). */
     readonly skipped: readonly Skipped[];
+    /** Combinations the budget left (each at every width), and their pages. */
     readonly notReached: readonly Skipped[];
+    readonly notReachedPages: number;
+    /** Roles whose login failed (one row each), and the planned pages it cost. */
+    readonly loginFailed: readonly Skipped[];
+    readonly loginFailedPages: number;
   };
   readonly entries: readonly Entry[];
   readonly titles: {
@@ -130,6 +144,11 @@ export interface A11yReport {
   readonly keyboard: readonly KeyboardSample[];
   readonly overlays: readonly OverlayCheck[];
   readonly touchScroll: readonly TouchScrollCheck[];
+  /**
+   * Requests other than GET and HEAD the harness caused, the login excepted: it must read only,
+   * so each is a finding (`POST /api/v1/…`).
+   */
+  readonly writes: readonly string[];
 }
 
 /** What a run covers: each list empty means all. */
@@ -152,9 +171,9 @@ const list = (value: string | undefined): string[] =>
  * width or state is an error: a typo must not silently check nothing.
  */
 export function filterFromEnv(env: Readonly<Record<string, string | undefined>>): A11yFilter {
-  const roles = list(env.A11Y_ROLES);
-  const widths = list(env.A11Y_WIDTHS).map(Number);
-  const states = list(env.A11Y_STATES);
+  const roles = [...new Set(list(env.A11Y_ROLES))];
+  const widths = [...new Set(list(env.A11Y_WIDTHS).map(Number))];
+  const states = [...new Set(list(env.A11Y_STATES))];
   const badRole = roles.find((r) => !(A11Y_ROLES as readonly string[]).includes(r));
   if (badRole !== undefined) throw new Error(`A11Y_ROLES: unknown role ${badRole}`);
   const badWidth = widths.find((w) => !Number.isInteger(w) || w < 320 || w > 3840);
@@ -162,11 +181,46 @@ export function filterFromEnv(env: Readonly<Record<string, string | undefined>>)
   const badState = states.find((s) => !(STATES as readonly string[]).includes(s));
   if (badState !== undefined) throw new Error(`A11Y_STATES: unknown state ${badState}`);
   return {
-    routes: list(env.A11Y_ROUTES),
+    routes: [...new Set(list(env.A11Y_ROUTES))],
     roles: roles as A11yRole[],
     widths,
     states: states as PageState[],
   };
+}
+
+/** The pseudo-route of the shell's checks: the nav drawer and touch scrolling behind it. */
+export const SHELL = 'shell';
+
+/**
+ * Every `A11Y_ROUTES` entry must be `shell`, a route id or a path prefix (`/orders`) that selects
+ * at least one route: a typo throws, naming each bad entry, rather than checking nothing.
+ */
+export function validateRoutes(
+  filter: A11yFilter,
+  routes: readonly { readonly id: string; readonly path: string }[],
+): void {
+  const bad = filter.routes.filter(
+    (entry) =>
+      entry !== SHELL &&
+      !routes.some((r) => r.id === entry) &&
+      !(entry.startsWith('/') && routes.some((r) => pathMatches(r.path, entry))),
+  );
+  if (bad.length > 0) {
+    throw new Error(
+      `A11Y_ROUTES: no route ${bad.join(', ')} (route ids: ${routes.map((r) => r.id).join(', ')}; or a path prefix, or ${SHELL})`,
+    );
+  }
+}
+
+/** `A11Y_BUDGET_MS`: a positive whole number of milliseconds, 15 minutes by default. */
+export function budgetFromEnv(env: Readonly<Record<string, string | undefined>>): number {
+  const raw = env.A11Y_BUDGET_MS;
+  if (raw === undefined || raw === '') return 15 * 60_000;
+  const ms = Number(raw);
+  if (!Number.isSafeInteger(ms) || ms <= 0) {
+    throw new Error(`A11Y_BUDGET_MS: not a positive whole number of milliseconds: ${raw}`);
+  }
+  return ms;
 }
 
 /** Whether a route (its id and path pattern) passes the filter's routes. */
@@ -258,8 +312,9 @@ export function longestTableRun(stops: readonly Pick<FocusStop, 'inTable'>[]): n
   return longest;
 }
 
-export const entryKey = (e: Pick<Entry, 'route' | 'state' | 'role' | 'width'>): string =>
-  `${e.route}|${e.state}|${e.role}|${String(e.width)}`;
+/** A page's key: a missing theme is `light`, so a report from before the field still matches. */
+export const entryKey = (e: Pick<Entry, 'route' | 'state' | 'role' | 'width' | 'theme'>): string =>
+  `${e.route}|${e.state}|${e.role}|${String(e.width)}|${e.theme ?? 'light'}`;
 
 const sum = (a: ImpactCounts, b: ImpactCounts): ImpactCounts => ({
   critical: a.critical + b.critical,
@@ -298,7 +353,7 @@ export function summarize(report: A11yReport): string {
     f.states.length > 0 ? `states ${f.states.join(', ')}` : '',
   ].filter((t) => t !== '');
   out.push(
-    `- **Coverage:** ${String(report.coverage.measured)} of ${String(report.coverage.planned)} pages measured (route × state × role × width), ${String(report.coverage.failed)} failed to load, ${String(report.coverage.planned - report.coverage.measured - report.coverage.failed)} not reached within the budget; ${String(report.coverage.skipped.length)} route × state × role combinations skipped (no id).${filterText.length > 0 ? ` Filter: ${filterText.join('; ')}.` : ''}`,
+    `- **Coverage:** ${String(report.coverage.measured)} of ${String(report.coverage.planned)} pages measured (route × state × role × width), ${String(report.coverage.failed)} failed to load, ${String(report.coverage.notReachedPages)} not reached within the budget, ${String(report.coverage.loginFailedPages)} lost to a failed login${report.coverage.loginFailed.length > 0 ? ` (${report.coverage.loginFailed.map((l) => l.role).join(', ')})` : ''}; ${String(report.coverage.skipped.length)} route × state × role combinations skipped (no id).${filterText.length > 0 ? ` Filter: ${filterText.join('; ')}.` : ''}`,
     `- **Rule violations (rule × page):** ${countsText(total)}.`,
     `- **Pages wider than the viewport:** ${String(measured.filter((e) => e.overflowX).length)}.`,
     '',
@@ -390,6 +445,14 @@ export function summarize(report: A11yReport): string {
     }
     out.push('');
   }
+
+  out.push('## Writes', '');
+  out.push(
+    report.writes.length === 0
+      ? 'None: the harness only read.'
+      : `**The harness caused ${String(report.writes.length)}:** ${report.writes.slice(0, 10).join('; ')}.`,
+    '',
+  );
 
   out.push('## Touch scrolling behind the open nav drawer', '');
   if (report.touchScroll.length === 0) out.push('Not run.', '');
@@ -496,7 +559,7 @@ export function diffMarkdown(
   const c = (x: ImpactCounts | null) =>
     x === null ? 'not measured' : IMPACTS.map((i) => String(x[i])).join('/');
   out.push(
-    '| Page (route, state, role, width) | Before (c/s/m/m) | After | New rules | Gone rules |',
+    '| Page (route, state, role, width, theme) | Before (c/s/m/m) | After | New rules | Gone rules |',
     '| --- | --- | --- | --- | --- |',
   );
   for (const r of rows) {

@@ -101,12 +101,16 @@
  * UX-1g (#321): with RECONCILE_A11Y=1 the last pass, once its checks are done and before its stack
  * goes, runs Playwright's `a11y` project, the visual and accessibility harness (browser/a11y):
  * report-only, reading pages only, within A11Y_BUDGET_MS (default 15 minutes, added to that pass's
- * deadline); its report goes to e2e/results/a11y/. Off by default, so the gate's run is unchanged.
+ * deadline); its report goes to A11Y_RESULTS (default e2e/results/a11y/; a folder outside
+ * e2e/results survives the next run's cleanup, for a before/after pair). Off by default, so the
+ * gate's run is unchanged. Its variables (A11Y_ROUTES, A11Y_ROLES, A11Y_WIDTHS, A11Y_STATES,
+ * A11Y_BUDGET_MS) are checked before anything starts: a typo fails in seconds. The harness is left
+ * out when the pass has already failed.
  * The pass fails only if the harness cannot run.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { formatIssues, loadPlantConfig } from '@shopfloor/plant-config';
 import { shiftSegments } from '@shopfloor/shift-calendar';
@@ -169,6 +173,8 @@ import {
   type ShiftReportCheck,
 } from './shift-checks.ts';
 import { pruneBuildCache } from '@shopfloor/test-kit/heavy-lock';
+import { ROUTES as A11Y_ROUTES } from '../browser/a11y/routes.ts';
+import { budgetFromEnv, filterFromEnv, validateRoutes } from './a11y-report.ts';
 import { REPO, Stack, removeImages } from './stack.ts';
 import { episodeIdentity, traceConfigOf, type TraceSectionJson } from './trace-shapes.ts';
 
@@ -278,7 +284,25 @@ const imageTag = process.env.RECONCILE_TAG ?? 'reconcile';
 const withBrowser = process.env.RECONCILE_BROWSER !== '0';
 /** UX-1g (#321): the visual and accessibility harness after the last pass, opt-in. */
 const withA11y = process.env.RECONCILE_A11Y === '1';
-const A11Y_BUDGET_MS = Number(process.env.A11Y_BUDGET_MS ?? 15 * 60_000);
+let A11Y_BUDGET_MS = 0;
+if (withA11y) {
+  try {
+    A11Y_BUDGET_MS = budgetFromEnv(process.env);
+    validateRoutes(filterFromEnv(process.env), A11Y_ROUTES);
+  } catch (error) {
+    console.error(`RECONCILE_A11Y=1: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(2);
+  }
+  if (!withBrowser) {
+    console.warn(
+      'RECONCILE_A11Y=1 with RECONCILE_BROWSER=0: no browser, so the harness does not run',
+    );
+  }
+}
+/** Where the harness writes; relative to where the command was started. */
+const A11Y_RESULTS = process.env.A11Y_RESULTS
+  ? resolve(process.env.INIT_CWD ?? process.cwd(), process.env.A11Y_RESULTS)
+  : join(RESULTS, 'a11y');
 /** The harness's time on top of its budget: logins, the id discovery, the last page. */
 const A11Y_MARGIN_MS = 5 * 60_000;
 
@@ -1421,12 +1445,14 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
 
         // 7. UX-1g (#321): the visual and accessibility harness, report-only, on this stack with
         //    its data and its users; it reads pages only. It fails the pass only if it cannot run.
-        if (a11y) {
+        if (a11y && report.failures.length > 0) {
+          log('the pass already failed: the accessibility harness is left out');
+        } else if (a11y) {
           log(`the visual and accessibility harness (budget ${String(A11Y_BUDGET_MS)} ms)`);
           const exitCode = await runBrowser('a11y', {
             RECONCILE_WEB_URL: webUrl,
             RECONCILE_RESULTS: RESULTS_DIR,
-            A11Y_RESULTS: join(RESULTS, 'a11y'),
+            A11Y_RESULTS,
             A11Y_BUDGET_MS: String(A11Y_BUDGET_MS),
             A11Y_IDS: JSON.stringify({
               ...a11yIds,
@@ -1434,7 +1460,7 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
             }),
             ...browserLogin,
           });
-          report.a11y = { exitCode, report: 'e2e/results/a11y/report.json' };
+          report.a11y = { exitCode, report: join(A11Y_RESULTS, 'report.json') };
           if (exitCode !== 0) {
             fail(`the accessibility harness could not run (Playwright exit ${String(exitCode)})`);
           }

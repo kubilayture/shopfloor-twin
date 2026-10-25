@@ -1018,14 +1018,19 @@ describe('the terminal view after a change (#190 re-review)', () => {
     const changed = changedAt;
     const cell = cellDeltas.filter((d) => d.topic === 'terminal:cell-m1');
     const after = cell.filter((d) => d.at > changed);
-    expect(after.length).toBeGreaterThan(0);
     expect(after.filter((d) => !scrapAtCell(d.delta)).map((d) => d.at - changed)).toEqual([]);
+    // The scrap went out as a paced delta. Its computation may have started in the millisecond
+    // of the change, or just before it: the execution module stores the cycle before it reports
+    // the change, and a computation whose memo had run out meanwhile reads it already (seen on
+    // a loaded machine, #344). Only a computation after the change must have it (above).
+    const scrapped = cell.find((d) => scrapAtCell(d.delta));
+    expect(scrapped).toBeDefined();
     // Within 1.5 s of when Cell M1 could first push after the change (the change itself, or a
     // pace after a delta that an earlier change of the same round started), plus whatever a
     // loaded machine delayed the scheduler meanwhile (#212).
-    const before = cell.filter((d) => d.at <= changed).at(-1)?.at;
+    const before = cell.filter((d) => d.at <= changed && d !== scrapped).at(-1)?.at;
     const allowed = Math.max(changed, before === undefined ? 0 : before + PACE_MS);
-    expect((after[0]?.at ?? Infinity) - allowed).toBeLessThan(1_500 + maxLagMs);
+    expect((scrapped?.at ?? Infinity) - allowed).toBeLessThan(1_500 + maxLagMs);
   }, 180_000);
 
   it('drops the kept execution on every change of the execution module (no clock involved)', async () => {

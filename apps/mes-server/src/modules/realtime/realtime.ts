@@ -314,6 +314,12 @@ export interface RealtimeOptions {
   /** All logins together, a ceiling for the server only (default `LIMITS`: 100/s, 200). */
   readonly loginCeiling?: { readonly perSecond: number; readonly burst: number };
   /**
+   * The clock of every token bucket here, the write and the login buckets, in milliseconds,
+   * monotonic (default `performance.now`). Tests hold it still or move it, so what the buckets
+   * admit doesn't depend on how fast the machine runs (#347).
+   */
+  readonly rateClock?: () => number;
+  /**
    * Whether a request came from nginx over the `edge` network (#237, `EdgeTrust`): only then are
    * its proxy headers (`X-Original-Method`; `X-Real-IP` from P9-15) believed. Default: never.
    */
@@ -628,9 +634,11 @@ export async function registerRealtime(
   );
   const allowedOrigins = new Set(options.allowedOrigins ?? []);
   const writes = options.writes ?? true;
+  const rateClock = options.rateClock ?? (() => performance.now());
   const limiter = new WriteLimiter(
     options.writeRate?.perSecond ?? LIMITS.writesPerSecond,
     options.writeRate?.burst ?? LIMITS.writeBurst,
+    rateClock(),
   );
   // Writes before identity (ADR-0023): only a page of this origin (or an allowlisted one) may
   // write. A cross-site form or other simple request (no JSON content type, no Origin from a
@@ -683,19 +691,21 @@ export async function registerRealtime(
     | undefined => {
     let wait: number | undefined;
     let detail = 'too many writes; try again';
+    const now = rateClock();
     if (principal !== undefined) {
       let bucket = userLimiters.get(principal.userId);
       if (!bucket) {
         bucket = new WriteLimiter(
           options.userWriteRate?.perSecond ?? LIMITS.userWritesPerSecond,
           options.userWriteRate?.burst ?? LIMITS.userWriteBurst,
+          now,
         );
         userLimiters.set(principal.userId, bucket);
       }
-      wait = bucket.take();
+      wait = bucket.take(now);
       if (wait !== undefined) detail = `too many writes by ${principal.username}; try again`;
     }
-    wait ??= limiter.take();
+    wait ??= limiter.take(now);
     if (wait === undefined) return undefined;
     return {
       status: 429,
@@ -720,6 +730,7 @@ export async function registerRealtime(
   const loginCeiling = new WriteLimiter(
     options.loginCeiling?.perSecond ?? LIMITS.loginCeilingPerSecond,
     options.loginCeiling?.burst ?? LIMITS.loginCeilingBurst,
+    rateClock(),
   );
   // An address that logged in as this user within the window (the identity module knows) spends
   // no token of the shared ceiling (#264 round 3, R1): attackers who fill the ceiling can't keep
@@ -728,10 +739,14 @@ export async function registerRealtime(
     username: string,
     address: string,
     recentSuccess: boolean,
-  ): number | undefined =>
-    nameLimiters.take(`${username.trim().toLowerCase()}\n${address}`) ??
-    addressLimiters.take(address) ??
-    (recentSuccess ? undefined : loginCeiling.take());
+  ): number | undefined => {
+    const now = rateClock();
+    return (
+      nameLimiters.take(`${username.trim().toLowerCase()}\n${address}`, now) ??
+      addressLimiters.take(address, now) ??
+      (recentSuccess ? undefined : loginCeiling.take(now))
+    );
+  };
 
   // Identity (#168, ADR-0026).
   const identity = options.identity;

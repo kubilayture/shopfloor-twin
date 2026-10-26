@@ -8,9 +8,13 @@ import {
 import type { Permission } from '@shopfloor/contracts/identity';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { writeOrder, type OrderActionBody } from '../api/orders.ts';
 import { useAuth, useUnsavedDraft } from '../auth/auth.tsx';
+import { Button, type ButtonVariant } from '../components/ui/button.tsx';
+import { Callout } from '../components/ui/callout.tsx';
+import { Code } from '../components/ui/code.tsx';
+import { NumberInput, Select, Textarea } from '../components/ui/controls.tsx';
 import {
   ACTION_TEXT,
   COMMAND_STATE_TEXT,
@@ -28,11 +32,20 @@ import {
 } from '../domain/orders.ts';
 import { upsertCommand, upsertOrder } from '../live/live-cache.ts';
 
-const inputClass = 'rounded border border-slate-500 bg-white px-2 py-1 text-sm';
-export const buttonClass =
-  'rounded border border-slate-500 bg-white px-3 py-1 text-sm font-medium hover:bg-slate-100 disabled:opacity-50';
-const primaryClass =
-  'rounded bg-sky-800 px-3 py-1 text-sm font-semibold text-white hover:bg-sky-900 disabled:opacity-50';
+/**
+ * The look of a form's send button (design system 4.1 and 4.9): the inline form is the write's
+ * confirmation, so a destructive write (cancel the order, abandon a command) sends with the solid
+ * danger button a destructive confirmation uses; every other write, closing a completed order
+ * included (the flow's normal end), with the form's primary button.
+ */
+const SUBMIT_VARIANT: Readonly<Record<ActionDraft['action'], ButtonVariant>> = {
+  release: 'primary',
+  dispatch: 'primary',
+  redispatch: 'primary',
+  close: 'primary',
+  cancel: 'dangerSolid',
+  abandon: 'dangerSolid',
+};
 
 const PERMISSION: Readonly<Record<ActionDraft['action'], Permission>> = {
   release: 'order:release',
@@ -43,7 +56,10 @@ const PERMISSION: Readonly<Record<ActionDraft['action'], Permission>> = {
   abandon: 'order:abandon',
 };
 
-/** What each write does, said before it is sent. */
+/**
+ * What each write does, said before it is sent; an irreversible one (cancel, close, abandon) says
+ * it cannot be undone (design system 4.9).
+ */
 function effectText(draft: ActionDraft, order: OrderDto): string {
   switch (draft.action) {
     case 'release':
@@ -53,11 +69,11 @@ function effectText(draft: ActionDraft, order: OrderDto): string {
     case 'redispatch':
       return `Sends the remainder again as a new command: at most ${String(order.remaining)} blanks (the order quantity minus the blanks the device accepted).`;
     case 'cancel':
-      return 'Cancels the order (not dispatched yet) and tells the ERP it is cancelled.';
+      return 'Cancels the order (not dispatched yet) and tells the ERP it is cancelled. This cannot be undone.';
     case 'close':
-      return 'Closes the completed order and tells the ERP it is closed.';
+      return 'Closes the completed order and tells the ERP it is closed. This cannot be undone.';
     case 'abandon':
-      return `Writes off ${draft.commandId}: its device run has ended. It becomes abandoned (settled, its incidents closed) and its whole quantity counts as dispatched, so the order can end short, never over.`;
+      return `Writes off ${draft.commandId}: its device run has ended. It becomes abandoned (settled, its incidents closed) and its whole quantity counts as dispatched, so the order can end short, never over. This cannot be undone.`;
   }
 }
 
@@ -99,41 +115,47 @@ export interface Done {
   readonly text: string;
 }
 
+/**
+ * A refused write (design system 4.7): an `alarm` callout at the top of the form, announced
+ * (`role="alert"`), with the problem type and, for a close refused for quality holds, a link to
+ * each hold. `data-kind` and `data-type` say which refusal it is (the specs read both).
+ */
 function FailureText({ failure }: { readonly failure: OrderFailure }) {
   return (
-    <div
+    <Callout
+      tone="alarm"
       role="alert"
       data-testid="action-message"
       data-kind={failure.kind}
       data-type={failure.type ?? ''}
-      className="rounded border border-red-800 bg-red-50 p-2 text-sm text-red-950"
     >
       <p>{failure.text}</p>
       {failure.holds && failure.holds.length > 0 ? (
-        <ul className="mt-1 list-disc pl-5" data-testid="action-holds">
+        <ul className="mt-2 flex flex-col gap-1" data-testid="action-holds" aria-label="Open holds">
           {failure.holds.map((id) => (
             <li key={id}>
               <Link
                 to="/quality/holds/$id"
                 params={{ id }}
                 data-testid={`action-hold-${id}`}
-                className="text-sky-800 underline"
+                className="font-medium text-link underline underline-offset-4"
               >
-                Hold {id}
+                Hold <span className="whitespace-nowrap">{id}</span>
               </Link>
             </li>
           ))}
         </ul>
       ) : null}
       {failure.type ? (
-        <p className="mt-1 font-mono text-xs" data-testid="action-problem-type">
-          Problem type: {failure.type}
+        <p className="mt-2 text-xs" data-testid="action-problem-type">
+          Problem type: <Code>{failure.type}</Code>
         </p>
       ) : null}
-    </div>
+    </Callout>
   );
 }
 
+/** The CNC to dispatch to: none chosen leaves it to the dispatch rule. */
 function CncSelect({
   value,
   targets,
@@ -143,29 +165,24 @@ function CncSelect({
   readonly targets: readonly EquipmentDto[];
   readonly onChange: (value: string) => void;
 }) {
-  const id = useId();
   return (
-    <div className="flex flex-col gap-1">
-      <label htmlFor={id} className="text-sm font-medium">
-        CNC
-      </label>
-      <select
-        id={id}
-        data-testid="action-cnc"
-        value={value}
-        onChange={(event) => {
-          onChange(event.target.value);
-        }}
-        className={`${inputClass} max-w-xs`}
-      >
-        <option value="">The dispatch rule chooses (queue finishing first)</option>
-        {targets.map((item) => (
-          <option key={item.id} value={item.id}>
-            {item.name} ({item.id})
-          </option>
-        ))}
-      </select>
-    </div>
+    <Select
+      label="CNC"
+      name="equipment"
+      data-testid="action-cnc"
+      value={value}
+      onChange={(event) => {
+        onChange(event.target.value);
+      }}
+      className="w-full sm:w-auto sm:max-w-md"
+    >
+      <option value="">The dispatch rule chooses (queue finishing first)</option>
+      {targets.map((item) => (
+        <option key={item.id} value={item.id}>
+          {item.name} ({item.id})
+        </option>
+      ))}
+    </Select>
   );
 }
 
@@ -173,6 +190,11 @@ function CncSelect({
  * One write being prepared (#176). The draft keeps the order version it started from: when the
  * order moves on (a push, or a read after a 409) it is stale and is never sent with the newer
  * version; the user sees what changed and starts again.
+ *
+ * The form is the write's confirmation (design system 4.9: the order actions keep their inline
+ * confirm and its ids): it says what the write does before it is sent, and its send button repeats
+ * the verb. It takes the focus when it opens; while the write is on its way the send button is
+ * busy (it keeps the focus, a second submit is ignored); Escape and Back close it.
  */
 export function ActionForm({
   order,
@@ -199,8 +221,6 @@ export function ActionForm({
   const [failure, setFailure] = useState<OrderFailure | undefined>(undefined);
   const [invalid, setInvalid] = useState<string[]>([]);
   useUnsavedDraft(isDirtyDraft(draft));
-  const reasonId = useId();
-  const quantityId = useId();
   const submit = useRef<HTMLButtonElement>(null);
   const form = useRef<HTMLFormElement>(null);
   const sending = useRef(false);
@@ -212,6 +232,7 @@ export function ActionForm({
   const applies = stillApplies(draft, order, commands);
   const unsettled = draft.action === 'redispatch' ? unsettledCommands(commands) : [];
   const text = ACTION_TEXT[draft.action];
+  const fieldError = invalid.length > 0 ? invalid.join(' ') : undefined;
   const write = useMutation({
     mutationFn: (from: ActionDraft) => writeOrder(order.id, bodyOf(from)),
     onSettled: () => {
@@ -243,7 +264,7 @@ export function ActionForm({
       aria-label={text.label}
       data-testid={`action-form-${draft.action}`}
       data-version={String(draft.version)}
-      className="flex flex-col gap-2 rounded-lg border border-slate-400 bg-white p-3"
+      className="flex flex-col gap-4 rounded-lg border border-line bg-surface p-4 text-ink sm:p-5"
       onSubmit={(event) => {
         event.preventDefault();
         // A ref, not `isPending`: two submits before the next render both see it false.
@@ -259,15 +280,58 @@ export function ActionForm({
         if (event.key === 'Escape') onClose();
       }}
     >
-      <Heading className="font-semibold">
-        {text.label}
-        {draft.action === 'abandon' ? `: ${draft.commandId}` : ''}
-      </Heading>
-      <p className="text-sm">{effectText(draft, order)}</p>
-      <p className="text-xs text-slate-700">
-        Prepared on version {draft.version} of the order; the MES refuses it if the order has
-        changed since (409).
-      </p>
+      <div className="flex flex-col gap-1">
+        <Heading className="text-lg font-semibold">
+          {text.label}
+          {draft.action === 'abandon' ? (
+            <>
+              : <Code>{draft.commandId}</Code>
+            </>
+          ) : null}
+        </Heading>
+        <p className="text-sm">{effectText(draft, order)}</p>
+        <p className="text-xs text-ink-secondary">
+          Prepared on version {draft.version} of the order; the MES refuses it if the order has
+          changed since.
+        </p>
+      </div>
+      {failure ? <FailureText failure={failure} /> : null}
+      {invalid.length > 0 ? (
+        <Callout tone="alarm" role="alert" data-testid="action-invalid">
+          {invalid.join(' ')}
+        </Callout>
+      ) : null}
+      {stale ? (
+        <Callout
+          tone="warn"
+          role="alert"
+          data-testid="action-stale"
+          data-version={String(order.version)}
+          title="The order changed while you prepared this"
+        >
+          <p>
+            It is at version {order.version} ({ORDER_STATUS_TEXT[order.status]}), you started on
+            version {draft.version}. Nothing is sent with the newer version.{' '}
+            {applies
+              ? 'Check the order above, then start again: what you entered is kept.'
+              : 'This action no longer applies to the order.'}
+          </p>
+          {applies ? (
+            <Button
+              data-testid="action-restart"
+              size="sm"
+              className="mt-2"
+              onClick={() => {
+                setDraft((current) => ({ ...current, version: order.version }));
+                setFailure(undefined);
+                submit.current?.focus();
+              }}
+            >
+              Start again on version {order.version}
+            </Button>
+          ) : null}
+        </Callout>
+      ) : null}
       {draft.action === 'dispatch' || draft.action === 'redispatch' ? (
         <CncSelect
           value={draft.equipment}
@@ -278,109 +342,67 @@ export function ActionForm({
         />
       ) : null}
       {draft.action === 'redispatch' ? (
-        <div className="flex flex-col gap-1">
-          <label htmlFor={quantityId} className="text-sm font-medium">
-            Blanks (empty: all {order.remaining} remaining)
-          </label>
-          <input
-            id={quantityId}
-            data-testid="action-quantity"
-            inputMode="numeric"
-            value={draft.quantity}
-            onChange={(event) => {
-              const quantity = event.target.value;
-              setDraft((current) => ({ ...current, quantity }));
-            }}
-            className={`${inputClass} max-w-[10rem]`}
-          />
-        </div>
+        <NumberInput
+          label="Quantity"
+          name="quantity"
+          unit="blanks"
+          hint={`Leave it empty to send all ${String(order.remaining)} remaining.`}
+          error={fieldError}
+          data-testid="action-quantity"
+          inputMode="numeric"
+          value={draft.quantity}
+          onChange={(event) => {
+            const quantity = event.target.value;
+            setDraft((current) => ({ ...current, quantity }));
+          }}
+        />
       ) : null}
       {draft.action === 'redispatch' && unsettled.length > 0 ? (
-        <p role="status" data-testid="action-unsettled" className="text-sm text-amber-950">
+        <Callout tone="warn" role="status" data-testid="action-unsettled">
           Not settled yet:{' '}
           {unsettled
             .map((command) => `${command.commandId} (${COMMAND_STATE_TEXT[command.state].label})`)
             .join(', ')}
-          . The MES re-dispatches only once every earlier command is settled, so it may refuse (409
-          commands-unsettled).
-        </p>
+          . The MES re-dispatches only once every earlier command is settled, so it may refuse
+          (commands-unsettled).
+        </Callout>
       ) : null}
       {draft.action === 'cancel' ? (
-        <div className="flex flex-col gap-1">
-          <label htmlFor={reasonId} className="text-sm font-medium">
-            Reason (optional)
-          </label>
-          <textarea
-            id={reasonId}
-            data-testid="action-reason"
-            value={draft.reason}
-            rows={2}
-            maxLength={ORDER_LIMITS.reason}
-            onChange={(event) => {
-              const reason = event.target.value;
-              setDraft((current) => ({ ...current, reason }));
-            }}
-            className={`${inputClass} w-full`}
-          />
-        </div>
+        <Textarea
+          label="Reason"
+          name="reason"
+          data-testid="action-reason"
+          value={draft.reason}
+          rows={2}
+          max={ORDER_LIMITS.reason}
+          error={fieldError}
+          onChange={(event) => {
+            const reason = event.target.value;
+            setDraft((current) => ({ ...current, reason }));
+          }}
+          fieldClassName="max-w-xl"
+        />
       ) : null}
-      {stale ? (
-        <div
-          role="alert"
-          data-testid="action-stale"
-          data-version={String(order.version)}
-          className="rounded border border-red-800 bg-red-50 p-2 text-sm text-red-950"
-        >
-          <p>
-            The order changed while you prepared this: it is at version {order.version} (
-            {ORDER_STATUS_TEXT[order.status]}), you started on version {draft.version}. Nothing is
-            sent with the newer version.{' '}
-            {applies
-              ? 'Check the order above, then start again: what you entered is kept.'
-              : 'This action no longer applies to the order.'}
-          </p>
-          {applies ? (
-            <button
-              type="button"
-              data-testid="action-restart"
-              className={`${buttonClass} mt-2`}
-              onClick={() => {
-                setDraft((current) => ({ ...current, version: order.version }));
-                setFailure(undefined);
-                submit.current?.focus();
-              }}
-            >
-              Start again on version {order.version}
-            </button>
-          ) : null}
-        </div>
-      ) : null}
-      {invalid.length > 0 ? (
-        <p role="alert" data-testid="action-invalid" className="text-sm text-red-900">
-          {invalid.join(' ')}
-        </p>
-      ) : null}
-      {failure ? <FailureText failure={failure} /> : null}
+      {/* Back first, the send button last, on the right of the pair (design system 4.1). */}
       <div className="flex flex-wrap gap-2">
-        <button
-          ref={submit}
-          type="submit"
-          data-testid="action-submit"
-          disabled={write.isPending || stale || !applies}
-          className={primaryClass}
-        >
-          {write.isPending ? 'Sending…' : text.label}
-        </button>
-        <button
-          type="button"
+        <Button
           data-testid="action-back"
-          className={buttonClass}
           onClick={() => {
             onClose();
           }}
         >
           Back
-        </button>
+        </Button>
+        <Button
+          ref={submit}
+          type="submit"
+          variant={SUBMIT_VARIANT[draft.action]}
+          data-testid="action-submit"
+          disabled={stale || !applies}
+          loading={write.isPending}
+        >
+          {text.label}
+        </Button>
       </div>
     </form>
   );

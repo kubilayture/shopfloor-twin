@@ -867,3 +867,151 @@ describe('orders on the design system (UX-6a, #328)', () => {
     expect(within(section).queryByTestId('incidents-empty')).toBeNull();
   });
 });
+
+describe('order actions on the design system (UX-6b, #329)', () => {
+  it('labels the fields of a re-dispatch and shows a refused quantity under its field', async () => {
+    const base = order('PO-1001', {
+      status: 'in-progress',
+      version: 5,
+      dispatched: 12,
+      remaining: 8,
+    });
+    const server = orderMes(orderState([base]));
+    vi.stubGlobal('fetch', server.fetch);
+    await renderApp('/orders/PO-1001');
+    fireEvent.click(await screen.findByTestId('action-redispatch'));
+    const form = screen.getByTestId('action-form-redispatch');
+    expect(within(form).getByRole('combobox', { name: 'CNC' })).toBe(
+      screen.getByTestId('action-cnc'),
+    );
+    const quantity = within(form).getByRole('textbox', { name: 'Quantity' });
+    expect(quantity).toBe(screen.getByTestId('action-quantity'));
+    expect(quantity.getAttribute('name')).toBe('quantity');
+    expect(quantity.getAttribute('inputmode')).toBe('numeric');
+    // Its unit and the hint are read with it.
+    const described = () =>
+      (quantity.getAttribute('aria-describedby') ?? '')
+        .split(' ')
+        .map((id) => document.getElementById(id)?.textContent)
+        .join(' | ');
+    expect(described()).toBe('blanks | Leave it empty to send all 8 remaining.');
+    expect(quantity.getAttribute('aria-invalid')).toBeNull();
+    fireEvent.change(quantity, { target: { value: '9' } });
+    fireEvent.click(within(form).getByTestId('action-submit'));
+    // The form's summary announces; the field says where.
+    expect(within(form).getByTestId('action-invalid').getAttribute('role')).toBe('alert');
+    expect(quantity.getAttribute('aria-invalid')).toBe('true');
+    expect(described()).toContain('At most the 8 blanks remaining.');
+    expect(server.posts()).toHaveLength(0);
+    // A re-dispatch is not destructive: its send button is the form's primary.
+    expect(within(form).getByTestId('action-submit').className).toContain('bg-accent');
+  });
+
+  it('sends a cancel with the solid danger button, a close with the primary one', async () => {
+    const imported = order('PO-1001', { version: 3 });
+    const completed = order('PO-1002', { status: 'completed', version: 9 });
+    vi.stubGlobal('fetch', orderMes(orderState([imported, completed])).fetch);
+    const app = await renderApp('/orders/PO-1001');
+    fireEvent.click(await screen.findByTestId('action-cancel'));
+    const cancel = screen.getByTestId('action-form-cancel');
+    // Irreversible writes say so in their confirmation (design system 4.9).
+    expect(cancel.textContent).toContain('This cannot be undone.');
+    const reason = within(cancel).getByRole('textbox', { name: 'Reason' });
+    expect(reason).toBe(screen.getByTestId('action-reason'));
+    expect(reason.getAttribute('name')).toBe('reason');
+    // Back first, the send button last; the send button repeats the verb.
+    const buttons = within(cancel)
+      .getAllByRole('button')
+      .map((button) => button.dataset.testid);
+    expect(buttons.slice(-2)).toEqual(['action-back', 'action-submit']);
+    const send = within(cancel).getByRole('button', { name: 'Cancel order' });
+    expect(send).toBe(within(cancel).getByTestId('action-submit'));
+    expect(send.className).toContain('bg-alarm-solid');
+    expect(within(cancel).getByTestId('action-back').className).not.toContain('bg-alarm-solid');
+
+    await settle(() => {
+      app.history.push('/orders/PO-1002');
+    });
+    fireEvent.click(await screen.findByTestId('action-close'));
+    const close = screen.getByTestId('action-form-close');
+    expect(close.textContent).toContain('This cannot be undone.');
+    const closeSend = within(close).getByRole('button', { name: 'Close order' });
+    expect(closeSend.className).toContain('bg-accent');
+    expect(closeSend.className).not.toContain('bg-alarm-solid');
+  });
+
+  it('keeps the focus on the busy send button while the write is on its way', async () => {
+    const base = order('PO-1001', { version: 3 });
+    const server = orderMes(orderState([base]));
+    let answer: (response: Response) => void = () => undefined;
+    let posts = 0;
+    vi.stubGlobal('fetch', (input: string, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        posts += 1;
+        return new Promise<Response>((resolve) => {
+          answer = resolve;
+        });
+      }
+      return server.fetch(input, init);
+    });
+    await renderApp('/orders/PO-1001');
+    fireEvent.click(await screen.findByTestId('action-release'));
+    // A release can be followed by a cancel: it does not claim to be irreversible.
+    expect(screen.getByTestId('action-form-release').textContent).not.toContain('cannot be undone');
+    const send = screen.getByTestId<HTMLButtonElement>('action-submit');
+    send.focus();
+    fireEvent.click(send);
+    await waitFor(() => {
+      expect(send.getAttribute('aria-busy')).toBe('true');
+    });
+    // Busy, not natively disabled: the focus stays, the label stays its name, a click is ignored.
+    expect(send.disabled).toBe(false);
+    expect(send.getAttribute('aria-disabled')).toBe('true');
+    expect(document.activeElement).toBe(send);
+    expect(within(send).getByText('Release')).toBeTruthy();
+    fireEvent.click(send);
+    expect(posts).toBe(1);
+    answer(written(base, { status: 'released', version: 4 }));
+    expect((await screen.findByTestId('action-done')).textContent).toContain('version 4');
+  });
+
+  it('puts a refused write at the top of the form, as an alarm callout', async () => {
+    const base = order('PO-1001', { status: 'completed', version: 9 });
+    const write: Write = () =>
+      problem(409, 'Conflict', 'not signed off', '/x', PROBLEM_TYPES.signOffMissing);
+    vi.stubGlobal('fetch', orderMes(orderState([base]), write).fetch);
+    await renderApp('/orders/PO-1001');
+    fireEvent.click(await screen.findByTestId('action-close'));
+    const form = screen.getByTestId('action-form-close');
+    fireEvent.click(within(form).getByTestId('action-submit'));
+    const message = await within(form).findByTestId('action-message');
+    expect(message.getAttribute('role')).toBe('alert');
+    expect(message.className).toContain('bg-alarm-soft');
+    // Under the heading, above the buttons.
+    const heading = within(form).getByRole('heading', { name: 'Close order' });
+    const back = within(form).getByTestId('action-back');
+    expect(
+      heading.compareDocumentPosition(message) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(message.compareDocumentPosition(back) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('makes abandoning a command a danger action, sent with the solid danger button', async () => {
+    const base = order('PO-1001', { status: 'in-progress', version: 7, remaining: 0 });
+    const lostJob = command('PO-1001', 1, { job: 'lost' });
+    const state = orderState([base], {
+      details: { 'PO-1001': detail(base, { commands: [lostJob] }) },
+    });
+    vi.stubGlobal('fetch', orderMes(state).fetch);
+    await renderApp('/orders/PO-1001');
+    const abandon = await screen.findByTestId(`abandon-${lostJob.commandId}`);
+    expect(abandon.className).toContain('text-alarm-ink');
+    fireEvent.click(abandon);
+    const form = screen.getByTestId('action-form-abandon');
+    expect(form.textContent).toContain('This cannot be undone.');
+    expect(within(form).getByRole('heading', { level: 2 }).textContent).toBe(
+      `Abandon command: ${lostJob.commandId}`,
+    );
+    expect(within(form).getByTestId('action-submit').className).toContain('bg-alarm-solid');
+  });
+});

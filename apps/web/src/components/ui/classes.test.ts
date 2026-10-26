@@ -41,6 +41,9 @@ const FILES = [
   // The migrated screens: a screen on the tokens draws only classes Tailwind generates.
   'screens/order-list.tsx',
   'screens/order-detail.tsx',
+  // Order actions and order OEE (UX-6b, #329).
+  'screens/order-actions.tsx',
+  'screens/order-oee.tsx',
 ];
 
 /** Utility prefixes: a literal with one of these is a class list. */

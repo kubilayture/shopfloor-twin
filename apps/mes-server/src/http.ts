@@ -46,6 +46,8 @@ export interface MesHttpOptions {
   readonly loginRate?: { readonly perSecond: number; readonly burst: number };
   readonly userLoginRate?: { readonly perSecond: number; readonly burst: number };
   readonly loginCeiling?: { readonly perSecond: number; readonly burst: number };
+  /** Every token bucket's clock, writes and logins (ms, monotonic; tests, #347). Default: `performance.now`. */
+  readonly rateClock?: () => number;
   /**
    * The learned `edge` network (#237): only requests from it may carry trusted proxy headers
    * (`X-Original-Method`, and `X-Real-IP` from P9-15). Default: nothing trusted.
@@ -77,6 +79,7 @@ export async function buildMesHttp({
   loginRate,
   userLoginRate,
   loginCeiling,
+  rateClock,
   edge = NO_EDGE,
 }: MesHttpOptions): Promise<MesHttp> {
   // A request id per request (UUID): logged, returned as X-Request-Id on writes and audited.
@@ -231,6 +234,7 @@ export async function buildMesHttp({
     ...(loginRate === undefined ? {} : { loginRate }),
     ...(userLoginRate === undefined ? {} : { userLoginRate }),
     ...(loginCeiling === undefined ? {} : { loginCeiling }),
+    ...(rateClock === undefined ? {} : { rateClock }),
     trustsProxy,
     clientAddress,
   });

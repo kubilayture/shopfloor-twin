@@ -35,6 +35,7 @@ import { Button } from '../components/ui/button.tsx';
 import { Callout } from '../components/ui/callout.tsx';
 import { Card } from '../components/ui/card.tsx';
 import { Code } from '../components/ui/code.tsx';
+import { Disclosure } from '../components/ui/disclosure.tsx';
 import { TextInput } from '../components/ui/controls.tsx';
 import { ConfirmDialog } from '../components/ui/dialog.tsx';
 import { EmptyState } from '../components/ui/empty-state.tsx';
@@ -53,6 +54,7 @@ import {
   myActivity,
   operationActions,
   signedOnHere,
+  splitOrders,
   terminalFailure,
   withOperation,
   withoutScrapRecord,
@@ -547,6 +549,8 @@ function TerminalWork({
   });
   const live = useLiveTerminal(workCenter);
   const view = live ?? rest.data;
+  /** Orders seen active on this screen: one signed off here stays in view (`splitOrders`). */
+  const [seenActive, setSeenActive] = useState<ReadonlySet<string>>(() => new Set());
   const [message, setMessage] = useState<string | undefined>(() =>
     queryClient.getQueryData<string>(terminalKeys.refusal(user.username, workCenter)),
   );
@@ -591,6 +595,13 @@ function TerminalWork({
   }
   if (!view) return <Skeleton shape="card" label="Loading the work center…" />;
   const here = signedOnHere(view, user.id);
+  const orders = splitOrders(view.orders, seenActive);
+  // Remembered once seen active, so an order whose last operation is signed off here stays in view
+  // (state set while rendering: React renders again at once, before anything is shown).
+  const newlyActive = orders.active.filter((o) => !seenActive.has(o.order.id));
+  if (newlyActive.length > 0) {
+    setSeenActive(new Set([...seenActive, ...newlyActive.map((o) => o.order.id)]));
+  }
   const at = clock?.watermark;
   // Coding is offered to operators signed on here (or quality, who need no crew row).
   const canCode = auth.can('scrap:code') && (here || !auth.can('terminal:operate'));
@@ -674,21 +685,55 @@ function TerminalWork({
                 />
               </Card>
             ) : (
-              <ul className="flex flex-col gap-4">
-                {view.orders.map((order) => (
-                  <OrderCard
-                    key={order.order.id}
-                    order={order}
-                    workCenter={workCenter}
-                    userId={user.id}
-                    signedOn={here}
-                    at={at}
-                    onOperation={(operation) => {
-                      patch((v) => withOperation(v, operation));
-                    }}
-                  />
-                ))}
-              </ul>
+              <>
+                {orders.active.length > 0 ? (
+                  <ul className="flex flex-col gap-4">
+                    {orders.active.map((order) => (
+                      <OrderCard
+                        key={order.order.id}
+                        order={order}
+                        workCenter={workCenter}
+                        userId={user.id}
+                        signedOn={here}
+                        at={at}
+                        onOperation={(operation) => {
+                          patch((v) => withOperation(v, operation));
+                        }}
+                      />
+                    ))}
+                  </ul>
+                ) : null}
+                {orders.done.length > 0 ? (
+                  // Finished orders (all operations signed off) in one line, so the work stays
+                  // first on a shift with older orders (UX-7 review); every test id inside.
+                  <Disclosure
+                    testId="terminal-orders-done"
+                    summary={
+                      <span className="inline-flex min-h-14 items-center text-lg">
+                        {orders.done.length === 1
+                          ? '1 completed order, signed off'
+                          : `${String(orders.done.length)} completed orders, signed off`}
+                      </span>
+                    }
+                  >
+                    <ul className="flex flex-col gap-4">
+                      {orders.done.map((order) => (
+                        <OrderCard
+                          key={order.order.id}
+                          order={order}
+                          workCenter={workCenter}
+                          userId={user.id}
+                          signedOn={here}
+                          at={at}
+                          onOperation={(operation) => {
+                            patch((v) => withOperation(v, operation));
+                          }}
+                        />
+                      ))}
+                    </ul>
+                  </Disclosure>
+                ) : null}
+              </>
             )}
           </TerminalSection>
           <ScrapRecords

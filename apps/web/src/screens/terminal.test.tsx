@@ -656,6 +656,59 @@ describe('the operator terminal (#177)', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
+  it('shows the work first: orders in progress, then the finished ones in one closed line (UX-7 review)', async () => {
+    const signed = {
+      username: 'omar',
+      at: '2026-10-15T02:00:00.000Z',
+      plantAt: '2026-10-15T02:00:00.000Z',
+    };
+    const mes = terminalMes();
+    const finished = {
+      order: orderOf('O-0', { status: 'completed' }),
+      operations: [operationOf('OP30', { orderId: 'O-0', signedOff: signed })],
+      wip: 0,
+    };
+    mes.view = viewOf({ orders: [finished, ...mes.view.orders] });
+    vi.stubGlobal('fetch', mes.fetch);
+    const app = await renderApp('/terminal/line-a1', { session: 'fetch' });
+    await signOnAs('olga');
+    await app.open();
+    const done = screen.getByTestId('terminal-orders-done');
+    expect(done.tagName).toBe('DETAILS');
+    expect(done.hasAttribute('open')).toBe(false);
+    expect(done.querySelector('summary')?.textContent).toBe('1 completed order, signed off');
+    // Its order keeps its ids, inside the closed line; the order in progress comes first.
+    expect(done.contains(screen.getByTestId('terminal-order-O-0'))).toBe(true);
+    expect(screen.getByTestId('terminal-op-state-O-0-OP30').textContent).toMatch(
+      /^Signed off by omar/,
+    );
+    const order1 = screen.getByTestId('terminal-order-O-1');
+    expect(done.contains(order1)).toBe(false);
+    expect(order1.compareDocumentPosition(done) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // An order seen active here stays in view when its last operation is signed off.
+    await app.push({
+      type: 'terminal',
+      topic: 'terminal:line-a1',
+      view: viewOf({
+        crew: mes.view.crew,
+        orders: [
+          finished,
+          {
+            order: orderOf('O-1', { status: 'completed' }),
+            operations: [operationOf('OP30', { signedOff: { ...signed, username: 'olga' } })],
+            wip: 0,
+          },
+        ],
+      }),
+    });
+    expect(
+      screen.getByTestId('terminal-orders-done').contains(screen.getByTestId('terminal-order-O-1')),
+    ).toBe(false);
+    expect(screen.getByTestId('terminal-orders-done').querySelector('summary')?.textContent).toBe(
+      '1 completed order, signed off',
+    );
+  });
+
   it('keeps the sign-off dialog busy until the answer; a refusal is said in the row, focus back (review L2)', async () => {
     const mes = terminalMes();
     vi.stubGlobal('fetch', mes.fetch);

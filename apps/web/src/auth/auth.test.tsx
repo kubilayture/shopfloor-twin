@@ -5,7 +5,7 @@ import { occurrence } from '../test/alarm-fixtures.ts';
 import { PASSWORD, fakeMes } from '../test/fake-mes.ts';
 import { sessionOf } from '../test/fixtures.ts';
 import { renderApp, settle } from '../test/render-app.tsx';
-import { forgetLegacyStorage, sessionKey } from './auth.tsx';
+import { RESTART_AFTER_4403_MS, forgetLegacyStorage, sessionKey } from './auth.tsx';
 import { ACTIVITY_STORAGE_KEY, KEEPALIVE_MS } from './idle.ts';
 
 // The review of PR #186 (#170): re-login over a kept draft, another user after a lost session,
@@ -243,6 +243,36 @@ describe('a 4403 close (#341 review, UX-7 review M2)', () => {
     expect(app.queryClient.getQueryData(sessionKey)).toBe(before);
     await app.open();
     expect(screen.getByTestId('connection-status').dataset.status).toBe('open');
+  });
+
+  it('starts it again at most once per 30 s, so repeated 4403 closes cannot loop', async () => {
+    const mes = fakeMes({ signedIn: true, roles: ['supervisor'] });
+    vi.stubGlobal('fetch', mes.fetch);
+    const app = await renderApp('/', { session: 'fetch' });
+    await app.open();
+    await app.drop(4403);
+    await waitFor(() => {
+      expect(app.factory.sockets).toHaveLength(2);
+    });
+    await app.open();
+    // Refused again at once: the session is read again, the client is not started again.
+    const reads = sessionReads(mes.calls);
+    await app.drop(4403);
+    await waitFor(() => {
+      expect(sessionReads(mes.calls)).toBeGreaterThan(reads);
+    });
+    await settle(() => undefined);
+    expect(app.factory.sockets).toHaveLength(2);
+    expect(app.live.status).toBe('stopped');
+    // After the interval, a 4403 starts it again.
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now + RESTART_AFTER_4403_MS);
+    app.live.start();
+    await app.open();
+    await app.drop(4403);
+    await waitFor(() => {
+      expect(app.factory.sockets).toHaveLength(4);
+    });
   });
 
   it('does not start it again when the session read back has ended', async () => {

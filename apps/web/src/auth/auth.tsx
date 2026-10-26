@@ -129,6 +129,9 @@ export function forgetLegacyStorage(storage: () => Storage = () => globalThis.lo
   }
 }
 
+/** A 4403 close starts the live client again at most this often (UX-7 review). */
+export const RESTART_AFTER_4403_MS = 30_000;
+
 export function AuthProvider({ children }: { readonly children: ReactNode }) {
   const queryClient = useQueryClient();
   const live = useLiveClient();
@@ -153,6 +156,9 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
   useEffect(() => {
     if (session) lastUser.current = session.user.username;
   }, [session]);
+
+  /** When a 4403 close last started the live client again (`RESTART_AFTER_4403_MS`). */
+  const lastRestart = useRef(Number.NEGATIVE_INFINITY);
 
   const startLive = useCallback(() => {
     const current = queryClient.getQueryData<SessionDto | null>(sessionKey);
@@ -236,8 +242,13 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
         // starts it again (`startLive` checks). Here, not in the screens' effects on the session:
         // a session read back unchanged keeps its reference, so those effects would not run
         // (#341 review, UX-7 review M2), and the desk and the terminal would stay "Offline".
+        // At most once per `RESTART_AFTER_4403_MS`: should the MES keep refusing a session that
+        // `/session` says may read, the client is not started again in a loop (UX-7 review).
+        const now = Date.now();
+        const again = now - lastRestart.current >= RESTART_AFTER_4403_MS;
+        if (again) lastRestart.current = now;
         void queryClient.invalidateQueries({ queryKey: sessionKey }).then(() => {
-          startLive();
+          if (again) startLive();
         });
       }
     });

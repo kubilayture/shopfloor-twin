@@ -57,17 +57,32 @@ let started = 0;
 /** How many hashes were asked for since the process started (tests: a 429 costs none, #242). */
 export const hashesStarted = (): number => started;
 
+let done = 0;
+let doneMs = 0;
+/**
+ * How many hashes have finished since the process started, and their total time on the two hash
+ * slots (the wait for a slot excluded). Tests divide one by the other for what a hash costs under
+ * the machine's current load (#347): a latency budget in hashes, not in milliseconds.
+ */
+export const hashesDone = (): { readonly count: number; readonly ms: number } => ({
+  count: done,
+  ms: doneMs,
+});
+
 function derive(password: string, salt: Buffer, params: ScryptParams): Promise<Buffer> {
   started++;
   return hashing.run(
     () =>
       new Promise<Buffer>((resolve, reject) => {
+        const begun = performance.now();
         scrypt(
           password.normalize('NFC'),
           salt,
           KEY_BYTES,
           { N: params.N, r: params.r, p: params.p, maxmem: SCRYPT_MAXMEM },
           (error, key) => {
+            done++;
+            doneMs += performance.now() - begun;
             if (error) reject(error);
             else resolve(key);
           },

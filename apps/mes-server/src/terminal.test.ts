@@ -694,6 +694,55 @@ describe('operator activity and operation sign-off (#177)', () => {
       'crew-ended',
     );
   });
+
+  it('never ends an interval before its start when the database clock steps back (#344)', async () => {
+    // The database's wall clock is not monotonic: Lima's guest agent, say, steps a Colima VM's
+    // clock back to its host's every 10 s. An interval started just before such a step and ended
+    // just after it read an end before its start (`operation_activity_check4`). Here the step is
+    // pinned: the open intervals' starts are moved an hour ahead of the clock.
+    const h = await harness('clock_step');
+    await started(h, 'G-1');
+    const olga = { by: h.olga, requestId: 'r' };
+    await h.orders.startWork('G-1', 'OP30', { activity: null }, olga);
+    await h.orders.startWork('G-1', 'OP40', { activity: null }, olga);
+    const ahead = async (operation: string): Promise<Date> => {
+      const row = await h.db
+        .updateTable('orders.operation_activity')
+        // In whole milliseconds, so the Date read back is the start exactly (`until` below).
+        .set({
+          from_at: sql<Date>`date_trunc('milliseconds', clock_timestamp() + interval '1 hour')`,
+        })
+        .where('order_id', '=', 'G-1')
+        .where('operation', '=', operation)
+        .where('to_at', 'is', null)
+        .returning('from_at')
+        .executeTakeFirstOrThrow();
+      return row.from_at;
+    };
+    // A terminal write (pause; a sign-off closes the same way): the work ends at its start.
+    const workFrom = await ahead('OP30');
+    const work = (await mine(h, 'G-1', 'OP30', h.olga)) ?? 0;
+    await h.orders.pauseWork('G-1', 'OP30', { activity: work, reason: 'break' }, olga);
+    const [pause, closedWork] = await h.orders.activities({ orderId: 'G-1', operation: 'OP30' });
+    expect(closedWork).toMatchObject({
+      id: work,
+      endReason: 'paused',
+      from: workFrom,
+      to: workFrom,
+    });
+    expect(pause).toMatchObject({ kind: 'pause', to: null });
+    // A crew end (and so an orphan closure): the same.
+    const crewFrom = await ahead('OP40');
+    expect(
+      await h.orders.endActivities({
+        userId: h.olga.userId,
+        workCenter: 'line-a1',
+        until: crewFrom,
+      }),
+    ).toBe(2);
+    const [ended] = await h.orders.activities({ orderId: 'G-1', operation: 'OP40' });
+    expect(ended).toMatchObject({ endReason: 'crew-ended', from: crewFrom, to: crewFrom });
+  });
 });
 
 describe('crews (#177)', () => {
@@ -969,14 +1018,19 @@ describe('the terminal view after a change (#190 re-review)', () => {
     const changed = changedAt;
     const cell = cellDeltas.filter((d) => d.topic === 'terminal:cell-m1');
     const after = cell.filter((d) => d.at > changed);
-    expect(after.length).toBeGreaterThan(0);
     expect(after.filter((d) => !scrapAtCell(d.delta)).map((d) => d.at - changed)).toEqual([]);
+    // The scrap went out as a paced delta. Its computation may have started in the millisecond
+    // of the change, or just before it: the execution module stores the cycle before it reports
+    // the change, and a computation whose memo had run out meanwhile reads it already (seen on
+    // a loaded machine, #344). Only a computation after the change must have it (above).
+    const scrapped = cell.find((d) => scrapAtCell(d.delta));
+    expect(scrapped).toBeDefined();
     // Within 1.5 s of when Cell M1 could first push after the change (the change itself, or a
     // pace after a delta that an earlier change of the same round started), plus whatever a
     // loaded machine delayed the scheduler meanwhile (#212).
-    const before = cell.filter((d) => d.at <= changed).at(-1)?.at;
+    const before = cell.filter((d) => d.at <= changed && d !== scrapped).at(-1)?.at;
     const allowed = Math.max(changed, before === undefined ? 0 : before + PACE_MS);
-    expect((after[0]?.at ?? Infinity) - allowed).toBeLessThan(1_500 + maxLagMs);
+    expect((scrapped?.at ?? Infinity) - allowed).toBeLessThan(1_500 + maxLagMs);
   }, 180_000);
 
   it('drops the kept execution on every change of the execution module (no clock involved)', async () => {

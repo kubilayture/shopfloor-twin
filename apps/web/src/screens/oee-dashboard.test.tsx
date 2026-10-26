@@ -20,6 +20,7 @@ import {
 } from '../test/oee-fixtures.ts';
 import { renderApp, settle } from '../test/render-app.tsx';
 import { expectDecimals } from '../test/decimals.ts';
+import { NA_REASON } from '../components/oee-ui.tsx';
 
 // jsdom has no canvas: the chart is a stub, the tables beside it carry the values. It records
 // every option it is given (UX-1f: an unrelated re-render must hand it the same option).
@@ -91,11 +92,16 @@ describe('OEE dashboard', () => {
     const cell = await screen.findByTestId('oee-card-cell-m1');
     expect(cell.dataset.oee).toBe('0.6300');
     expect(within(cell).getByTestId('oee-value-cell-m1').textContent).toBe('63.00 %');
-    expect(within(cell).getByText('0.8000')).toBeTruthy();
-    expect(within(cell).getByText('0.8750')).toBeTruthy();
+    // E-02: A, P and Q as percentages, the four decimals in data-decimal.
+    expect(within(cell).getByText('80.00 %').dataset.decimal).toBe('0.8000');
+    expect(within(cell).getByText('87.50 %').dataset.fraction).toBe('7/8');
     expect(within(cell).getByTestId('oee-own-cell-m1').textContent).toBe('2.5 min');
     expect(within(cell).getByTestId('oee-external-cell-m1').textContent).toBe('0.8 min');
-    expect(within(cell).getByText('Provisional (2.0 min)')).toBeTruthy();
+    // E-03: the work centers are all provisional: said once, beside the section's heading.
+    expect(within(cell).queryByText(/Provisional/)).toBeNull();
+    const centers = screen.getByTestId('wc-finality');
+    expect(centers.textContent).toBe('Provisional');
+    expect(centers.getAttribute('title')).toContain('up to 2.0 min');
     await waitFor(() => {
       expect(screen.getByTestId('bottleneck-line-a1').dataset.state).toBe('known');
     });
@@ -103,7 +109,9 @@ describe('OEE dashboard', () => {
 
     const line = screen.getByTestId('oee-card-line-a1');
     expect(line.dataset.oee).toBe('n/a');
-    expect(within(line).getByTestId('oee-value-line-a1').textContent).toBe('n/a');
+    // E-01: no value is a dash with its reason as the visible hint, never "n/a" at headline size.
+    expect(within(line).getByTestId('oee-value-line-a1').textContent).toBe('—');
+    expect(within(line).getByText(NA_REASON.oee)).toBeTruthy();
     // The bottleneck is the MES's answer (`GET /oee/line`), not a constant of the web.
     const named = await within(line).findByTestId('bottleneck-line-a1');
     expect(named.textContent).toContain('asm-01');
@@ -111,6 +119,8 @@ describe('OEE dashboard', () => {
     expect(named.dataset.equipment).toBe('asm-01');
 
     expect(screen.getByTestId('oee-machine-cnc-01').dataset.oee).toBe('0.6300');
+    // The machines are a mix: the section says how many are final, each row its own finality.
+    expect(screen.getByTestId('machine-finality').textContent).toBe('1 of 3 final');
     expect(within(screen.getByTestId('oee-machine-cnc-01')).getByText('Final')).toBeTruthy();
     const wsh = screen.getByTestId('oee-machine-wsh-01');
     expect(within(wsh).getByText('Revision 1')).toBeTruthy();
@@ -122,23 +132,36 @@ describe('OEE dashboard', () => {
     const waterfall = screen.getByTestId('waterfall');
     expect(within(waterfall).getByTestId('waterfall-pbt').textContent).toContain('16.7 min');
     expect(within(waterfall).getByTestId('waterfall-productive').textContent).toContain('10.5 min');
+    // E-06: the sign against the number, as the chart labels it.
+    expect(within(waterfall).getByTestId('waterfall-own').textContent).toContain('−2.5 min');
     expect(within(waterfall).queryByRole('alert')).toBeNull();
 
     const pareto = await screen.findByTestId('pareto-BREAKDOWN/SPINDLE-OVERLOAD');
     expect(pareto.textContent).toContain('1.7 min');
+    // The demo walkthrough reads the time as the row's third cell.
+    expect(pareto.querySelectorAll('td')[2]?.textContent).toBe('1.7 min');
     expect(within(screen.getByTestId('pareto')).getByText(/CHIP-JAM/)).toBeTruthy();
     expect(await screen.findByTestId('hour-2026-10-15T04:00:00.000Z')).toBeTruthy();
-    expect(screen.getByTestId('hour-2026-10-15T04:00:00.000Z').textContent).toContain('n/a');
+    expect(screen.getByTestId('hour-2026-10-15T04:00:00.000Z').textContent).toContain('—');
 
     // UX-1c (#315): every ratio element carries its raw four decimals, n/a included.
     expect(within(cell).getByTestId('oee-value-cell-m1').dataset.decimal).toBe('0.6300');
     expect(within(line).getByTestId('oee-value-line-a1').dataset.decimal).toBe('n/a');
-    // The machine table's availability cell, which the demo walkthrough reads (td.nth(1)).
-    const availability = screen.getByTestId('oee-machine-cnc-01').querySelectorAll('td')[1];
-    expect(availability?.dataset.decimal).toBe(availability?.textContent);
-    expect(availability?.dataset.decimal).toMatch(/^\d\.\d{4}$/);
-    expect(asm.querySelectorAll('td')[0]?.dataset.decimal).toBe('n/a');
-    const hour = screen.getByTestId('hour-2026-10-15T04:00:00.000Z').querySelectorAll('td')[1];
+    // The machine table's availability cell, which the demo walkthrough reads (td.nth(1)) by
+    // its data-decimal: the percentage shown, the four decimals raw.
+    const availability = screen
+      .getByTestId('oee-machine-cnc-01')
+      .querySelectorAll('td')[1]
+      ?.querySelector<HTMLElement>('[data-decimal]');
+    expect(availability?.dataset.decimal).toBe('0.8000');
+    expect(availability?.textContent).toBe('80.00 %');
+    expect(
+      asm.querySelectorAll('td')[0]?.querySelector<HTMLElement>('[data-decimal]')?.dataset.decimal,
+    ).toBe('n/a');
+    const hour = screen
+      .getByTestId('hour-2026-10-15T04:00:00.000Z')
+      .querySelectorAll('td')[0]
+      ?.querySelector<HTMLElement>('[data-decimal]');
     expect(hour?.dataset.decimal).toBe('n/a');
     expect(expectDecimals(document.body).length).toBeGreaterThanOrEqual(20);
   });
@@ -247,7 +270,7 @@ describe('OEE dashboard', () => {
         shift: { ...shift, result: result({ oee: { fraction: '7/10', decimal: '0.7000' } }) },
       });
     await pushed('2026-10-15T05:00:00.000Z');
-    expect(screen.getByTestId('hour-2026-10-15T05:00:00.000Z').textContent).toContain('0.5000');
+    expect(screen.getByTestId('hour-2026-10-15T05:00:00.000Z').textContent).toContain('50.00 %');
     const hourlyReads = () => reads.filter((path) => path === '/api/v1/oee').length;
     const before = hourlyReads();
 
@@ -296,6 +319,14 @@ describe('OEE dashboard', () => {
     });
     expect(app.history.location.search).toContain('shift=');
     expect(screen.getByTestId('oee-card-line-a1').textContent).toContain('No data');
+    // Every machine final: said once beside the heading, and no status column of repeats (E-03).
+    expect(screen.getByTestId('machine-finality').textContent).toBe('Final');
+    expect(
+      within(screen.getByTestId('machine-oee-table')).queryByRole('columnheader', {
+        name: 'Status',
+      }),
+    ).toBeNull();
+    expect(within(screen.getByTestId('oee-machine-cnc-01')).queryByText('Final')).toBeNull();
 
     fireEvent.change(screen.getByTestId('focus-select'), { target: { value: 'cnc-01' } });
     await waitFor(() => {
@@ -312,15 +343,17 @@ describe('OEE dashboard', () => {
     });
     expect(card.dataset.final).toBe('true');
     expect(card.dataset.key).toBe(SHIFT_KEY);
-    expect(within(card).getByTestId('line-oee-value').textContent).toBe('0.7500');
-    expect(within(card).getByTestId('line-oee-value').dataset.fraction).toBe('3/4');
-    expect(within(card).getByTestId('line-oee-value-percent').textContent).toBe('75.00 %');
-    // UX-1c (#315): the line OEE values carry their visible four decimals in data-decimal.
-    expect(within(card).getByTestId('line-oee-value-percent').dataset.decimal).toBe('0.7500');
+    // E-02: the percentage shown; the four decimals (which the reconciliation reads) in
+    // data-decimal, the exact fraction in data-fraction and the tooltip.
+    const value = within(card).getByTestId('line-oee-value');
+    expect(value.textContent).toBe('75.00 %');
+    expect(value.dataset.decimal).toBe('0.7500');
+    expect(value.dataset.fraction).toBe('3/4');
+    expect(value.getAttribute('title')).toBe('3/4 exactly');
     const ratios = [...card.querySelectorAll<HTMLElement>('[data-fraction]')];
     expect(ratios.length).toBeGreaterThan(1);
-    for (const ratio of ratios) expect(ratio.dataset.decimal).toBe(ratio.textContent);
-    expect(within(card).getByTestId('line-oee-good').textContent).toBe('VB-100 100');
+    expect(expectDecimals(card).length).toBe(ratios.length);
+    expect(within(card).getByTestId('line-oee-good').textContent).toBe('VB-100: 100');
     expect(within(card).getByTestId('line-oee-planned').textContent).toBe('333.3 min');
     expect(within(card).getByTestId('line-oee-ideal').textContent).toBe('250.0 min');
     expect(card.querySelector('[data-flag="final"]')?.textContent).toBe('Final');
@@ -453,6 +486,68 @@ describe('OEE dashboard', () => {
     );
     expect(screen.getByTestId('machine-bottleneck-state').textContent).toContain('unknown');
     expect(within(screen.getByTestId('oee-machine-asm-01')).queryByText('Bottleneck')).toBeNull();
+  });
+
+  it('shows an idle shift as an empty state with its reason, not a card of dashes (E-01)', async () => {
+    const idle = { oee: null, plannedBusyMs: 0, good: {}, idealMs: '0/1' };
+    vi.stubGlobal(
+      'fetch',
+      api({
+        '/api/v1/oee/line': (url) =>
+          url.searchParams.get('bucket') === 'shift'
+            ? json(lineOee('shift', [lineBucket('shift', SHIFT_KEY, { ...idle, final: true })]))
+            : json(
+                lineOee('hour', [
+                  lineBucket('hour', '2026-10-15T03:00:00.000Z', idle),
+                  lineBucket('hour', '2026-10-15T04:00:00.000Z', idle),
+                ]),
+              ),
+      }),
+    );
+    await renderApp('/oee');
+    const card = await screen.findByTestId('line-oee-card');
+    const empty = await within(card).findByTestId('line-oee-idle');
+    expect(empty.textContent).toContain('No line time this shift');
+    expect(empty.textContent).toContain('No order was in progress');
+    expect(card.dataset.oee).toBe('n/a');
+    expect(card.dataset.final).toBe('true');
+    expect(within(card).queryByTestId('line-oee-value')).toBeNull();
+    expect(within(card).queryByTestId('line-oee-planned')).toBeNull();
+    // Its finality is still said once, and the bottleneck still shown.
+    expect(card.querySelector('[data-flag="final"]')).toBeTruthy();
+    expect(within(card).getByTestId('line-bottleneck-VB-100')).toBeTruthy();
+    // No hour had line time: one empty state, no rows of dashes.
+    expect(await within(card).findByText('No hour with planned line time yet')).toBeTruthy();
+    expect(card.querySelector('[data-testid^="line-hour-"]')).toBeNull();
+  });
+
+  it('lists the hours with line time and counts the others', async () => {
+    vi.stubGlobal(
+      'fetch',
+      api({
+        '/api/v1/oee/line': (url) =>
+          url.searchParams.get('bucket') === 'shift'
+            ? json(lineOee('shift', [lineBucket('shift', SHIFT_KEY)]))
+            : json(
+                lineOee('hour', [
+                  lineBucket('hour', '2026-10-15T03:00:00.000Z'),
+                  lineBucket('hour', '2026-10-15T04:00:00.000Z', { oee: null, good: {} }),
+                  lineBucket('hour', '2026-10-15T05:00:00.000Z', { oee: null, good: {} }),
+                  // Packed good without line time is still worth a row.
+                  lineBucket('hour', '2026-10-15T06:00:00.000Z', { oee: null }),
+                ]),
+              ),
+      }),
+    );
+    await renderApp('/oee');
+    const card = await screen.findByTestId('line-oee-card');
+    await within(card).findByTestId('line-hour-2026-10-15T03:00:00.000Z');
+    expect(
+      [...card.querySelectorAll('[data-testid^="line-hour-"]')].map((row) =>
+        row.getAttribute('data-testid'),
+      ),
+    ).toEqual(['line-hour-2026-10-15T03:00:00.000Z', 'line-hour-2026-10-15T06:00:00.000Z']);
+    expect(card.textContent).toContain('2 hours without planned line time not listed.');
   });
 
   it('says when no shift has started', async () => {

@@ -205,6 +205,29 @@ describe('KpiTile', () => {
   });
 });
 
+describe('KpiTile details grid (UX-3, #323)', () => {
+  const grid = (count: number) => {
+    const { unmount } = render(
+      <KpiTile
+        title="Cell M1"
+        testId="t"
+        headline={{ label: 'OEE', value: '63.00 %' }}
+        details={Array.from({ length: count }, (_, i) => ({ label: `d${String(i)}`, value: '1' }))}
+      />,
+    );
+    const classes = classesOf(screen.getByText('d0').closest('dl')?.parentElement as Element);
+    unmount();
+    return classes;
+  };
+
+  it('puts three figures (A, P and Q) in one row, two or four two by two', () => {
+    expect(grid(3)).toContain('grid-cols-3');
+    expect(grid(2)).toContain('grid-cols-2');
+    expect(grid(4)).toContain('grid-cols-2');
+    expect(grid(4)).not.toContain('grid-cols-3');
+  });
+});
+
 describe('Callout', () => {
   it('shows its title and words on its tone, with a glyph, passing data-* through', () => {
     render(

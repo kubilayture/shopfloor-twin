@@ -342,15 +342,9 @@ describe('machine detail', () => {
     await app.open();
     const age = await screen.findByTestId('age-coolant-temperature');
     // 3 d 2 h 20 min before the plant clock (06:10 on the 15th).
-    expect(age.textContent).toBe('3 d 2 h old');
-    // Older than the range shown: abnormal, whatever the machine does.
-    expect(age.dataset.tone).toBe('warn');
-    await app.push({
-      type: 'state',
-      equipment: 'cnc-01',
-      current: current({ state: 'Idle', since: at(9), seq: 11 }),
-    });
-    expect(screen.getByTestId('age-coolant-temperature').dataset.tone).toBe('warn');
+    // How long the value has been unchanged, as neutral text: never a warning (#359 review).
+    expect(age.textContent).toBe('unchanged for 3 d 2 h');
+    expect(age.className).toBe('text-ink-secondary');
     expect(screen.getByRole('rowheader', { name: /^Coolant temperature/ })).toBeTruthy();
     const empty = await screen.findByText('No samples in this range.');
     const figure = empty.closest('figure');
@@ -359,7 +353,7 @@ describe('machine detail', () => {
     expect(figure?.textContent).toContain('before this range');
   });
 
-  it('keeps the age of a quiet signal neutral, and warns only when the machine runs (#359 review)', async () => {
+  it('shows how long a quiet signal is unchanged as neutral text, running or standing (#359 review)', async () => {
     vi.stubGlobal(
       'fetch',
       fakeFetch({
@@ -392,22 +386,22 @@ describe('machine detail', () => {
     );
     const app = await renderApp('/equipment/cnc-01?range=8h');
     await app.open();
-    // Running and silent for 20 min: abnormal, the amber tag.
+    // Running with a steady signal: telemetry is sent on change, so the value is simply
+    // unchanged. Neutral text, no amber tag (#359 review, round 2).
     const running = await screen.findByTestId('age-spindle-load');
     expect(screen.getByTestId('current-state').dataset.state).toBe('Running');
-    expect(running.dataset.tone).toBe('warn');
-    expect(running.textContent).toBe('20 min old');
-    expect(running.className).toContain('bg-warn-soft');
+    expect(running.textContent).toBe('unchanged for 20 min');
+    expect(running.className).toBe('text-ink-secondary');
+    expect(running.closest('td')?.querySelector('[class*="warn"]')).toBeNull();
 
-    // Idle: a quiet on-change signal is normal; its age is plain secondary text.
+    // The same when the machine stands.
     await app.push({
       type: 'state',
       equipment: 'cnc-01',
       current: current({ state: 'Idle', since: at(9), seq: 11 }),
     });
     const idle = screen.getByTestId('age-spindle-load');
-    expect(idle.dataset.tone).toBe('neutral');
-    expect(idle.textContent).toBe('20 min ago');
-    expect(idle.className).not.toContain('warn');
+    expect(idle.textContent).toBe('unchanged for 20 min');
+    expect(idle.className).toBe('text-ink-secondary');
   });
 });

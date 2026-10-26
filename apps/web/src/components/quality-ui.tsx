@@ -5,6 +5,7 @@ import { HOLD_STATE_TEXT, SIGNAL_STATUS_TEXT, type QualityFailure } from '../dom
 import { formatPlantTime, wallTimeText } from '../domain/time.ts';
 import { Badge, type BadgeVariant } from './ui/badge.tsx';
 import { buttonClass as uiButtonClass } from './ui/button.tsx';
+import { Callout } from './ui/callout.tsx';
 import { Textarea } from './ui/controls.tsx';
 import { controlClass } from './ui/field.tsx';
 import {
@@ -150,7 +151,10 @@ export function HoldStateBadge({ state }: { readonly state: HoldState }) {
   );
 }
 
-/** A refused write: what happened, and the problem type as the MES named it. */
+/**
+ * A refused write: what happened, and the problem type as the MES named it; an `alarm` callout
+ * (design system 4.13), announced.
+ */
 export function FailureMessage({
   failure,
   testId,
@@ -159,27 +163,33 @@ export function FailureMessage({
   readonly testId: string;
 }) {
   return (
-    <div
+    <Callout
+      tone="alarm"
       role="alert"
       data-testid={testId}
       data-kind={failure.kind}
       data-type={failure.type ?? ''}
-      className="rounded border border-red-800 bg-red-50 p-2 text-sm text-red-950"
     >
       <p>{failure.text}</p>
       {failure.holds && failure.holds.length > 0 ? (
         <ul className="mt-1 list-disc pl-5" data-testid={`${testId}-holds`}>
           {failure.holds.map((id) => (
             <li key={id}>
-              <Link to="/quality/holds/$id" params={{ id }} className="text-sky-800 underline">
+              <Link
+                to="/quality/holds/$id"
+                params={{ id }}
+                className="text-link underline underline-offset-2 hover:text-accent-hover"
+              >
                 Hold {id}
               </Link>
             </li>
           ))}
         </ul>
       ) : null}
-      {failure.type ? <p className="mt-1 font-mono text-xs">Problem type: {failure.type}</p> : null}
-    </div>
+      {failure.type ? (
+        <p className="mt-1 font-mono text-xs break-all">Problem type: {failure.type}</p>
+      ) : null}
+    </Callout>
   );
 }
 

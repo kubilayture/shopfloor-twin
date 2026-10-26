@@ -44,6 +44,8 @@ const FILES = [
   // Order actions and order OEE (UX-6b, #329).
   'screens/order-actions.tsx',
   'screens/order-oee.tsx',
+  // Quality holds (UX-9b, #333).
+  'screens/holds.tsx',
 ];
 
 /** Utility prefixes: a literal with one of these is a class list. */

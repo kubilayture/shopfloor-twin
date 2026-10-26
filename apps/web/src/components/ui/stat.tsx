@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Badge } from './badge.tsx';
+import { Badge, type DataAttributes } from './badge.tsx';
 import { Card } from './card.tsx';
 import type { Tone } from './tokens.ts';
 
@@ -99,7 +99,9 @@ export function Stat({
 
 /**
  * A KPI card (design system 4.4): one headline `Stat` and up to four compact ones under it; each
- * `Stat` is its own description list, so its label names its figure.
+ * `Stat` is its own description list, so its label names its figure. `children` go under the
+ * figures (the status flags, a note on how the figure is computed); `data-*` props pass through to
+ * the card (its raw values for tests, #295).
  */
 export function KpiTile({
   title,
@@ -108,6 +110,8 @@ export function KpiTile({
   status,
   tone,
   testId,
+  children,
+  ...data
 }: {
   readonly title: ReactNode;
   readonly headline: Omit<StatProps, 'emphasis'>;
@@ -116,9 +120,11 @@ export function KpiTile({
   readonly status?: ReactNode;
   readonly tone?: Tone | undefined;
   readonly testId?: string | undefined;
-}) {
+  readonly children?: ReactNode;
+} & DataAttributes) {
   return (
     <Card
+      {...data}
       title={title}
       headingLevel={3}
       status={status}
@@ -135,6 +141,7 @@ export function KpiTile({
             ))}
           </div>
         ) : null}
+        {children}
       </div>
     </Card>
   );

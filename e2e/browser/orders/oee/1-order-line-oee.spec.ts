@@ -8,10 +8,11 @@ import { logIn } from '../../login.ts';
  * reconciliation has judged every order completed in shift A and shift A's line OEE final and
  * equal to the live truth through the API. Here the supervisor opens each order's detail and the
  * OEE dashboard for shift A, waits until the page calls the values final, and reads them from the
- * page: the four-decimal text and the exact fraction (`data-fraction`) of the order's OEE, A, P,
- * Q, first-pass yield and line OEE, and of shift A's line OEE with the bottleneck per product.
- * It writes them to `oee-screen.json`; the reconciliation compares them with the live truth, so a
- * page that shows anything but the truth's values fails the pass (a missing file too).
+ * page: the four decimals (`data-decimal`) and the exact fraction (`data-fraction`) of the
+ * order's OEE, A, P, Q, first-pass yield and line OEE, and of shift A's line OEE with the
+ * bottleneck per product; the first-pass counts are the bare numbers the page shows. It writes
+ * them to `oee-screen.json`; the reconciliation compares them with the live truth, so a page that
+ * shows anything but the truth's values fails the pass (a missing file too).
  */
 const results = process.env.RECONCILE_RESULTS;
 const orders = (process.env.RECONCILE_OEE_ORDERS ?? '').split(',').filter((id) => id !== '');
@@ -24,9 +25,14 @@ interface ScreenRatio {
   readonly fraction: string;
 }
 
+/**
+ * A ratio as the page holds it: the MES's four decimals from `data-decimal` (the visible text may
+ * be a percentage: the order detail's is since UX-6b, #329) and the exact fraction from
+ * `data-fraction`.
+ */
 async function ratio(locator: Locator): Promise<ScreenRatio> {
   return {
-    decimal: ((await locator.textContent()) ?? '').trim(),
+    decimal: (await locator.getAttribute('data-decimal')) ?? '',
     fraction: (await locator.getAttribute('data-fraction')) ?? '',
   };
 }

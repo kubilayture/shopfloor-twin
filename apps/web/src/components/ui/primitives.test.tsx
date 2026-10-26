@@ -40,6 +40,17 @@ describe('Card', () => {
     expect(card.className).not.toMatch(/shadow|border-l-4/);
   });
 
+  it('passes data-* props through to its element (design system 4)', () => {
+    render(
+      <Card title="Order OEE" testId="card" data-final="false" data-oee="0.6300">
+        <p>body</p>
+      </Card>,
+    );
+    const card = screen.getByTestId('card');
+    expect(card.dataset.final).toBe('false');
+    expect(card.dataset.oee).toBe('0.6300');
+  });
+
   it('takes an h3, another element, compact padding and a tone bar for abnormal items', () => {
     render(
       <Card title="CNC-01" headingLevel={3} as="article" padding="compact" tone="alarm" testId="c">
@@ -181,6 +192,28 @@ describe('KpiTile', () => {
       .getAllByRole('term')
       .map((t) => t.textContent);
     expect(terms).toEqual(['Average per 10 min', 'a', 'b', 'c', 'd']);
+  });
+
+  it('passes data-* through to the card and puts its children under the figures (UX-6b, #329)', () => {
+    render(
+      <KpiTile
+        title="First-pass yield"
+        testId="fpy"
+        data-final="true"
+        data-yield="0.9000"
+        headline={{ label: 'Yield', value: '90.00 %' }}
+        details={[{ label: 'Blanks taken', value: '10' }]}
+      >
+        <p>Across the routing.</p>
+      </KpiTile>,
+    );
+    const tile = screen.getByRole('group', { name: 'First-pass yield' });
+    expect(tile.dataset.testid).toBe('fpy');
+    expect(tile.dataset.final).toBe('true');
+    expect(tile.dataset.yield).toBe('0.9000');
+    const note = within(tile).getByText('Across the routing.');
+    const last = within(tile).getByText('Blanks taken');
+    expect(last.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
 

@@ -302,7 +302,7 @@ function CommandRow({
         </div>
         {mayAbandon && canAbandon(order, command) ? (
           <Button
-            variant="secondary"
+            variant="danger"
             size="sm"
             data-testid={`abandon-${command.commandId}`}
             onClick={onAbandon}

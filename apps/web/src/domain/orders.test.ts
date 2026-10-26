@@ -162,7 +162,18 @@ describe('orders domain', () => {
     // #177: a close before every operation is signed off says so, with the MES's list.
     const signOff = orderFailure(conflict(PROBLEM_TYPES.signOffMissing));
     expect(signOff).toMatchObject({ kind: 'sign-off', type: PROBLEM_TYPES.signOffMissing });
-    expect(signOff.text).toMatch(/^Not closed: not every operation is signed off .*\(409, d\)/);
+    expect(signOff.text).toMatch(/^Not closed: not every operation is signed off .*\(d\)/);
+    // The texts people read carry no HTTP status code (the problem type is shown beside them).
+    for (const type of [
+      PROBLEM_TYPES.orderStale,
+      PROBLEM_TYPES.orderState,
+      PROBLEM_TYPES.signOffMissing,
+      PROBLEM_TYPES.qualityHold,
+      PROBLEM_TYPES.genealogyPending,
+      PROBLEM_TYPES.commandsUnsettled,
+    ]) {
+      expect(orderFailure(conflict(type)).text, type).not.toMatch(/409/);
+    }
     const forbidden = new ApiError('Forbidden', 403, {
       type: PROBLEM_TYPES.forbidden,
       title: 'Forbidden',

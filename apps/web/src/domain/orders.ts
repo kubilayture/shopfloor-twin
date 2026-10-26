@@ -356,14 +356,14 @@ export function orderFailure(error: unknown): OrderFailure {
       return {
         kind: 'stale',
         type,
-        text: 'Not done: the order changed since you started (409). Nothing was sent with the newer version; the order is read again so you can check it and start again.',
+        text: 'Not done: the order changed since you started. Nothing was sent with the newer version; the order is read again so you can check it and start again.',
       };
     }
     if (type === PROBLEM_TYPES.orderState) {
       return {
         kind: 'state',
         type,
-        text: `Not done: the order's status does not allow this now (409, ${detail}).`,
+        text: `Not done: the order's status does not allow this now (${detail}).`,
       };
     }
     if (type === PROBLEM_TYPES.signOffMissing) {
@@ -371,7 +371,7 @@ export function orderFailure(error: unknown): OrderFailure {
       return {
         kind: 'sign-off',
         type,
-        text: `Not closed: not every operation is signed off at its terminal yet (409, ${detail}). Operators sign off each completed operation at their work center's terminal; then close again.`,
+        text: `Not closed: not every operation is signed off at its terminal yet (${detail}). Operators sign off each completed operation at their work center's terminal; then close again.`,
       };
     }
     if (type === PROBLEM_TYPES.qualityHold) {
@@ -382,7 +382,7 @@ export function orderFailure(error: unknown): OrderFailure {
         kind: 'quality-hold',
         type,
         holds,
-        text: `Not closed: ${holds.length === 1 ? 'an open quality hold covers' : 'open quality holds cover'} units of this order or the order itself (409). Quality releases or rejects ${holds.length === 1 ? 'it' : 'them'} first; a hold never changes quantities. Then close again.`,
+        text: `Not closed: ${holds.length === 1 ? 'an open quality hold covers' : 'open quality holds cover'} units of this order or the order itself. Quality releases or rejects ${holds.length === 1 ? 'it' : 'them'} first; a hold never changes quantities. Then close again.`,
       };
     }
     if (type === PROBLEM_TYPES.genealogyPending) {
@@ -390,14 +390,14 @@ export function orderFailure(error: unknown): OrderFailure {
       return {
         kind: 'genealogy-pending',
         type,
-        text: `Not closed yet: the genealogy has not processed every fact of the order's units, so the MES cannot tell whether a held lot went into it (409, retryable). Try again in ${String(error.retryAfter ?? 2)} s. (${detail})`,
+        text: `Not closed yet: the genealogy has not processed every fact of the order's units, so the MES cannot tell whether a held lot went into it. Try again in ${String(error.retryAfter ?? 2)} s. (${detail})`,
       };
     }
     if (type === PROBLEM_TYPES.commandsUnsettled) {
       return {
         kind: 'unsettled',
         type,
-        text: `Not done: an earlier command of the order is not settled yet, so a re-dispatch could make a second job (409, ${detail}).`,
+        text: `Not done: an earlier command of the order is not settled yet, so a re-dispatch could make a second job (${detail}).`,
       };
     }
   }

@@ -215,7 +215,11 @@ function subscribeNarrow(onChange: () => void): () => void {
 const isNarrow = () =>
   typeof window.matchMedia === 'function' && window.matchMedia(NARROW_QUERY).matches;
 
-function useNarrow(): boolean {
+/**
+ * Whether the screen is below `md`, where a `stack` table shows cards: a screen sizes its row
+ * actions for touch there (44 px, design system 7, 2.5.8).
+ */
+export function useNarrow(): boolean {
   return useSyncExternalStore(subscribeNarrow, isNarrow, () => false);
 }
 

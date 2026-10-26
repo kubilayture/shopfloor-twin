@@ -30,7 +30,7 @@ import { Button } from '../components/ui/button.tsx';
 import { Callout } from '../components/ui/callout.tsx';
 import { Code } from '../components/ui/code.tsx';
 import { Select, Textarea, TextInput } from '../components/ui/controls.tsx';
-import { DataTable, type Column } from '../components/ui/data-table.tsx';
+import { DataTable, useNarrow, type Column } from '../components/ui/data-table.tsx';
 import { DescriptionList, type Fact } from '../components/ui/description-list.tsx';
 import { DetailPanel, useWide } from '../components/ui/detail-panel.tsx';
 import { Disclosure } from '../components/ui/disclosure.tsx';
@@ -825,6 +825,8 @@ export function AlarmList() {
   const view: AlarmView = search.view ?? 'active';
   const mayAck = useCan('alarm:ack');
   const wide = useWide();
+  // Row actions are 44 px touch targets on the stacked cards (design system 7, 2.5.8).
+  const actionSize = useNarrow() ? 'lg' : 'sm';
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
   const [message, setMessage] = useState<Message | undefined>(undefined);
   useAlarmsTopic();
@@ -992,7 +994,7 @@ export function AlarmList() {
         {mayAck && acknowledgeable(occurrence) ? (
           <Button
             variant="ghost"
-            size="sm"
+            size={actionSize}
             data-testid={`ack-${occurrence.id}`}
             aria-label={`Acknowledge ${occurrence.code} on ${name}`}
             // Busy (not disabled) while its own acknowledgement is on the way: the focus stays
@@ -1008,7 +1010,7 @@ export function AlarmList() {
         ) : null}
         <Button
           variant="ghost"
-          size="sm"
+          size={actionSize}
           data-testid={`details-${occurrence.id}`}
           aria-label={`Details of ${occurrence.code} on ${name}`}
           onClick={() => {

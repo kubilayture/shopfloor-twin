@@ -1133,7 +1133,8 @@ describe('the alarm list on the design system (UX-4a, #324)', () => {
     await renderApp('/alarms');
     const row = await screen.findByTestId(`alarm-row-${a.id}`);
     expect(row.tagName).toBe('LI');
-    expect(within(row).getByTestId(`ack-${a.id}`)).toBeTruthy();
+    // 44 px touch targets on the cards.
+    expect(within(row).getByTestId(`ack-${a.id}`).className).toContain('min-h-11');
     expect(within(row).getByTestId(`details-${a.id}`)).toBeTruthy();
     expect(within(row).getByTestId(`select-${a.id}`)).toBeTruthy();
     expect(screen.getByTestId('select-all')).toBeTruthy();

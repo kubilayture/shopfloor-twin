@@ -56,7 +56,10 @@ const PERMISSION: Readonly<Record<ActionDraft['action'], Permission>> = {
   abandon: 'order:abandon',
 };
 
-/** What each write does, said before it is sent. */
+/**
+ * What each write does, said before it is sent; an irreversible one (cancel, close, abandon) says
+ * it cannot be undone (design system 4.9).
+ */
 function effectText(draft: ActionDraft, order: OrderDto): string {
   switch (draft.action) {
     case 'release':
@@ -66,11 +69,11 @@ function effectText(draft: ActionDraft, order: OrderDto): string {
     case 'redispatch':
       return `Sends the remainder again as a new command: at most ${String(order.remaining)} blanks (the order quantity minus the blanks the device accepted).`;
     case 'cancel':
-      return 'Cancels the order (not dispatched yet) and tells the ERP it is cancelled.';
+      return 'Cancels the order (not dispatched yet) and tells the ERP it is cancelled. This cannot be undone.';
     case 'close':
-      return 'Closes the completed order and tells the ERP it is closed.';
+      return 'Closes the completed order and tells the ERP it is closed. This cannot be undone.';
     case 'abandon':
-      return `Writes off ${draft.commandId}: its device run has ended. It becomes abandoned (settled, its incidents closed) and its whole quantity counts as dispatched, so the order can end short, never over.`;
+      return `Writes off ${draft.commandId}: its device run has ended. It becomes abandoned (settled, its incidents closed) and its whole quantity counts as dispatched, so the order can end short, never over. This cannot be undone.`;
   }
 }
 

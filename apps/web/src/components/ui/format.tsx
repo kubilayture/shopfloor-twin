@@ -31,7 +31,19 @@ interface TestIdProps {
  * visually hidden text, so a screen reader hears why ("not applicable: no planned busy time").
  * Never "n/a", "none" or an en dash in the visible text (G-16).
  */
-export function Missing({ reason, testId, className }: { readonly reason: string } & TestIdProps) {
+export function Missing({
+  reason,
+  reasonShown = false,
+  testId,
+  className,
+}: {
+  readonly reason: string;
+  /**
+   * The reason is already visible next to the dash (a `Stat`'s hint line): no visually hidden
+   * copy, so a screen reader hears it once.
+   */
+  readonly reasonShown?: boolean;
+} & TestIdProps) {
   return (
     <span
       data-testid={testId}
@@ -40,7 +52,7 @@ export function Missing({ reason, testId, className }: { readonly reason: string
       className={`text-ink-secondary${className ? ` ${className}` : ''}`}
     >
       <span aria-hidden="true">—</span>
-      <span className="sr-only">{reason}</span>
+      {reasonShown ? null : <span className="sr-only">{reason}</span>}
     </span>
   );
 }
@@ -135,6 +147,8 @@ interface RatioProps extends TestIdProps {
   readonly ratio: RatioDto | null | undefined;
   /** Why the value would be null (`NA_REASON` in `oee-ui.tsx`): `Missing`'s reason. */
   readonly na: string;
+  /** The reason is shown visibly beside a null value: `Missing`'s `reasonShown`. */
+  readonly naShown?: boolean | undefined;
 }
 
 /**
@@ -153,11 +167,11 @@ function ratioData(ratio: RatioDto | null | undefined) {
  * the sign; the four decimals in `data-decimal`, the exact fraction in `data-fraction` and the
  * tooltip. Not applicable: `Missing` with the reason.
  */
-export function Percent({ ratio, na, testId, className }: RatioProps) {
+export function Percent({ ratio, na, naShown = false, testId, className }: RatioProps) {
   if (!ratio) {
     return (
       <span data-testid={testId} {...ratioData(ratio)} className={className}>
-        <Missing reason={na} />
+        <Missing reason={na} reasonShown={naShown} />
       </span>
     );
   }

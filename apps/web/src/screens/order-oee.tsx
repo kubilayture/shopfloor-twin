@@ -1,4 +1,4 @@
-import type { OrderJobOeeDto, OrderOeeDto } from '@shopfloor/contracts/mes-api';
+import type { OrderJobOeeDto, OrderOeeDto, Ratio } from '@shopfloor/contracts/mes-api';
 import { useQuery } from '@tanstack/react-query';
 import { ApiError, getOrderOee } from '../api/client.ts';
 import { queryKeys } from '../api/queries.ts';
@@ -12,7 +12,7 @@ import { EmptyState } from '../components/ui/empty-state.tsx';
 import { Duration, Missing, Percent, PlantTime } from '../components/ui/format.tsx';
 import { Section } from '../components/ui/section.tsx';
 import { Skeleton } from '../components/ui/skeleton.tsx';
-import { KpiTile } from '../components/ui/stat.tsx';
+import { KpiTile, type StatProps } from '../components/ui/stat.tsx';
 import {
   ABOVE_ONE_TEXT,
   orderFlags,
@@ -131,42 +131,39 @@ function msOf(text: string): number {
   return Number(exact.num) / Number(exact.den);
 }
 
+/**
+ * A ratio as a tile's figure: the percentage (its four decimals in `data-decimal`); when it does
+ * not apply, the dash with its reason as the visible hint line under it, said once (E-01).
+ */
+function ratioStat(
+  label: string,
+  ratio: Ratio | null | undefined,
+  na: string,
+  testId: string,
+): Omit<StatProps, 'emphasis'> {
+  return {
+    label,
+    value: <Percent ratio={ratio} na={na} naShown={!ratio} testId={testId} />,
+    hint: ratio ? undefined : na,
+  };
+}
+
 function OrderOeeTile({ order }: { readonly order: OrderOeeDto }) {
   const { oee } = order;
   return (
     <KpiTile
       title="Order OEE"
       testId="order-oee-card"
-      headline={{
-        label: 'OEE',
-        value: <Percent ratio={oee.oee} na={NA_REASON.oee} testId="order-oee-oee" />,
-        hint: oee.oee ? undefined : NA_REASON.oee,
-      }}
+      headline={ratioStat('OEE', oee.oee, NA_REASON.oee, 'order-oee-oee')}
       details={[
-        {
-          label: 'Availability',
-          value: (
-            <Percent
-              ratio={oee.availability}
-              na={NA_REASON.availability}
-              testId="order-oee-availability"
-            />
-          ),
-        },
-        {
-          label: 'Performance',
-          value: (
-            <Percent
-              ratio={oee.performance}
-              na={NA_REASON.performance}
-              testId="order-oee-performance"
-            />
-          ),
-        },
-        {
-          label: 'Quality (OP10)',
-          value: <Percent ratio={oee.quality} na={NA_REASON.quality} testId="order-oee-quality" />,
-        },
+        ratioStat(
+          'Availability',
+          oee.availability,
+          NA_REASON.availability,
+          'order-oee-availability',
+        ),
+        ratioStat('Performance', oee.performance, NA_REASON.performance, 'order-oee-performance'),
+        ratioStat('Quality (OP10)', oee.quality, NA_REASON.quality, 'order-oee-quality'),
         {
           label: 'Planned busy time',
           value: <Duration ms={oee.totals.plannedBusyMs} />,
@@ -195,11 +192,7 @@ function FirstPassYieldTile({ order }: { readonly order: OrderOeeDto }) {
       testId="order-fpy"
       data-final={String(fpy.final)}
       data-yield={fpy.yield?.decimal ?? 'n/a'}
-      headline={{
-        label: 'Yield',
-        value: <Percent ratio={fpy.yield} na={NA_REASON.yield} testId="order-fpy-yield" />,
-        hint: fpy.yield ? undefined : NA_REASON.yield,
-      }}
+      headline={ratioStat('Yield', fpy.yield, NA_REASON.yield, 'order-fpy-yield')}
       details={[
         {
           label: 'Packed good first time',
@@ -279,11 +272,7 @@ function OrderLineTile({ order }: { readonly order: OrderOeeDto }) {
       data-oee={line.oee?.decimal ?? 'n/a'}
       data-above-one={String(line.aboveOne)}
       tone={line.aboveOne ? 'warn' : undefined}
-      headline={{
-        label: 'Line OEE',
-        value: <Percent ratio={line.oee} na={NA_REASON.line} testId="order-line-oee-value" />,
-        hint: line.oee ? undefined : NA_REASON.line,
-      }}
+      headline={ratioStat('Line OEE', line.oee, NA_REASON.line, 'order-line-oee-value')}
       details={[
         { label: 'Planned busy time', value: <Duration ms={line.plannedBusyMs} /> },
         { label: 'Ideal time at the bottleneck', value: <Duration ms={msOf(line.idealMs)} /> },

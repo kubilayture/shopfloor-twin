@@ -914,6 +914,8 @@ describe('order actions on the design system (UX-6b, #329)', () => {
     const app = await renderApp('/orders/PO-1001');
     fireEvent.click(await screen.findByTestId('action-cancel'));
     const cancel = screen.getByTestId('action-form-cancel');
+    // Irreversible writes say so in their confirmation (design system 4.9).
+    expect(cancel.textContent).toContain('This cannot be undone.');
     const reason = within(cancel).getByRole('textbox', { name: 'Reason' });
     expect(reason).toBe(screen.getByTestId('action-reason'));
     expect(reason.getAttribute('name')).toBe('reason');
@@ -932,6 +934,7 @@ describe('order actions on the design system (UX-6b, #329)', () => {
     });
     fireEvent.click(await screen.findByTestId('action-close'));
     const close = screen.getByTestId('action-form-close');
+    expect(close.textContent).toContain('This cannot be undone.');
     const closeSend = within(close).getByRole('button', { name: 'Close order' });
     expect(closeSend.className).toContain('bg-accent');
     expect(closeSend.className).not.toContain('bg-alarm-solid');
@@ -953,6 +956,8 @@ describe('order actions on the design system (UX-6b, #329)', () => {
     });
     await renderApp('/orders/PO-1001');
     fireEvent.click(await screen.findByTestId('action-release'));
+    // A release can be followed by a cancel: it does not claim to be irreversible.
+    expect(screen.getByTestId('action-form-release').textContent).not.toContain('cannot be undone');
     const send = screen.getByTestId<HTMLButtonElement>('action-submit');
     send.focus();
     fireEvent.click(send);
@@ -1003,6 +1008,7 @@ describe('order actions on the design system (UX-6b, #329)', () => {
     expect(abandon.className).toContain('text-alarm-ink');
     fireEvent.click(abandon);
     const form = screen.getByTestId('action-form-abandon');
+    expect(form.textContent).toContain('This cannot be undone.');
     expect(within(form).getByRole('heading', { level: 2 }).textContent).toBe(
       `Abandon command: ${lostJob.commandId}`,
     );

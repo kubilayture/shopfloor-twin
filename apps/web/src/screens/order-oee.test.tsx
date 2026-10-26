@@ -158,8 +158,17 @@ describe('order OEE on the order detail (#233)', () => {
     const value = (id: string) => within(section).getByTestId(id);
     expect(value('order-oee-oee').dataset.decimal).toBe('n/a');
     expect(value('order-oee-oee').dataset.fraction).toBe('n/a');
-    expect(value('order-oee-oee').textContent).toBe(`—${NA_REASON.oee}`);
-    expect(within(value('order-oee-card')).getAllByText(NA_REASON.oee).length).toBe(2);
+    // The dash, and the reason once: as the visible line under it, not again hidden in the value.
+    expect(value('order-oee-oee').textContent).toBe('—');
+    expect(value('order-oee-oee').querySelector('[data-missing]')?.getAttribute('title')).toBe(
+      NA_REASON.oee,
+    );
+    expect(within(value('order-oee-card')).getAllByText(NA_REASON.oee)).toHaveLength(1);
+    // A compact figure that does not apply shows its reason too, not only in a tooltip.
+    expect(value('order-oee-availability').textContent).toBe('—');
+    expect(within(value('order-oee-card')).getAllByText(NA_REASON.availability)).toHaveLength(1);
+    // One that applies has no reason line.
+    expect(within(value('order-oee-card')).queryByText(NA_REASON.performance)).toBeNull();
     expect(value('order-fpy-yield').dataset.decimal).toBe('n/a');
     expect(value('order-fpy-good').textContent).toBe('0');
     // No line OEE yet: the tile says why instead of a figure.

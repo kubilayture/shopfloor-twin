@@ -1,12 +1,13 @@
 import {
   ALARM_VIEWS,
   MES_API_LIMITS,
+  type AlarmHistory,
   type AlarmOccurrenceDto,
   type AlarmPointDto,
 } from '@shopfloor/contracts/mes-api';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearch } from '@tanstack/react-router';
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useCan, useUnsavedDraft } from '../auth/auth.tsx';
 import {
   acknowledgeAlarm,
@@ -22,9 +23,23 @@ import {
   unshelvePoint,
 } from '../api/client.ts';
 import { queryKeys, useAlarmConfig, usePlantClock } from '../api/queries.ts';
-import { useHeadingFocus } from '../components/heading-focus.ts';
 import { PriorityBadge } from '../components/priority-badge.tsx';
 import { QueryError } from '../components/query-error.tsx';
+import { Badge } from '../components/ui/badge.tsx';
+import { Button } from '../components/ui/button.tsx';
+import { Callout } from '../components/ui/callout.tsx';
+import { Code } from '../components/ui/code.tsx';
+import { Select, Textarea, TextInput } from '../components/ui/controls.tsx';
+import { DataTable, type Column } from '../components/ui/data-table.tsx';
+import { DescriptionList, type Fact } from '../components/ui/description-list.tsx';
+import { DetailPanel, useWide } from '../components/ui/detail-panel.tsx';
+import { Disclosure } from '../components/ui/disclosure.tsx';
+import { EmptyState } from '../components/ui/empty-state.tsx';
+import { Duration, PlantTime, WallTime } from '../components/ui/format.tsx';
+import { PageHeader } from '../components/ui/page-header.tsx';
+import { Section } from '../components/ui/section.tsx';
+import { TabPanel, Tabs } from '../components/ui/tabs.tsx';
+import type { Tone } from '../components/ui/tokens.ts';
 import {
   ALARM_VIEW_LABELS,
   ackFailure,
@@ -32,6 +47,7 @@ import {
   commentFailure,
   endReasonText,
   floodText,
+  isShelved,
   mergeAlarms,
   newerOccurrence,
   newerShelf,
@@ -41,13 +57,9 @@ import {
   shelvePresets,
   stateText,
   type AlarmView,
+  type Priority,
 } from '../domain/alarms.ts';
-import {
-  formatClockSeconds,
-  formatDuration,
-  formatPlantTime,
-  formatPlantTimeRelative,
-} from '../domain/time.ts';
+import { formatPlantTime } from '../domain/time.ts';
 import type { WriteFailure } from '../domain/writes.ts';
 import { dropLiveOccurrences, upsertOccurrence, upsertPoint } from '../live/live-cache.ts';
 import {
@@ -57,32 +69,65 @@ import {
   useLiveSubscriptions,
 } from '../live/live-context.tsx';
 
-const inputClass = 'rounded border border-slate-500 bg-white px-2 py-1 text-sm';
-const buttonClass =
-  'rounded border border-slate-700 bg-white px-3 py-1 text-sm font-medium text-slate-900 hover:bg-slate-100 disabled:opacity-60';
-const primaryClass =
-  'rounded border border-sky-900 bg-sky-800 px-3 py-1 text-sm font-semibold text-white hover:bg-sky-900 disabled:opacity-60';
+/**
+ * The alarm list (#145; UX-4a, #324): the four operator views as `Tabs`, each a `DataTable` with
+ * priority, the unacknowledged rows marked by a bar in their priority's colour and bold text
+ * (ISA-18.2, A-03), the row actions side by side (A-02), selection and the bulk acknowledgement;
+ * one card per row below `md` (G-27). The chosen alarm's detail (`?alarm=`) is a sticky side panel
+ * from 1440 px and a side sheet below (design system 3.4, G-26, A-05), with its facts, the
+ * acknowledgement, the shelf, comments and history on `Field`s; names before codes (A-04, A-06).
+ */
 
 const HOUR = 3_600_000;
 /** How far back the History tab reads (the API allows at most 7 days). */
 export const HISTORY_MS = 24 * HOUR;
 
+/** The page heading's id: where the focus goes when a closed detail's opener is gone. */
+const TITLE_ID = 'alarms-title';
+/** The detail panel's title: the "Skip to the details" link's target. */
+const PANEL_TITLE_ID = 'alarm-panel-title';
+
 type Message = WriteFailure | { readonly kind: 'saved'; readonly text: string };
 
-function MessageLine({ message, testId }: { readonly message: Message; readonly testId: string }) {
+/** A write's outcome: an `ok` status or an `alarm` alert, with its kind for the tests. */
+function WriteMessage({ message, testId }: { readonly message: Message; readonly testId: string }) {
+  const saved = message.kind === 'saved';
   return (
-    <p
-      role={message.kind === 'saved' ? 'status' : 'alert'}
+    <Callout
+      tone={saved ? 'ok' : 'alarm'}
+      role={saved ? 'status' : 'alert'}
       data-testid={testId}
       data-kind={message.kind}
-      className={`rounded border p-2 text-sm ${
-        message.kind === 'saved'
-          ? 'border-emerald-800 bg-emerald-50 text-emerald-950'
-          : 'border-red-800 bg-red-50 text-red-950'
-      }`}
     >
       {message.text}
-    </p>
+    </Callout>
+  );
+}
+
+/** The bar of an unacknowledged alarm: its priority's border colour (design system 2.5). */
+const PRIORITY_TONE: Readonly<Record<Priority, Tone>> = {
+  high: 'alarm',
+  medium: 'warn',
+  low: 'info',
+};
+
+/** Not acknowledged yet (active or cleared): it must stand out (ISA-18.2, A-03). */
+const unacknowledged = (occurrence: AlarmOccurrenceDto): boolean =>
+  occurrence.state === 'unacked-active' || occurrence.state === 'unacked-cleared';
+
+const plural = (count: number, word: string): string =>
+  `${String(count)} ${word}${count === 1 ? '' : 's'}`;
+
+/** The alarm's name, then its code: "Coolant pressure low", `COOLANT-PRESSURE` below. */
+function AlarmName({ occurrence }: { readonly occurrence: AlarmOccurrenceDto }) {
+  if (!occurrence.text) return <Code className="whitespace-nowrap">{occurrence.code}</Code>;
+  return (
+    <>
+      <span className="block">{occurrence.text}</span>
+      <Code className="block whitespace-nowrap text-xs font-normal text-ink-secondary">
+        {occurrence.code}
+      </Code>
+    </>
   );
 }
 
@@ -92,46 +137,52 @@ function MessageLine({ message, testId }: { readonly message: Message; readonly 
 function FloodBanner({ id, name }: { readonly id: string; readonly name: string }) {
   const floods = useLiveAlarmKpi(`position:${id}`)?.floods ?? [];
   const config = useAlarmConfig();
+  const { clock } = usePlantClock();
   const episode = floods[0];
   if (!episode) return null;
   return (
-    <div
+    <Callout
+      tone="alarm"
       data-testid={`flood-banner-${id}`}
       data-episode={episode.id}
-      className="rounded border-2 border-red-800 bg-red-50 p-3 text-red-950"
+      title={
+        // Dated unless it began on the plant clock's day (design system 6.2): a flood that began
+        // before plant midnight does not read as today's.
+        <span role="alert">
+          Alarm flood in {name} since <PlantTime at={episode.startAt} clock={clock?.watermark} />
+        </span>
+      }
     >
-      <p role="alert" className="font-semibold">
-        <span aria-hidden="true">⚠ </span>Alarm flood in {name} since{' '}
-        <time dateTime={episode.startAt}>{formatClockSeconds(episode.startAt)}</time>
-      </p>
-      <p className="text-sm" data-testid={`flood-text-${id}`}>
+      <p data-testid={`flood-text-${id}`}>
         {config
           ? `${floodText(episode.peak, config.kpi)}, ${String(episode.raises)} since the flood began.`
           : `${String(episode.raises)} raises since the flood began.`}{' '}
         Deal with the highest priority first.
       </p>
-    </div>
+    </Callout>
   );
 }
 
-// ---- The occurrence panel ----
+// ---- The detail ----
 
 function ShelfSection({
   occurrence,
   point,
   detailShelf,
+  machineName,
   onWrite,
 }: {
   readonly occurrence: AlarmOccurrenceDto;
   readonly point: AlarmPointDto | undefined;
   readonly detailShelf: AlarmPointDto['shelf'] | undefined;
+  readonly machineName: string;
   readonly onWrite: (message: Message) => void;
 }) {
   const queryClient = useQueryClient();
+  const { clock } = usePlantClock();
   const shelf = newerShelf(point?.shelf, detailShelf);
-  const reasonId = useId();
-  const durationId = useId();
   const [reason, setReason] = useState('');
+  const [reasonError, setReasonError] = useState<string | undefined>(undefined);
   const canShelve = useCan('alarm:shelve');
   useUnsavedDraft(reason.trim() !== '');
   // Presets capped at the MES's real limit (#160); none until the configuration arrived.
@@ -212,6 +263,7 @@ function ShelfSection({
       return;
     }
     if (action === 'shelve' && reason.trim() === '') {
+      setReasonError('Enter a reason for shelving.');
       onWrite({ kind: 'invalid', text: 'Enter a reason for shelving.' });
       return;
     }
@@ -219,70 +271,71 @@ function ShelfSection({
   };
 
   return (
-    <section aria-labelledby={`${reasonId}-title`} className="mt-4" data-testid="shelf-section">
-      <h3 id={`${reasonId}-title`} className="font-semibold">
-        Shelf of {occurrence.equipment} {occurrence.code}
-      </h3>
-      <p className="text-xs text-slate-700">
-        Shelving hides the point&apos;s alarms from the active list for a time of plant time; the
-        KPIs still count them.
-      </p>
-      {shelf === undefined ? <p className="text-sm">Loading the shelf…</p> : null}
+    <Section
+      level={3}
+      title="Shelving"
+      testId="shelf-section"
+      description={
+        <>
+          Hides every <Code className="whitespace-nowrap">{occurrence.code}</Code> alarm of{' '}
+          {machineName} from the Active list for a time; the KPIs still count them.
+        </>
+      }
+    >
+      {shelf === undefined ? <p className="text-ink-secondary">Loading the shelf…</p> : null}
       {stale ? (
-        <div
+        <Callout
+          tone="alarm"
           role="alert"
           data-testid="shelf-conflict"
           data-kind="conflict"
-          className="mt-2 rounded border border-red-800 bg-red-50 p-2 text-sm text-red-950"
+          className="mb-3"
         >
           <p>
             The shelf changed while this panel was open (version {base} → {shelf.version}). Nothing
             is sent until you reload it.
           </p>
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
+            className="mt-2"
             data-testid="reload-shelf"
-            className={`${buttonClass} mt-2`}
             onClick={() => {
               setBase(undefined);
             }}
           >
             Reload the shelf
-          </button>
-        </div>
+          </Button>
+        </Callout>
       ) : null}
       {shelf?.shelved ? (
-        <div className="mt-2 flex flex-col gap-2 text-sm">
+        <div className="flex flex-col items-start gap-2">
           <p data-testid="shelf-state" data-shelved="true" data-version={shelf.version}>
-            Shelved by {shelf.by ?? '–'}
+            Shelved by {shelf.by ?? 'an unknown user'}
             {shelf.reason ? ` (“${shelf.reason}”)` : ''} until{' '}
-            {shelf.until ? <time dateTime={shelf.until}>{formatPlantTime(shelf.until)}</time> : '–'}{' '}
-            plant time.
+            {shelf.until ? (
+              <PlantTime at={shelf.until} clock={clock?.watermark} />
+            ) : (
+              'further notice'
+            )}
+            .
           </p>
           {canShelve ? (
-            <div>
-              <button
-                type="button"
-                data-testid="unshelve"
-                className={buttonClass}
-                disabled={write.isPending}
-                onClick={() => {
-                  submit('unshelve');
-                }}
-              >
-                {write.isPending ? 'Unshelving…' : 'Unshelve'}
-              </button>
-            </div>
+            <Button
+              variant="secondary"
+              data-testid="unshelve"
+              loading={write.isPending}
+              onClick={() => {
+                submit('unshelve');
+              }}
+            >
+              Unshelve
+            </Button>
           ) : null}
         </div>
       ) : null}
       {shelf && !shelf.shelved && !canShelve ? (
-        <p
-          className="mt-2 text-sm"
-          data-testid="shelf-state"
-          data-shelved="false"
-          data-version={shelf.version}
-        >
+        <p data-testid="shelf-state" data-shelved="false" data-version={shelf.version}>
           Not shelved.
         </p>
       ) : null}
@@ -290,7 +343,7 @@ function ShelfSection({
         <form
           noValidate
           aria-label="Shelve the point"
-          className="mt-2 flex flex-wrap items-end gap-2"
+          className="flex flex-wrap items-end gap-3"
           onSubmit={(event) => {
             event.preventDefault();
             submit('shelve');
@@ -304,55 +357,45 @@ function ShelfSection({
           >
             Not shelved.
           </p>
-          <div className="flex min-w-0 flex-col gap-1">
-            <label htmlFor={reasonId} className="text-xs font-medium text-slate-700">
-              Reason
-            </label>
-            <input
-              id={reasonId}
-              data-testid="shelve-reason"
-              value={reason}
-              maxLength={MES_API_LIMITS.shelveReason}
-              onChange={(event) => {
-                startDraft();
-                setReason(event.target.value);
-              }}
-              className={inputClass}
-            />
-          </div>
-          <div className="flex flex-col gap-1">
-            <label htmlFor={durationId} className="text-xs font-medium text-slate-700">
-              For (plant time)
-            </label>
-            <select
-              id={durationId}
-              data-testid="shelve-duration"
-              value={duration ?? ''}
-              disabled={presets.length === 0}
-              onChange={(event) => {
-                startDraft();
-                setDuration(event.target.value);
-              }}
-              className={inputClass}
-            >
-              {presets.map((preset) => (
-                <option key={preset.ms} value={String(preset.ms)}>
-                  {preset.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <button
-            type="submit"
-            data-testid="shelve"
-            className={buttonClass}
-            disabled={write.isPending}
+          <TextInput
+            label="Reason"
+            name="shelve-reason"
+            required
+            data-testid="shelve-reason"
+            value={reason}
+            maxLength={MES_API_LIMITS.shelveReason}
+            error={reasonError}
+            fieldClassName="min-w-0 flex-1 basis-48"
+            className="w-full"
+            onChange={(event) => {
+              startDraft();
+              setReason(event.target.value);
+              setReasonError(undefined);
+            }}
+          />
+          <Select
+            label="For"
+            name="shelve-duration"
+            data-testid="shelve-duration"
+            value={duration ?? ''}
+            disabled={presets.length === 0}
+            onChange={(event) => {
+              startDraft();
+              setDuration(event.target.value);
+            }}
           >
-            {write.isPending ? 'Shelving…' : 'Shelve'}
-          </button>
+            {presets.map((preset) => (
+              <option key={preset.ms} value={String(preset.ms)}>
+                {preset.label}
+              </option>
+            ))}
+          </Select>
+          <Button type="submit" variant="secondary" data-testid="shelve" loading={write.isPending}>
+            Shelve
+          </Button>
         </form>
       ) : null}
-    </section>
+    </Section>
   );
 }
 
@@ -364,7 +407,6 @@ function CommentForm({
   readonly onWrite: (message: Message) => void;
 }) {
   const queryClient = useQueryClient();
-  const textId = useId();
   const [text, setText] = useState('');
   useUnsavedDraft(text.trim() !== '');
   const write = useMutation({
@@ -384,52 +426,64 @@ function CommentForm({
     <form
       noValidate
       aria-label="Add a comment"
-      className="mt-2 flex flex-col gap-1"
+      className="mt-3 flex flex-col items-start gap-2"
       onSubmit={(event) => {
         event.preventDefault();
         if (text.trim() === '') onWrite({ kind: 'invalid', text: 'Write a comment first.' });
         else write.mutate();
       }}
     >
-      <label htmlFor={textId} className="text-xs font-medium text-slate-700">
-        New comment
-      </label>
-      <textarea
-        id={textId}
+      <Textarea
+        label="New comment"
+        name="comment"
         data-testid="comment-text"
         value={text}
         rows={2}
-        maxLength={MES_API_LIMITS.alarmComment}
+        max={MES_API_LIMITS.alarmComment}
+        fieldClassName="w-full"
         onChange={(event) => {
           setText(event.target.value);
         }}
-        className={inputClass}
       />
-      <div>
-        <button
-          type="submit"
-          data-testid="add-comment"
-          className={buttonClass}
-          disabled={write.isPending}
-        >
-          {write.isPending ? 'Adding…' : 'Add comment'}
-        </button>
-      </div>
+      <Button type="submit" variant="secondary" data-testid="add-comment" loading={write.isPending}>
+        Add comment
+      </Button>
     </form>
   );
 }
 
+/** What each history transition says, in words (A-06). */
+const TRANSITION_TEXT: Readonly<Record<AlarmHistory['entries'][number]['transition'], string>> = {
+  raised: 'Raised',
+  cleared: 'Cleared by the device',
+  lost: 'Clear lost',
+  superseded: 'Superseded by the next raise',
+  'epoch-ended': 'Ended with its simulator run',
+  ack: 'Acknowledged',
+  comment: 'Comment',
+  shelve: 'Point shelved',
+  unshelve: 'Point unshelved',
+  expire: 'Shelf expired',
+};
+
+/** Where a history entry came from, in words; the raw value stays in `data-source`. */
+const SOURCE_TEXT: Readonly<Record<AlarmHistory['entries'][number]['source'], string>> = {
+  fact: 'device fact',
+  anchor: 'retained delivery',
+  snapshot: 'resync snapshot',
+  mes: 'derived by the MES',
+  audit: 'audit',
+};
+
 function AlarmHistoryList({ id }: { readonly id: string }) {
+  const { clock } = usePlantClock();
   const history = useQuery({
     queryKey: queryKeys.alarmHistory(id),
     queryFn: ({ signal }) => getAlarmHistory(id, signal),
   });
   return (
-    <section aria-labelledby="alarm-history-title" className="mt-4" data-testid="alarm-history">
-      <h3 id="alarm-history-title" className="font-semibold">
-        History
-      </h3>
-      {history.isPending ? <p className="text-sm">Loading history…</p> : null}
+    <Section level={3} title="History" testId="alarm-history">
+      {history.isPending ? <p className="text-ink-secondary">Loading history…</p> : null}
       {history.isError ? (
         <QueryError
           what="the history"
@@ -437,62 +491,63 @@ function AlarmHistoryList({ id }: { readonly id: string }) {
           onRetry={() => void history.refetch()}
         />
       ) : null}
-      <ol className="mt-1 flex flex-col gap-1 text-sm">
+      <ol className="flex flex-col divide-y divide-line-subtle">
         {history.data?.entries.map((entry, index) => (
           <li
             key={`${entry.source}-${entry.transition}-${String(entry.auditId ?? entry.seq ?? index)}`}
             data-testid="history-entry"
             data-transition={entry.transition}
             data-source={entry.source}
-            className="rounded bg-slate-50 p-2"
+            className="py-2 first:pt-0"
           >
-            <span className="font-semibold">{entry.transition}</span>{' '}
-            <time dateTime={entry.at}>{formatPlantTime(entry.at)}</time> (plant time)
-            {entry.source === 'audit' ? (
-              <>
-                {' '}
-                by {entry.actor ?? '–'}
-                {entry.authenticated === false ? ' (not authenticated)' : ''}
-                {entry.requestId ? (
-                  <span className="text-xs text-slate-700"> · request {entry.requestId}</span>
-                ) : null}
-              </>
-            ) : (
-              <span className="text-xs text-slate-700">
-                {' '}
-                · {entry.source}
-                {entry.seq === null ? '' : ` seq ${String(entry.seq)}`}
-                {entry.protocol ? ` · ${entry.protocol}` : ''}
-                {entry.receivedAt
-                  ? ` · received ${formatClockSeconds(entry.receivedAt)} (wall time)`
-                  : ''}
-              </span>
-            )}
+            <p>
+              <span className="font-medium">{TRANSITION_TEXT[entry.transition]}</span>{' '}
+              <PlantTime at={entry.at} clock={clock?.watermark} />
+              {entry.source === 'audit' ? (
+                <>
+                  {' '}
+                  by {entry.actor ?? 'an unknown user'}
+                  {entry.authenticated === false ? ' (not authenticated)' : ''}
+                </>
+              ) : null}
+            </p>
             {entry.transition === 'comment' && typeof entry.detail?.text === 'string' ? (
-              <p className="text-slate-800">“{entry.detail.text}”</p>
+              <p className="mt-0.5 text-ink-secondary">“{entry.detail.text}”</p>
             ) : null}
+            <Disclosure summary="Technical details" className="mt-1">
+              <p className="text-xs text-ink-secondary">
+                {SOURCE_TEXT[entry.source]}
+                {entry.seq === null ? '' : ` · seq ${String(entry.seq)}`}
+                {entry.protocol ? ` · ${entry.protocol}` : ''}
+                {entry.requestId ? ` · request ${entry.requestId}` : ''}
+                {entry.receivedAt ? (
+                  <>
+                    {' · received '}
+                    <WallTime at={entry.receivedAt} />
+                  </>
+                ) : null}
+              </p>
+            </Disclosure>
           </li>
         ))}
       </ol>
-    </section>
+    </Section>
   );
 }
 
-function AlarmPanel({
+/** The chosen alarm's facts, acknowledgement, shelf, comments and history. */
+function AlarmDetail({
   occurrence,
   point,
   machineName,
-  onClose,
 }: {
   readonly occurrence: AlarmOccurrenceDto;
   readonly point: AlarmPointDto | undefined;
   readonly machineName: string;
-  readonly onClose: () => void;
 }) {
   const queryClient = useQueryClient();
-  const heading = useRef<HTMLHeadingElement>(null);
+  const { clock } = usePlantClock();
   const [message, setMessage] = useState<Message | undefined>(undefined);
-  const ackCommentId = useId();
   const [ackComment, setAckComment] = useState('');
   const canAck = useCan('alarm:ack');
   const canComment = useCan('alarm:comment');
@@ -501,9 +556,6 @@ function AlarmPanel({
     queryKey: queryKeys.alarm(occurrence.id),
     queryFn: ({ signal }) => getAlarm(occurrence.id, signal),
   });
-  useEffect(() => {
-    heading.current?.focus();
-  }, [occurrence.id]);
 
   // A pushed change of the occurrence or its point: read its comments and history again.
   const signature = [
@@ -543,251 +595,238 @@ function AlarmPanel({
   });
 
   const definition = detail.data?.definition;
-  return (
-    <section
-      aria-labelledby="alarm-panel-title"
-      data-testid="alarm-panel"
-      data-alarm={occurrence.id}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape') {
-          event.preventDefault();
-          onClose();
-        }
-      }}
-      className="min-w-0 rounded-lg border border-slate-300 bg-white p-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto"
-    >
-      <div className="flex items-start justify-between gap-2">
-        <h2 id="alarm-panel-title" ref={heading} tabIndex={-1} className="text-lg font-semibold">
-          {machineName}: {occurrence.code}
-        </h2>
-        <button type="button" data-testid="close-alarm" className={buttonClass} onClick={onClose}>
-          Close
-        </button>
-      </div>
-      <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-sm">
-        <dt className="text-slate-700">Priority</dt>
-        <dd>
-          <PriorityBadge priority={occurrence.priority} />{' '}
-          <span className="text-slate-700">
-            severity {occurrence.severity}
+  const shelved = newerShelf(point?.shelf, detail.data?.shelf)?.shelved ?? occurrence.shelved;
+  const facts: Fact[] = [
+    {
+      term: 'Priority',
+      detail: (
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <PriorityBadge priority={occurrence.priority} />
+          <span className="text-ink-secondary">
+            Severity {occurrence.severity}
             {occurrence.defined ? '' : ', no definition'}
           </span>
-        </dd>
-        <dt className="text-slate-700">Text</dt>
-        <dd>{occurrence.text ?? definition?.text ?? '–'}</dd>
-        {definition?.consequence ? (
-          <>
-            <dt className="text-slate-700">Consequence</dt>
-            <dd>{definition.consequence}</dd>
-          </>
-        ) : null}
-        {definition?.response ? (
-          <>
-            <dt className="text-slate-700">Response</dt>
-            <dd>{definition.response}</dd>
-          </>
-        ) : null}
-        <dt className="text-slate-700">State</dt>
-        <dd data-testid="alarm-state" data-state={occurrence.state}>
+        </span>
+      ),
+    },
+    {
+      term: 'State',
+      detail: (
+        <span data-testid="alarm-state" data-state={occurrence.state}>
           {stateText(occurrence)}
-          {(newerShelf(point?.shelf, detail.data?.shelf)?.shelved ?? occurrence.shelved)
-            ? ', point shelved'
-            : ''}
-        </dd>
-        <dt className="text-slate-700">Raised</dt>
-        <dd>
-          <time dateTime={occurrence.raisedAt}>{formatPlantTime(occurrence.raisedAt)}</time>
+          {shelved ? ', point shelved' : ''}
+        </span>
+      ),
+    },
+    {
+      term: 'Raised',
+      detail: (
+        <>
+          <PlantTime at={occurrence.raisedAt} clock={clock?.watermark} />
           {occurrence.source === 'anchor' ? ' (from a retained delivery)' : ''}
-        </dd>
-        <dt className="text-slate-700">Ended</dt>
-        <dd>
-          {occurrence.endedAt ? (
-            <>
-              <time dateTime={occurrence.endedAt}>{formatPlantTime(occurrence.endedAt)}</time> (
-              {formatDuration(Date.parse(occurrence.endedAt) - Date.parse(occurrence.raisedAt))}
-              ),{' '}
-            </>
-          ) : null}
+        </>
+      ),
+    },
+    {
+      term: 'Ended',
+      detail: occurrence.endedAt ? (
+        <>
+          <PlantTime at={occurrence.endedAt} clock={clock?.watermark} /> after{' '}
+          <Duration ms={Date.parse(occurrence.endedAt) - Date.parse(occurrence.raisedAt)} />,{' '}
           {endReasonText(occurrence.endReason)}
-        </dd>
-        <dt className="text-slate-700">Acknowledged</dt>
-        <dd>
-          {occurrence.acknowledged ? (
-            <>
-              by {occurrence.acknowledged.by} at{' '}
-              <time dateTime={occurrence.acknowledged.at}>
-                {formatPlantTime(occurrence.acknowledged.at)}
-              </time>{' '}
-              (wall time)
-              {occurrence.acknowledged.comment ? ` – “${occurrence.acknowledged.comment}”` : ''}
-            </>
-          ) : (
-            'no'
-          )}
-        </dd>
-        <dt className="text-slate-700">Final</dt>
-        <dd>{occurrence.final ? 'yes' : 'no, may still change'}</dd>
-      </dl>
+        </>
+      ) : (
+        'Not yet: still active'
+      ),
+    },
+    {
+      term: 'Acknowledged',
+      detail: occurrence.acknowledged ? (
+        <>
+          By {occurrence.acknowledged.by}, <WallTime at={occurrence.acknowledged.at} />
+          {occurrence.acknowledged.comment ? (
+            <span className="block text-ink-secondary">“{occurrence.acknowledged.comment}”</span>
+          ) : null}
+        </>
+      ) : (
+        'Not yet'
+      ),
+    },
+    { term: 'Final', detail: occurrence.final ? 'Yes' : 'No, may still change' },
+  ];
+  const guidance: Fact[] = [
+    { term: 'Consequence', detail: definition?.consequence },
+    { term: 'Response', detail: definition?.response },
+  ];
+
+  return (
+    <>
+      <DescriptionList facts={facts} columns={2} label="The alarm" />
+      {definition?.consequence || definition?.response ? (
+        <DescriptionList facts={guidance} columns={1} label="What it means" />
+      ) : null}
       {detail.isError ? (
-        <div className="mt-2">
+        <div className="mb-3">
           <QueryError what="the alarm" error={detail.error} onRetry={() => void detail.refetch()} />
         </div>
       ) : null}
       {message ? (
-        <div className="mt-3">
-          <MessageLine message={message} testId="alarm-message" />
+        <div className="mb-3">
+          <WriteMessage message={message} testId="alarm-message" />
         </div>
       ) : null}
       {canAck && acknowledgeable(occurrence) ? (
         <form
           noValidate
           aria-label="Acknowledge the alarm"
-          className="mt-3 flex flex-wrap items-end gap-2"
+          className="flex flex-wrap items-end gap-3 rounded-md border border-line-subtle bg-surface-sunken p-3"
           onSubmit={(event) => {
             event.preventDefault();
             ack.mutate();
           }}
         >
-          <div className="flex min-w-0 flex-col gap-1">
-            <label htmlFor={ackCommentId} className="text-xs font-medium text-slate-700">
-              Comment with the acknowledgement (optional)
-            </label>
-            <input
-              id={ackCommentId}
-              data-testid="ack-comment"
-              value={ackComment}
-              maxLength={MES_API_LIMITS.alarmComment}
-              onChange={(event) => {
-                setAckComment(event.target.value);
-              }}
-              className={inputClass}
-            />
-          </div>
-          <button
-            type="submit"
-            data-testid="ack-detail"
-            className={primaryClass}
-            disabled={ack.isPending}
-          >
-            {ack.isPending ? 'Acknowledging…' : 'Acknowledge'}
-          </button>
+          <TextInput
+            label="Comment with the acknowledgement"
+            name="ack-comment"
+            data-testid="ack-comment"
+            value={ackComment}
+            maxLength={MES_API_LIMITS.alarmComment}
+            fieldClassName="min-w-0 flex-1 basis-48"
+            className="w-full"
+            onChange={(event) => {
+              setAckComment(event.target.value);
+            }}
+          />
+          <Button type="submit" variant="primary" data-testid="ack-detail" loading={ack.isPending}>
+            Acknowledge
+          </Button>
         </form>
       ) : null}
-      <ShelfSection
-        key={pointKey(occurrence.equipment, occurrence.code)}
-        occurrence={occurrence}
-        point={point}
-        detailShelf={detail.data?.shelf}
-        onWrite={setMessage}
-      />
-      <section aria-labelledby="alarm-comments-title" className="mt-4" data-testid="comments">
-        <h3 id="alarm-comments-title" className="font-semibold">
-          Comments ({occurrence.comments})
-        </h3>
-        <ol className="mt-1 flex flex-col gap-1 text-sm">
-          {detail.data?.comments.map((comment) => (
-            <li key={comment.id} data-testid="comment" className="rounded bg-slate-50 p-2">
-              <p>{comment.text}</p>
-              <p className="text-xs text-slate-700">
-                {comment.actor}
-                {comment.authenticated ? '' : ' (not authenticated)'},{' '}
-                <time dateTime={comment.at}>{formatPlantTime(comment.at)}</time> (wall time)
-              </p>
-            </li>
-          ))}
-        </ol>
-        {canComment ? <CommentForm id={occurrence.id} onWrite={setMessage} /> : null}
-      </section>
-      <AlarmHistoryList id={occurrence.id} />
-    </section>
+      <div className="mt-6">
+        <ShelfSection
+          key={pointKey(occurrence.equipment, occurrence.code)}
+          occurrence={occurrence}
+          point={point}
+          detailShelf={detail.data?.shelf}
+          machineName={machineName}
+          onWrite={setMessage}
+        />
+        <Section
+          level={3}
+          title="Comments"
+          testId="comments"
+          status={
+            <Badge tone="neutral" className="tabular-nums">
+              {occurrence.comments}
+            </Badge>
+          }
+        >
+          {detail.data?.comments.length === 0 ? (
+            <p className="text-ink-secondary">No comments yet.</p>
+          ) : null}
+          <ol className="flex flex-col divide-y divide-line-subtle">
+            {detail.data?.comments.map((comment) => (
+              <li key={comment.id} data-testid="comment" className="py-2 first:pt-0">
+                <p>{comment.text}</p>
+                <p className="mt-0.5 text-xs text-ink-secondary">
+                  {comment.actor}
+                  {comment.authenticated ? '' : ' (not authenticated)'} ·{' '}
+                  <WallTime at={comment.at} />
+                </p>
+              </li>
+            ))}
+          </ol>
+          {canComment ? <CommentForm id={occurrence.id} onWrite={setMessage} /> : null}
+        </Section>
+        <AlarmHistoryList id={occurrence.id} />
+      </div>
+    </>
   );
 }
 
 // ---- The list ----
 
-function Tabs({
-  view,
-  counts,
-  onChange,
-}: {
-  readonly view: AlarmView;
-  readonly counts: Readonly<Partial<Record<AlarmView, number | undefined>>>;
-  readonly onChange: (view: AlarmView) => void;
-}) {
-  const refs = useRef<Partial<Record<AlarmView, HTMLButtonElement | null>>>({});
-  const move = (event: KeyboardEvent, index: number) => {
-    const last = ALARM_VIEWS.length - 1;
-    const next =
-      event.key === 'ArrowRight'
-        ? index === last
-          ? 0
-          : index + 1
-        : event.key === 'ArrowLeft'
-          ? index === 0
-            ? last
-            : index - 1
-          : event.key === 'Home'
-            ? 0
-            : event.key === 'End'
-              ? last
-              : undefined;
-    if (next === undefined) return;
-    event.preventDefault();
-    const target = ALARM_VIEWS[next];
-    if (target === undefined) return;
-    onChange(target);
-    refs.current[target]?.focus();
-  };
-  return (
-    <div role="tablist" aria-label="Alarm lists" className="flex flex-wrap gap-1">
-      {ALARM_VIEWS.map((name, index) => {
-        const selected = name === view;
-        const count = counts[name];
-        return (
-          <button
-            key={name}
-            ref={(element) => {
-              refs.current[name] = element;
-            }}
-            type="button"
-            role="tab"
-            id={`alarm-tab-${name}`}
-            aria-selected={selected}
-            aria-controls="alarm-tabpanel"
-            tabIndex={selected ? 0 : -1}
-            data-testid={`tab-${name}`}
-            data-count={count}
-            onClick={() => {
-              onChange(name);
-            }}
-            onKeyDown={(event) => {
-              move(event, index);
-            }}
-            className={`rounded-t border border-b-0 px-3 py-1.5 text-sm ${
-              selected
-                ? 'border-slate-700 bg-white font-semibold underline underline-offset-4'
-                : 'border-slate-300 bg-slate-100 hover:bg-white'
-            }`}
-          >
-            {ALARM_VIEW_LABELS[name]}
-            {count === undefined ? '' : ` (${String(count)})`}
-          </button>
-        );
-      })}
-    </div>
-  );
+function alarmColumns(
+  machineName: (id: string) => string,
+  clock: string | undefined,
+): readonly Column<AlarmOccurrenceDto>[] {
+  return [
+    {
+      key: 'priority',
+      header: 'Priority',
+      nowrap: true,
+      cell: (occurrence) => <PriorityBadge priority={occurrence.priority} />,
+    },
+    {
+      key: 'alarm',
+      header: 'Alarm',
+      rowHeader: true,
+      cell: (occurrence) => <AlarmName occurrence={occurrence} />,
+    },
+    {
+      key: 'machine',
+      header: 'Machine',
+      cell: (occurrence) => machineName(occurrence.equipment),
+    },
+    {
+      key: 'raised',
+      header: 'Raised',
+      align: 'end',
+      nowrap: true,
+      cell: (occurrence) => <PlantTime at={occurrence.raisedAt} clock={clock} />,
+    },
+    {
+      key: 'state',
+      header: 'State',
+      cell: (occurrence) => (
+        <>
+          {stateText(occurrence)}
+          {occurrence.comments > 0 ? (
+            <span className="block text-xs font-normal text-ink-secondary">
+              {plural(occurrence.comments, 'comment')}
+            </span>
+          ) : null}
+        </>
+      ),
+    },
+  ];
+}
+
+/** The empty state of a view, by what it holds. */
+function emptyText(view: AlarmView): { readonly title: string; readonly body: string } {
+  switch (view) {
+    case 'active':
+      return {
+        title: 'No active alarms',
+        body: 'Every alarm is acknowledged or shelved; new raises appear here at once.',
+      };
+    case 'acknowledged':
+      return {
+        title: 'No acknowledged alarms',
+        body: 'An acknowledged alarm stays here while its condition is still active.',
+      };
+    case 'shelved':
+      return {
+        title: 'No shelved alarms',
+        body: "Shelving a point from an alarm's details moves its alarms here for a time.",
+      };
+    case 'history':
+      return {
+        title: 'No closed alarms in the last 24 hours',
+        body: 'An alarm comes here once it has cleared and been acknowledged.',
+      };
+  }
 }
 
 export function AlarmList() {
-  const heading = useHeadingFocus<HTMLHeadingElement>();
   const search = useSearch({ from: '/alarms' });
   const navigate = useNavigate({ from: '/alarms' });
   const queryClient = useQueryClient();
   const view: AlarmView = search.view ?? 'active';
   const mayAck = useCan('alarm:ack');
+  const wide = useWide();
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
   const [message, setMessage] = useState<Message | undefined>(undefined);
-  const selectAll = useRef<HTMLInputElement>(null);
   useAlarmsTopic();
 
   const { clock } = usePlantClock();
@@ -845,17 +884,16 @@ export function AlarmList() {
   );
   const views = partition(set);
   const shown = views[view];
-  const loaded = { active, acknowledged, shelved, history }[view];
-  const selectable = shown.filter(acknowledgeable);
-  const chosen = selectable.filter((occurrence) => selected.has(occurrence.id));
-  const all = chosen.length > 0 && chosen.length === selectable.length;
-  useEffect(() => {
-    if (selectAll.current) selectAll.current.indeterminate = chosen.length > 0 && !all;
-  }, [chosen.length, all]);
+  const reads = { active, acknowledged, shelved, history };
+  const loaded = reads[view];
+  const noClock = view === 'history' && historyTo === undefined;
+  const chosen = shown.filter(
+    (occurrence) => acknowledgeable(occurrence) && selected.has(occurrence.id),
+  );
 
   const machineName = (id: string) => equipment.data?.find((item) => item.id === id)?.name ?? id;
   // The chosen occurrence: from the lists, or read by id (a link to one outside them); the
-  // panel shares this read.
+  // detail shares this read.
   const linked = useQuery({
     queryKey: queryKeys.alarm(search.alarm ?? ''),
     queryFn: ({ signal }) => getAlarm(search.alarm ?? '', signal),
@@ -910,295 +948,266 @@ export function AlarmList() {
     },
   });
 
-  const toggle = (id: string, on: boolean) => {
-    setSelected((current) => {
-      const next = new Set(current);
-      if (on) next.add(id);
-      else next.delete(id);
-      return next;
-    });
-  };
-
-  const counts = {
-    active: active.data ? views.active.length : undefined,
-    acknowledged: acknowledged.data ? views.acknowledged.length : undefined,
-    shelved: shelved.data ? views.shelved.length : undefined,
+  const counts: Readonly<Partial<Record<AlarmView, number>>> = {
+    ...(active.data ? { active: views.active.length } : {}),
+    ...(acknowledged.data ? { acknowledged: views.acknowledged.length } : {}),
+    ...(shelved.data ? { shelved: views.shelved.length } : {}),
   };
   const truncated = [active, acknowledged, shelved, history].some(
     (query) => query.data?.next !== null && query.data?.next !== undefined,
   );
+  // The shown view's failed read takes the table's place; the others' go above the tabs.
+  const otherErrors = [
+    { view: 'active', what: 'the active alarms', query: active },
+    { view: 'acknowledged', what: 'the acknowledged alarms', query: acknowledged },
+    { view: 'shelved', what: 'the shelved alarms', query: shelved },
+    { view: 'history', what: 'the alarm history', query: history },
+    { view: undefined, what: 'the alarm points', query: points },
+  ].filter((entry) => entry.view !== view && entry.query.isError);
+
+  const bulk = mayAck && (view === 'active' || view === 'shelved');
+  const panelOpen = selectedOccurrence !== undefined;
+  const empty = noClock
+    ? {
+        title: 'No plant clock yet',
+        body: 'There is no history to read until the plant clock is known.',
+      }
+    : emptyText(view);
+
+  const closeDetail = () => {
+    void navigate({ search: (previous) => ({ ...previous, alarm: undefined }) }).then(() => {
+      // The sheet gives the focus back to its opener; when that left with its row, the heading.
+      setTimeout(() => {
+        if (document.activeElement === null || document.activeElement === document.body) {
+          document.getElementById(TITLE_ID)?.focus();
+        }
+      }, 0);
+    });
+  };
+
+  const rowActions = (occurrence: AlarmOccurrenceDto): ReactNode => {
+    const name = machineName(occurrence.equipment);
+    return (
+      <>
+        {mayAck && acknowledgeable(occurrence) ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            data-testid={`ack-${occurrence.id}`}
+            aria-label={`Acknowledge ${occurrence.code} on ${name}`}
+            // Busy (not disabled) while its own acknowledgement is on the way: the focus stays
+            // on it until the row leaves, and then moves to the next row's (DataTable).
+            loading={ackOne.isPending && ackOne.variables === occurrence.id}
+            onClick={() => {
+              setMessage(undefined);
+              ackOne.mutate(occurrence.id);
+            }}
+          >
+            Acknowledge
+          </Button>
+        ) : null}
+        <Button
+          variant="ghost"
+          size="sm"
+          data-testid={`details-${occurrence.id}`}
+          aria-label={`Details of ${occurrence.code} on ${name}`}
+          onClick={() => {
+            void navigate({
+              search: (previous) => ({ ...previous, alarm: occurrence.id }),
+            });
+          }}
+        >
+          Details
+        </Button>
+      </>
+    );
+  };
 
   return (
-    <section aria-labelledby="alarms-title">
-      <h1 ref={heading} id="alarms-title" tabIndex={-1} className="text-2xl font-bold">
-        Alarms
-      </h1>
-      <div className="mt-3 flex flex-col gap-2">
-        {positions.map((position) => (
-          <FloodBanner key={position.id} id={position.id} name={position.name} />
-        ))}
-      </div>
-      {[
-        { what: 'the active alarms', query: active },
-        { what: 'the acknowledged alarms', query: acknowledged },
-        { what: 'the shelved alarms', query: shelved },
-        { what: 'the alarm history', query: history },
-        { what: 'the alarm points', query: points },
-      ].map(({ what, query }) =>
-        query.isError ? (
-          <div key={what} className="mt-4">
-            <QueryError what={what} error={query.error} onRetry={() => void query.refetch()} />
-          </div>
-        ) : null,
-      )}
+    <section aria-labelledby={TITLE_ID}>
+      <PageHeader
+        id={TITLE_ID}
+        title="Alarms"
+        description="Every alarm of the plant, newest raise first; acknowledge, shelve and comment."
+      />
+      {positions.length > 0 ? (
+        <div className="mb-4 flex flex-col gap-2 empty:hidden">
+          {positions.map((position) => (
+            <FloodBanner key={position.id} id={position.id} name={position.name} />
+          ))}
+        </div>
+      ) : null}
+      {otherErrors.map(({ what, query }) => (
+        <div key={what} className="mb-4">
+          <QueryError what={what} error={query.error} onRetry={() => void query.refetch()} />
+        </div>
+      ))}
       {truncated ? (
-        <p role="note" className="mt-4 rounded border border-amber-700 p-2 text-sm">
+        <Callout tone="warn" role="status" className="mb-4">
           More alarms than one answer holds ({MES_API_LIMITS.alarmPageMax}): the list is cut off.
-        </p>
+        </Callout>
       ) : null}
       {message ? (
-        <div className="mt-3">
-          <MessageLine message={message} testId="alarm-list-message" />
+        <div className="mb-4">
+          <WriteMessage message={message} testId="alarm-list-message" />
         </div>
       ) : null}
       {search.alarm !== undefined && selectedOccurrence === undefined && linked.isError ? (
-        <div className="mt-4">
+        <div className="mb-4">
           <QueryError what="the alarm" error={linked.error} onRetry={() => void linked.refetch()} />
         </div>
       ) : null}
 
-      <div className="mt-4">
-        <Tabs
-          view={view}
-          counts={counts}
-          onChange={(next) => {
-            setMessage(undefined);
-            // A selection belongs to the rows of one tab: never acknowledge what isn't shown.
-            setSelected(new Set());
-            void navigate({ search: (previous) => ({ ...previous, view: next }) });
-          }}
-        />
-      </div>
-      <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
-        <div
-          role="tabpanel"
-          id="alarm-tabpanel"
-          aria-labelledby={`alarm-tab-${view}`}
-          data-testid="alarm-list"
-          data-view={view}
-          className="min-w-0 rounded-b-lg rounded-tr-lg border border-slate-300 bg-white"
-        >
-          {mayAck && (view === 'active' || view === 'shelved') ? (
-            <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 p-2">
-              <button
-                type="button"
-                data-testid="ack-selected"
-                className={primaryClass}
-                disabled={chosen.length === 0 || ackMany.isPending}
-                onClick={() => {
-                  if (chosen.length > MES_API_LIMITS.alarmAckBulk) {
-                    setMessage({
-                      kind: 'invalid',
-                      text: `Select at most ${String(MES_API_LIMITS.alarmAckBulk)} alarms to acknowledge at once.`,
-                    });
-                    return;
-                  }
-                  setMessage(undefined);
-                  ackMany.mutate(chosen.map((occurrence) => occurrence.id));
-                }}
-              >
-                {ackMany.isPending
-                  ? 'Acknowledging…'
-                  : `Acknowledge selected (${String(chosen.length)})`}
-              </button>
-              <span className="text-xs text-slate-700">
-                At most {MES_API_LIMITS.alarmAckBulk} at once.
-              </span>
-            </div>
-          ) : null}
-          {loaded.isPending && (view !== 'history' || historyTo !== undefined) ? (
-            <p className="p-3">Loading alarms…</p>
-          ) : null}
-          {view === 'history' && historyTo === undefined ? (
-            <p className="p-3">No plant clock yet: there is no history to read.</p>
-          ) : null}
-          <div className="relative overflow-x-auto">
-            <table className="w-full min-w-[40rem] text-sm">
-              <caption className="sr-only">
-                {ALARM_VIEW_LABELS[view]} alarms, newest raise first
-                {view === 'history' ? ', the last 24 hours' : ''}
-              </caption>
-              <thead className="bg-slate-100 text-left">
-                <tr>
-                  <th scope="col" className="w-8 px-2 py-1">
-                    <input
-                      ref={selectAll}
-                      type="checkbox"
-                      data-testid="select-all"
-                      aria-label="Select every alarm that can be acknowledged"
-                      disabled={selectable.length === 0}
-                      checked={all}
-                      onChange={(event) => {
-                        const on = event.target.checked;
-                        setSelected(
-                          new Set(on ? selectable.map((occurrence) => occurrence.id) : []),
-                        );
-                      }}
-                    />
-                  </th>
-                  <th scope="col" className="px-2 py-1">
-                    Priority
-                  </th>
-                  <th scope="col" className="px-2 py-1">
-                    Machine
-                  </th>
-                  <th scope="col" className="px-2 py-1">
-                    Alarm
-                  </th>
-                  <th scope="col" className="px-2 py-1">
-                    Raised
-                  </th>
-                  <th scope="col" className="px-2 py-1">
-                    State
-                  </th>
-                  <th scope="col" className="px-2 py-1">
-                    <span className="sr-only">Actions</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {shown.map((occurrence) => {
-                  const name = machineName(occurrence.equipment);
-                  const canAck = mayAck && acknowledgeable(occurrence);
-                  return (
-                    <tr
-                      key={occurrence.id}
-                      data-testid={`alarm-row-${occurrence.id}`}
-                      data-state={occurrence.state}
-                      data-priority={occurrence.priority}
-                      data-code={occurrence.code}
-                      data-equipment={occurrence.equipment}
-                      aria-current={occurrence.id === search.alarm ? 'true' : undefined}
-                      className={`border-t border-slate-200 ${occurrence.id === search.alarm ? 'bg-sky-50' : ''}`}
-                    >
-                      <td className="px-2 py-1">
-                        {canAck ? (
-                          <input
-                            type="checkbox"
-                            data-testid={`select-${occurrence.id}`}
-                            aria-label={`Select ${occurrence.code} on ${name}`}
-                            checked={selected.has(occurrence.id)}
-                            onChange={(event) => {
-                              toggle(occurrence.id, event.target.checked);
-                            }}
-                          />
-                        ) : null}
-                      </td>
-                      <td className="px-2 py-1">
-                        <PriorityBadge priority={occurrence.priority} />
-                      </td>
-                      <td className="px-2 py-1">{name}</td>
-                      <td className="px-2 py-1">
-                        <span className="whitespace-nowrap font-mono text-xs">
-                          {occurrence.code}
-                        </span>
-                        {occurrence.text ? (
-                          <span className="block text-slate-800">{occurrence.text}</span>
-                        ) : null}
-                      </td>
-                      <td className="whitespace-nowrap px-2 py-1 tabular-nums">
-                        <time
-                          dateTime={occurrence.raisedAt}
-                          title={formatPlantTime(occurrence.raisedAt)}
-                        >
-                          {formatPlantTimeRelative(occurrence.raisedAt, clock?.watermark)}
-                        </time>
-                      </td>
-                      <td className="px-2 py-1">
-                        {stateText(occurrence)}
-                        {occurrence.comments > 0 ? (
-                          <span className="block text-xs text-slate-700">
-                            {occurrence.comments} comment{occurrence.comments === 1 ? '' : 's'}
-                          </span>
-                        ) : null}
-                      </td>
-                      <td className="px-2 py-1">
-                        <div className="flex flex-wrap gap-1">
-                          {canAck ? (
-                            <button
-                              type="button"
-                              data-testid={`ack-${occurrence.id}`}
-                              className={buttonClass}
-                              disabled={ackOne.isPending}
-                              aria-label={`Acknowledge ${occurrence.code} on ${name}`}
-                              onClick={() => {
-                                setMessage(undefined);
-                                ackOne.mutate(occurrence.id);
-                              }}
-                            >
-                              Acknowledge
-                            </button>
-                          ) : null}
-                          <button
-                            type="button"
-                            data-testid={`details-${occurrence.id}`}
-                            className={buttonClass}
-                            aria-label={`Details of ${occurrence.code} on ${name}`}
-                            onClick={() => {
-                              void navigate({
-                                search: (previous) => ({ ...previous, alarm: occurrence.id }),
-                              });
-                            }}
-                          >
-                            Details
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
+      <div
+        className={
+          panelOpen && wide ? 'grid grid-cols-[minmax(0,1fr)_25rem] items-start gap-6' : undefined
+        }
+      >
+        <div className="min-w-0">
+          <Tabs
+            label="Alarm lists"
+            idPrefix="alarm-tab"
+            panelId="alarm-tabpanel"
+            value={view}
+            tabs={ALARM_VIEWS.map((name) => ({
+              id: name,
+              label: ALARM_VIEW_LABELS[name],
+              count: counts[name],
+              testId: `tab-${name}`,
+            }))}
+            onChange={(next) => {
+              const target = ALARM_VIEWS.find((name) => name === next);
+              if (target === undefined) return;
+              setMessage(undefined);
+              // A selection belongs to the rows of one tab: never acknowledge what isn't shown.
+              setSelected(new Set());
+              void navigate({ search: (previous) => ({ ...previous, view: target }) });
+            }}
+          />
+          <TabPanel
+            id="alarm-tabpanel"
+            labelledBy={`alarm-tab-${view}`}
+            testId="alarm-list"
+            data-view={view}
+            data-count={loaded.data ? String(shown.length) : undefined}
+            className="pt-4"
+          >
+            {bulk ? (
+              <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+                <Button
+                  variant="primary"
+                  data-testid="ack-selected"
+                  disabled={chosen.length === 0}
+                  loading={ackMany.isPending}
+                  onClick={() => {
+                    if (chosen.length > MES_API_LIMITS.alarmAckBulk) {
+                      setMessage({
+                        kind: 'invalid',
+                        text: `Select at most ${String(MES_API_LIMITS.alarmAckBulk)} alarms to acknowledge at once.`,
+                      });
+                      return;
+                    }
+                    setMessage(undefined);
+                    ackMany.mutate(chosen.map((occurrence) => occurrence.id));
+                  }}
+                >
+                  Acknowledge selected ({chosen.length})
+                </Button>
+                <span className="text-xs text-ink-secondary">
+                  At most {MES_API_LIMITS.alarmAckBulk} at once.
+                </span>
+              </div>
+            ) : null}
+            {loaded.isError ? (
+              <QueryError
+                what={view === 'history' ? 'the alarm history' : `the ${view} alarms`}
+                error={loaded.error}
+                onRetry={() => void loaded.refetch()}
+              />
+            ) : (
+              <DataTable
+                caption={`${ALARM_VIEW_LABELS[view]} alarms, newest raise first${view === 'history' ? ', the last 24 hours' : ''}`}
+                testId="alarm-table"
+                columns={alarmColumns(machineName, clock?.watermark)}
+                rows={noClock ? [] : shown}
+                rowKey={(occurrence) => occurrence.id}
+                rowTestId={(occurrence) => `alarm-row-${occurrence.id}`}
+                rowProps={(occurrence) => ({
+                  'data-state': occurrence.state,
+                  'data-priority': occurrence.priority,
+                  'data-code': occurrence.code,
+                  'data-equipment': occurrence.equipment,
+                  'data-shelved': String(isShelved(occurrence, set.points)),
                 })}
-                {loaded.data && shown.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="px-2 py-3" data-testid="alarm-list-empty">
-                      {view === 'history'
-                        ? 'No closed alarms in the last 24 hours.'
-                        : `No ${ALARM_VIEW_LABELS[view].toLowerCase()} alarms.`}
-                    </td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-          </div>
+                rowTone={(occurrence) =>
+                  unacknowledged(occurrence) ? PRIORITY_TONE[occurrence.priority] : undefined
+                }
+                rowEmphasis={unacknowledged}
+                activeRowKey={search.alarm}
+                {...(bulk
+                  ? {
+                      selection: {
+                        selected,
+                        onChange: setSelected,
+                        selectable: acknowledgeable,
+                        label: (occurrence: AlarmOccurrenceDto) =>
+                          `Select ${occurrence.code} on ${machineName(occurrence.equipment)}`,
+                        allLabel: 'Select every alarm that can be acknowledged',
+                        testId: 'select-all',
+                        rowTestId: (occurrence: AlarmOccurrenceDto) => `select-${occurrence.id}`,
+                      },
+                    }
+                  : {})}
+                actions={rowActions}
+                skipToDetails={panelOpen && wide ? PANEL_TITLE_ID : undefined}
+                announceRemoval={(left) =>
+                  `The alarm left the ${ALARM_VIEW_LABELS[view]} list; ${plural(left, 'alarm')} left.`
+                }
+                narrow="stack"
+                loading={
+                  !noClock && loaded.isPending && shown.length === 0 ? 'Loading alarms…' : undefined
+                }
+                empty={
+                  <EmptyState
+                    testId="alarm-list-empty"
+                    icon={noClock ? 'clock' : 'check'}
+                    title={empty.title}
+                    body={empty.body}
+                  />
+                }
+              />
+            )}
+          </TabPanel>
         </div>
-        {/* Before the list on narrow screens, beside it and in view on wide ones. */}
-        <div className="order-first min-w-0 lg:sticky lg:top-4 lg:order-none">
-          {selectedOccurrence ? (
-            <AlarmPanel
+        {selectedOccurrence ? (
+          <DetailPanel
+            testId="alarm-panel"
+            data-alarm={selectedOccurrence.id}
+            closeTestId="close-alarm"
+            titleId={PANEL_TITLE_ID}
+            focusKey={selectedOccurrence.id}
+            returnFocus={() => document.getElementById(TITLE_ID)}
+            title={
+              selectedOccurrence.text ?? linked.data?.definition?.text ?? selectedOccurrence.code
+            }
+            description={
+              <>
+                {machineName(selectedOccurrence.equipment)} ·{' '}
+                <Code className="whitespace-nowrap">{selectedOccurrence.code}</Code>
+              </>
+            }
+            onClose={closeDetail}
+          >
+            <AlarmDetail
               key={selectedOccurrence.id}
               occurrence={selectedOccurrence}
               point={set.points.get(
                 pointKey(selectedOccurrence.equipment, selectedOccurrence.code),
               )}
               machineName={machineName(selectedOccurrence.equipment)}
-              onClose={() => {
-                const id = selectedOccurrence.id;
-                void navigate({ search: (previous) => ({ ...previous, alarm: undefined }) }).then(
-                  () => {
-                    // Back to the row's Details button (ids are validated: no quote can occur).
-                    const button = document.querySelector<HTMLElement>(
-                      `[data-testid="details-${id}"]`,
-                    );
-                    (button ?? document.getElementById('alarms-title'))?.focus();
-                  },
-                );
-              }}
             />
-          ) : (
-            <p className="hidden rounded-lg border border-dashed border-slate-400 p-4 text-sm lg:block">
-              Choose an alarm to see its details, history and actions.
-            </p>
-          )}
-        </div>
+          </DetailPanel>
+        ) : null}
       </div>
     </section>
   );

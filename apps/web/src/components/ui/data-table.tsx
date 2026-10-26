@@ -22,8 +22,9 @@ import type { Tone } from './tokens.ts';
  * - Numbers, durations and times of day right-aligned (`numeric` adds tabular figures and no
  *   wrapping); headers aligned over their column.
  * - Rows: 1 px `line-subtle` dividers, no zebra (the dividers carry the rows; zebra fights the tone
- *   bars), hover `surface-sunken`; a tone's 3 px left bar for an abnormal row (`rowTone`); the row
- *   whose detail is open `accent-subtle` with a 3 px `accent` bar and `aria-current`.
+ *   bars), hover `surface-sunken`; a tone's 3 px left bar for an abnormal row (`rowTone`), and its
+ *   text bold where the domain asks for it (`rowEmphasis`: an unacknowledged alarm, design system
+ *   2.5); the row whose detail is open `accent-subtle` with a 3 px `accent` bar and `aria-current`.
  * - The sticky header (G-14) has two modes, chosen by measuring the table against its frame: when
  *   the table fits, the frame clips sideways (`overflow-x: clip`, which is not a scroll box) and
  *   the header sticks to the page under the 48 px top bar; when it is wider, the frame becomes a
@@ -99,6 +100,8 @@ export interface DataTableProps<Row> {
   readonly rowProps?: (row: Row) => RowData;
   /** A left bar for an abnormal row (an unacknowledged alarm). */
   readonly rowTone?: (row: Row) => Tone | undefined;
+  /** Bold text in the row's cells (an unacknowledged alarm, design system 2.5). */
+  readonly rowEmphasis?: (row: Row) => boolean;
   readonly selection?: DataTableSelection<Row>;
   /** The row whose detail is open. */
   readonly activeRowKey?: string | undefined;
@@ -572,6 +575,7 @@ export function DataTable<Row>({
   rowTestId,
   rowProps,
   rowTone,
+  rowEmphasis,
   selection,
   activeRowKey,
   actions,
@@ -719,6 +723,7 @@ export function DataTable<Row>({
             const key = rowKey(row);
             const active = key === activeRowKey;
             const tone = rowTone?.(row);
+            const strong = rowEmphasis?.(row) ?? false;
             return (
               <li
                 key={key}
@@ -726,7 +731,7 @@ export function DataTable<Row>({
                 data-row-key={key}
                 data-testid={rowTestId?.(row)}
                 aria-current={active ? 'true' : undefined}
-                className={`flex gap-2 p-3 ${active ? `bg-accent-subtle ${ACTIVE_BAR}` : tone ? TONE_BAR[tone] : ''}`}
+                className={`flex gap-2 p-3 ${active ? `bg-accent-subtle ${ACTIVE_BAR}` : tone ? TONE_BAR[tone] : ''}${strong ? ' font-semibold' : ''}`}
               >
                 {selection ? (
                   <div data-cell="select" className="-ml-1 shrink-0">
@@ -803,6 +808,10 @@ export function DataTable<Row>({
           const active = key === activeRowKey;
           const tone = rowTone?.(row);
           const bar = active ? ACTIVE_BAR : tone ? TONE_BAR[tone] : '';
+          const strong = rowEmphasis?.(row) ?? false;
+          // A row header is normal weight unless the row is emphasised; other cells inherit.
+          const weight = (rowHeader: boolean | undefined) =>
+            strong ? 'font-semibold' : rowHeader ? 'font-normal' : '';
           return (
             <tr
               key={key}
@@ -824,7 +833,7 @@ export function DataTable<Row>({
                     key={column.key}
                     {...(column.rowHeader ? { scope: 'row' } : {})}
                     data-cell={`c-${column.key}`}
-                    className={`${bodyCell} ${DENSITY[density]} ${cellClass(column)} ${column.rowHeader ? 'font-normal' : ''} ${column.sticky ? `${STICKY_COLUMN} bg-inherit` : ''} ${!selection && index === 0 ? bar : ''}`}
+                    className={`${bodyCell} ${DENSITY[density]} ${cellClass(column)} ${weight(column.rowHeader)} ${column.sticky ? `${STICKY_COLUMN} bg-inherit` : ''} ${!selection && index === 0 ? bar : ''}`}
                   >
                     {column.cell(row)}
                   </Cell>

@@ -942,3 +942,224 @@ describe('alarm writes by role (#170)', () => {
     expect(within(panel).queryByTestId('unshelve')).toBeNull();
   });
 });
+
+/**
+ * `matchMedia` for a window `width` px wide: the shell's `xl` nav, the DataTable's `md` stack and
+ * the detail's `wide` panel (design system 3.1) each answer by their own query.
+ */
+function stubWidth(width: number) {
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn((query: string) => {
+      const min = /min-width:\s*([\d.]+)rem/.exec(query);
+      const max = /max-width:\s*([\d.]+)rem/.exec(query);
+      const px = (match: RegExpExecArray) => Number(match[1]) * 16;
+      return {
+        matches: min ? width >= px(min) : max ? width <= px(max) : false,
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      };
+    }),
+  );
+}
+
+describe('the alarm list on the design system (UX-4a, #324)', () => {
+  it('marks unacknowledged rows with their priority bar and bold text; acknowledged rows are plain (A-03)', async () => {
+    const high = occurrence(1, { priority: 'high', code: 'SPINDLE-OVERLOAD', text: null });
+    const medium = occurrence(2);
+    const acked = occurrence(3, { state: 'acked-active', acknowledged: ACK, priority: 'high' });
+    vi.stubGlobal(
+      'fetch',
+      mes({ ...empty(), active: [high, medium], acknowledged: [acked] }).fetch,
+    );
+    await renderApp('/alarms');
+    const row = (id: string) => screen.getByTestId(`alarm-row-${id}`);
+    const cell = (id: string, name: string) =>
+      row(id).querySelector<HTMLElement>(`[data-cell="${name}"]`);
+    await screen.findByTestId(`alarm-row-${medium.id}`);
+    // The bar sits in the first cell (the checkbox's), in the priority's border colour.
+    expect(cell(high.id, 'select')?.className).toContain('var(--color-alarm-border)');
+    expect(cell(medium.id, 'select')?.className).toContain('var(--color-warn-border)');
+    expect(cell(medium.id, 'c-alarm')?.className).toContain('font-semibold');
+    expect(cell(medium.id, 'c-machine')?.className).toContain('font-semibold');
+    // Names first: the alarm's text, its code after it; the row is named by it.
+    expect(cell(medium.id, 'c-alarm')?.tagName).toBe('TH');
+    expect(cell(medium.id, 'c-alarm')?.textContent).toBe('Coolant pressure lowCOOLANT-PRESSURE');
+    expect(cell(high.id, 'c-alarm')?.textContent).toBe('SPINDLE-OVERLOAD');
+    // The row actions side by side in one cell (A-02).
+    expect(
+      [...(cell(medium.id, 'actions')?.querySelectorAll('button') ?? [])].map((b) => b.textContent),
+    ).toEqual(['Acknowledge', 'Details']);
+    fireEvent.click(screen.getByTestId('tab-acknowledged'));
+    await screen.findByTestId(`alarm-row-${acked.id}`);
+    const plain = row(acked.id).querySelector<HTMLElement>('[data-cell="c-alarm"]');
+    expect(plain?.className).not.toContain('font-semibold');
+    expect(row(acked.id).innerHTML).not.toContain('border)]');
+  });
+
+  it('dates the flood banner unless the flood began on the plant clock day (UX-B2 rule)', async () => {
+    vi.stubGlobal('fetch', mes(empty()).fetch);
+    const app = await renderApp('/alarms');
+    await app.open();
+    await screen.findByTestId('alarm-list-empty');
+    const flood = async (startAt: string) => {
+      await app.push({
+        type: 'alarm-kpi',
+        topic: 'alarm-kpi:position:cell-m1',
+        hour: hourKpi('2026-10-15T05:00:00.000Z'),
+        shift: kpiBucket(),
+        floods: [episode({ startAt })],
+      });
+      const time = within(screen.getByTestId('flood-banner-cell-m1'))
+        .getByRole('alert')
+        .querySelector('time');
+      return [time?.textContent, time?.getAttribute('title'), time?.getAttribute('dateTime')];
+    };
+    // The plant clock reads Thu 15 Oct, 09:10: a flood since 08:00 that day shows the time only.
+    await waitFor(async () => {
+      expect(await flood('2026-10-15T05:00:00.000Z')).toEqual([
+        '08:00:00',
+        'Thu 15 Oct, 08:00:00',
+        '2026-10-15T05:00:00.000Z',
+      ]);
+    });
+    // One that began before plant midnight carries its date.
+    expect(await flood('2026-10-14T20:00:00.000Z')).toEqual([
+      'Wed 14 Oct, 23:00:00',
+      'Wed 14 Oct, 23:00:00',
+      '2026-10-14T20:00:00.000Z',
+    ]);
+  });
+
+  it('moves the focus to the next row when an acknowledgement takes a row away, and says so', async () => {
+    const a = occurrence(2);
+    const b = occurrence(1);
+    const server = mes({ ...empty(), active: [a, b] }, () =>
+      json({ occurrence: { ...a, state: 'acked-active', acknowledged: ACK }, changed: true }),
+    );
+    let release: () => void = () => undefined;
+    const answered = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'POST') await answered;
+      return server.fetch(input, init);
+    });
+    await renderApp('/alarms');
+    const button = await screen.findByTestId<HTMLButtonElement>(`ack-${a.id}`);
+    button.focus();
+    fireEvent.click(button);
+    // On its way: busy, not disabled, so the focus stays on it; the other rows stay usable.
+    await waitFor(() => {
+      expect(button.getAttribute('aria-busy')).toBe('true');
+    });
+    expect(button.disabled).toBe(false);
+    expect(document.activeElement).toBe(button);
+    expect(screen.getByTestId<HTMLButtonElement>(`ack-${b.id}`).hasAttribute('aria-busy')).toBe(
+      false,
+    );
+    release();
+    await waitFor(() => {
+      expect(screen.queryByTestId(`alarm-row-${a.id}`)).toBeNull();
+    });
+    expect(document.activeElement).toBe(screen.getByTestId(`ack-${b.id}`));
+    expect(
+      screen
+        .getAllByRole('status')
+        .some((status) => status.textContent === 'The alarm left the Active list; 1 alarm left.'),
+    ).toBe(true);
+  });
+
+  it('opens the detail as a sticky side panel from 1440 px, after a skip link, and focuses its title', async () => {
+    stubWidth(1440);
+    const a = occurrence(1);
+    vi.stubGlobal('fetch', mes({ ...empty(), active: [a] }).fetch);
+    await renderApp('/alarms');
+    const details = await screen.findByTestId(`details-${a.id}`);
+    // With nothing chosen the list has the width to itself, and there is nothing to skip to.
+    expect(screen.queryByTestId('alarm-panel')).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Skip to the details' })).toBeNull();
+    details.focus();
+    fireEvent.click(details);
+    const panel = await screen.findByTestId('alarm-panel');
+    expect(panel.tagName).toBe('SECTION');
+    expect(panel.dataset.variant).toBe('panel');
+    expect(panel.className).toContain('sticky');
+    const title = within(panel).getByRole('heading', { level: 2, name: 'Coolant pressure low' });
+    expect(document.activeElement).toBe(title);
+    expect(panel.getAttribute('aria-labelledby')).toBe(title.id);
+    expect(title.nextElementSibling?.querySelector('code')?.textContent).toBe('COOLANT-PRESSURE');
+    expect(screen.getByRole('link', { name: 'Skip to the details' }).getAttribute('href')).toBe(
+      `#${title.id}`,
+    );
+    expect(screen.getByTestId(`alarm-row-${a.id}`).getAttribute('aria-current')).toBe('true');
+    fireEvent.click(within(panel).getByTestId('close-alarm'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('alarm-panel')).toBeNull();
+    });
+    expect(document.activeElement).toBe(screen.getByTestId(`details-${a.id}`));
+  });
+
+  it('opens the detail as a side sheet below 1440 px (1280 included) with the same test ids', async () => {
+    stubWidth(1280);
+    const a = occurrence(1);
+    vi.stubGlobal('fetch', mes({ ...empty(), active: [a] }).fetch);
+    await renderApp('/alarms');
+    const details = await screen.findByTestId(`details-${a.id}`);
+    details.focus();
+    fireEvent.click(details);
+    const sheet = await screen.findByTestId('alarm-panel');
+    expect(sheet.tagName).toBe('DIALOG');
+    expect(sheet.dataset.variant).toBe('sheet');
+    expect(sheet.dataset.alarm).toBe(a.id);
+    expect(sheet.hasAttribute('open')).toBe(true);
+    // The focus starts on the title, not in the acknowledgement's comment box.
+    expect(document.activeElement?.tagName).toBe('H2');
+    expect(document.activeElement?.textContent).toBe('Coolant pressure low');
+    expect(screen.queryByRole('link', { name: 'Skip to the details' })).toBeNull();
+    expect((await within(sheet).findAllByTestId('history-entry')).length).toBe(2);
+    fireEvent.click(within(sheet).getByTestId('close-alarm'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('alarm-panel')).toBeNull();
+    });
+    expect(document.activeElement).toBe(screen.getByTestId(`details-${a.id}`));
+  });
+
+  it('stacks each alarm as a card with its actions at 390 px (G-27)', async () => {
+    stubWidth(390);
+    const a = occurrence(1);
+    vi.stubGlobal('fetch', mes({ ...empty(), active: [a] }).fetch);
+    await renderApp('/alarms');
+    const row = await screen.findByTestId(`alarm-row-${a.id}`);
+    expect(row.tagName).toBe('LI');
+    expect(within(row).getByTestId(`ack-${a.id}`)).toBeTruthy();
+    expect(within(row).getByTestId(`details-${a.id}`)).toBeTruthy();
+    expect(within(row).getByTestId(`select-${a.id}`)).toBeTruthy();
+    expect(screen.getByTestId('select-all')).toBeTruthy();
+    expect(row.textContent).toContain('Active, unacknowledged');
+  });
+
+  it('ties a missing shelving reason to its field, and names the point without raw ids (A-06)', async () => {
+    const a = occurrence(1);
+    vi.stubGlobal('fetch', mes({ ...empty(), active: [a], points: [point()] }).fetch);
+    await renderApp(`/alarms?alarm=${encodeURIComponent(a.id)}`);
+    const section = await screen.findByTestId('shelf-section');
+    expect(within(section).getByRole('heading', { level: 3 }).textContent).toBe('Shelving');
+    await waitFor(() => {
+      expect(within(section).getByTestId('shelf-state').dataset.shelved).toBe('false');
+    });
+    const reason = within(section).getByRole('textbox', { name: 'Reason (required)' });
+    expect(reason.dataset.testid).toBe('shelve-reason');
+    fireEvent.click(within(section).getByTestId('shelve'));
+    expect(reason.getAttribute('aria-invalid')).toBe('true');
+    const error = document.getElementById(reason.getAttribute('aria-describedby') ?? '');
+    expect(error?.textContent).toBe('Enter a reason for shelving.');
+    fireEvent.change(reason, { target: { value: 'sensor swap' } });
+    expect(reason.getAttribute('aria-invalid')).toBeNull();
+    // The history speaks words; the fact's sequence number waits in its technical details.
+    const entries = await screen.findAllByTestId('history-entry');
+    expect(entries[0]?.querySelector('p')?.textContent).toBe('Raised 08:00:01');
+    expect(entries[0]?.querySelector('details summary')?.textContent).toBe('Technical details');
+  });
+});

@@ -44,6 +44,8 @@ const FILES = [
   // Order actions and order OEE (UX-6b, #329).
   'screens/order-actions.tsx',
   'screens/order-oee.tsx',
+  // The alarm list (UX-4a, #324).
+  'screens/alarm-list.tsx',
 ];
 
 /** Utility prefixes: a literal with one of these is a class list. */

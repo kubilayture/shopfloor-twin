@@ -16,6 +16,20 @@ describe('Missing', () => {
     expect(missing.className).toContain('text-ink-secondary');
     expect(missing.textContent).not.toMatch(/n\/a|none|–/);
   });
+
+  it('drops the hidden copy when the reason is visible beside it, so it is said once (UX-6b)', () => {
+    render(
+      <>
+        <Missing reason="No planned busy time" reasonShown testId="m" />
+        <Percent ratio={null} na="No planned busy time" naShown testId="p" />
+      </>,
+    );
+    for (const id of ['m', 'p']) {
+      expect(screen.getByTestId(id).textContent).toBe('—');
+      expect(screen.getByTestId(id).querySelector('.sr-only')).toBeNull();
+    }
+    expect(screen.getByTestId('m').getAttribute('title')).toBe('No planned busy time');
+  });
 });
 
 describe('Duration', () => {

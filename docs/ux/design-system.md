@@ -120,7 +120,7 @@ The light solid fills (Starved, Blocked, and the medium alarm priority) carry a 
 | Medium   | solid `#fbbf24`, text `#451a03`, border `#b45309` | ▲     | 8.97     |
 | Low      | white, border `#2563eb`, text `#1e40af`           | ●     | 8.72     |
 
-The glyphs are today's (`PriorityBadge`). An unacknowledged alarm's row has a 4 px left bar in its priority's border colour and bold text; acknowledged rows are plain (A-03).
+The glyphs are today's (`PriorityBadge`). An unacknowledged alarm's row has a 3 px left bar in its priority's border colour (the `DataTable` tone bar: `alarm`, `warn`, `info` for high, medium, low) and bold text, also while its detail is open; acknowledged rows are plain (A-03).
 
 ### 2.6 Finality and other statuses
 
@@ -478,7 +478,7 @@ interface DataTableProps<Row> {
 ```
 
 - Header row: `surface-sunken`, `text-xs` 600 uppercase-free (sentence case), `ink-secondary`, a 1 px `line` bottom border; `th scope="col"`; right-aligned headers over right-aligned columns.
-- Rows: 1 px `line-subtle` dividers, no zebra (the dividers carry the rows; zebra fights the tone bars), hover `neutral-50`, the active row `accent-subtle` with a 3 px `accent` left bar (D-03).
+- Rows: 1 px `line-subtle` dividers, no zebra (the dividers carry the rows; zebra fights the tone bars), hover `neutral-50`, the active row `accent-subtle` with a 3 px `accent` left bar, or its tone bar when it has one (an open unacknowledged alarm stays marked; D-03).
 - Numbers right-aligned in tabular figures. Units: durations keep their unit in every cell ("30.0 min", as the demo walkthrough asserts on the Pareto table, and because durations mix scales); a column of measured values or counts with one unit puts it in the header ("Leak rate (Pa/min)") and the cells hold numbers only.
 - **Sticky header** (G-14): `position: sticky` works only when no ancestor between the header and the scrolling viewport clips overflow. So the frame has two modes, chosen by measuring (a `ResizeObserver` on the table against its frame):
   - the table fits its frame: the frame uses `overflow: clip` (not `auto` or `hidden`: clip makes no scroll box, and it keeps the header's fill inside the rounded corners), the header sticks to the page under the top bar (`top: 48px`);

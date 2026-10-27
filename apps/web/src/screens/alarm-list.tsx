@@ -35,6 +35,7 @@ import { DescriptionList, type Fact } from '../components/ui/description-list.ts
 import { DetailPanel, useWide } from '../components/ui/detail-panel.tsx';
 import { Disclosure } from '../components/ui/disclosure.tsx';
 import { EmptyState } from '../components/ui/empty-state.tsx';
+import { Icon } from '../components/ui/icons.tsx';
 import { Duration, PlantTime, WallTime } from '../components/ui/format.tsx';
 import { PageHeader } from '../components/ui/page-header.tsx';
 import { Section } from '../components/ui/section.tsx';
@@ -84,6 +85,8 @@ export const HISTORY_MS = 24 * HOUR;
 
 /** The page heading's id: where the focus goes when a closed detail's opener is gone. */
 const TITLE_ID = 'alarms-title';
+/** The bulk button's description. */
+const BULK_HINT_ID = 'alarm-bulk-hint';
 /** The detail panel's title: the "Skip to the details" link's target. */
 const PANEL_TITLE_ID = 'alarm-panel-title';
 
@@ -104,6 +107,31 @@ function WriteMessage({ message, testId }: { readonly message: Message; readonly
   );
 }
 
+/**
+ * A write's outcome in the list's toolbar: one line beside the bulk button (an `ok` check or an
+ * `alarm` glyph and the words), announced as a status or an alert, `data-kind` for the tests.
+ */
+function ToolbarMessage({
+  message,
+  testId,
+}: {
+  readonly message: Message;
+  readonly testId: string;
+}) {
+  const saved = message.kind === 'saved';
+  return (
+    <p
+      role={saved ? 'status' : 'alert'}
+      data-testid={testId}
+      data-kind={message.kind}
+      className={`flex min-w-0 items-start gap-1.5 text-sm font-medium ${saved ? 'text-ok-ink' : 'text-alarm-ink'}`}
+    >
+      <Icon name={saved ? 'check' : 'alert'} size={16} className="mt-0.5" />
+      <span className="min-w-0">{message.text}</span>
+    </p>
+  );
+}
+
 /** The bar of an unacknowledged alarm: its priority's border colour (design system 2.5). */
 const PRIORITY_TONE: Readonly<Record<Priority, Tone>> = {
   high: 'alarm',
@@ -117,6 +145,26 @@ const unacknowledged = (occurrence: AlarmOccurrenceDto): boolean =>
 
 const plural = (count: number, word: string): string =>
   `${String(count)} ${word}${count === 1 ? '' : 's'}`;
+
+/**
+ * How a control names its alarm for a screen reader: the alarm's text, else its code, then the
+ * machine: "Coolant pressure low on CNC-02, Horizontal machining centre 2" (names first, 6.4).
+ */
+const alarmLabel = (occurrence: AlarmOccurrenceDto, machine: string): string =>
+  `${occurrence.text ?? occurrence.code}, ${machine}`;
+
+/** The occurrence's condition alone ("Active", "Cleared", "Closed"): the state without the ack. */
+function conditionText(occurrence: AlarmOccurrenceDto): string {
+  switch (occurrence.state) {
+    case 'unacked-active':
+    case 'acked-active':
+      return 'Active';
+    case 'unacked-cleared':
+      return 'Cleared';
+    case 'closed':
+      return 'Closed';
+  }
+}
 
 /** The alarm's name, then its code: "Coolant pressure low", `COOLANT-PRESSURE` below. */
 function AlarmName({ occurrence }: { readonly occurrence: AlarmOccurrenceDto }) {
@@ -800,7 +848,20 @@ function alarmColumns(
       header: 'State',
       cell: (occurrence) => (
         <>
-          {stateText(occurrence)}
+          {beside ? (
+            // Beside the panel the column keeps to the condition, so the alarm's name has room;
+            // the acknowledgement is the row's bar and bold text, and said to a screen reader.
+            <>
+              {conditionText(occurrence)}
+              <span className="sr-only">
+                {occurrence.acknowledged === null && occurrence.state !== 'closed'
+                  ? ', unacknowledged'
+                  : ', acknowledged'}
+              </span>
+            </>
+          ) : (
+            stateText(occurrence)
+          )}
           {occurrence.comments > 0 ? (
             <span className="block text-xs font-normal text-ink-secondary">
               {plural(occurrence.comments, 'comment')}
@@ -1016,12 +1077,11 @@ export function AlarmList() {
             variant="ghost"
             size={actionSize}
             data-testid={`ack-${occurrence.id}`}
-            aria-label={`Acknowledge ${occurrence.code} on ${name}`}
+            aria-label={`Acknowledge ${alarmLabel(occurrence, name)}`}
             // Busy (not disabled) while its own acknowledgement is on the way: the focus stays
             // on it until the row leaves, and then moves to the next row's (DataTable).
             loading={ackOne.isPending && ackOne.variables === occurrence.id}
             onClick={() => {
-              setMessage(undefined);
               ackOne.mutate(occurrence.id);
             }}
           >
@@ -1032,7 +1092,7 @@ export function AlarmList() {
           variant="ghost"
           size={actionSize}
           data-testid={`details-${occurrence.id}`}
-          aria-label={`Details of ${occurrence.code} on ${name}`}
+          aria-label={`Details of ${alarmLabel(occurrence, name)}`}
           onClick={() => {
             void navigate({
               search: (previous) => ({ ...previous, alarm: occurrence.id }),
@@ -1068,11 +1128,6 @@ export function AlarmList() {
         <Callout tone="warn" role="status" className="mb-4">
           More alarms than one answer holds ({MES_API_LIMITS.alarmPageMax}): the list is cut off.
         </Callout>
-      ) : null}
-      {message ? (
-        <div className="mb-4">
-          <WriteMessage message={message} testId="alarm-list-message" />
-        </div>
       ) : null}
       {search.alarm !== undefined && selectedOccurrence === undefined && linked.isError ? (
         <div className="mb-4">
@@ -1114,30 +1169,43 @@ export function AlarmList() {
             data-count={loaded.data ? String(shown.length) : undefined}
             className="pt-4"
           >
-            {bulk ? (
-              <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2">
-                <Button
-                  variant="primary"
-                  data-testid="ack-selected"
-                  disabled={chosen.length === 0}
-                  loading={ackMany.isPending}
-                  onClick={() => {
-                    if (chosen.length > MES_API_LIMITS.alarmAckBulk) {
-                      setMessage({
-                        kind: 'invalid',
-                        text: `Select at most ${String(MES_API_LIMITS.alarmAckBulk)} alarms to acknowledge at once.`,
-                      });
-                      return;
-                    }
-                    setMessage(undefined);
-                    ackMany.mutate(chosen.map((occurrence) => occurrence.id));
-                  }}
-                >
-                  Acknowledge selected ({chosen.length})
-                </Button>
-                <span className="text-xs text-ink-secondary">
-                  At most {MES_API_LIMITS.alarmAckBulk} at once.
-                </span>
+            {/* The toolbar: the bulk acknowledgement and the last write's outcome, in a row of its
+                own whose height is kept, so a message never pushes the rows down (#369 review). */}
+            {bulk || message ? (
+              <div
+                data-testid="alarm-toolbar"
+                className="mb-3 flex min-h-11 flex-wrap items-center gap-x-3 gap-y-2"
+              >
+                {bulk && !loaded.isError ? (
+                  <>
+                    <Button
+                      variant="primary"
+                      data-testid="ack-selected"
+                      // Never `disabled`: after a bulk acknowledgement empties the selection the
+                      // focus stays on the button instead of falling to the page (#369 review).
+                      aria-disabled={chosen.length === 0 || undefined}
+                      aria-describedby={BULK_HINT_ID}
+                      loading={ackMany.isPending}
+                      onClick={() => {
+                        if (chosen.length === 0) return;
+                        if (chosen.length > MES_API_LIMITS.alarmAckBulk) {
+                          setMessage({
+                            kind: 'invalid',
+                            text: `Select at most ${String(MES_API_LIMITS.alarmAckBulk)} alarms to acknowledge at once.`,
+                          });
+                          return;
+                        }
+                        ackMany.mutate(chosen.map((occurrence) => occurrence.id));
+                      }}
+                    >
+                      Acknowledge selected ({chosen.length})
+                    </Button>
+                    <span id={BULK_HINT_ID} className="sr-only">
+                      Select the alarms first; at most {MES_API_LIMITS.alarmAckBulk} at once.
+                    </span>
+                  </>
+                ) : null}
+                {message ? <ToolbarMessage message={message} testId="alarm-list-message" /> : null}
               </div>
             ) : null}
             {loaded.isError ? (
@@ -1173,7 +1241,7 @@ export function AlarmList() {
                         onChange: setSelected,
                         selectable: acknowledgeable,
                         label: (occurrence: AlarmOccurrenceDto) =>
-                          `Select ${occurrence.code} on ${machineName(occurrence.equipment)}`,
+                          `Select ${alarmLabel(occurrence, machineName(occurrence.equipment))}`,
                         allLabel: 'Select every alarm that can be acknowledged',
                         testId: 'select-all',
                         rowTestId: (occurrence: AlarmOccurrenceDto) => `select-${occurrence.id}`,
@@ -1183,7 +1251,7 @@ export function AlarmList() {
                 actions={rowActions}
                 skipToDetails={panelOpen && wide ? PANEL_TITLE_ID : undefined}
                 announceRemoval={(left) =>
-                  `The alarm left the ${ALARM_VIEW_LABELS[view]} list; ${plural(left, 'alarm')} left.`
+                  `The alarm left the ${ALARM_VIEW_LABELS[view]} list; ${left === 0 ? 'no alarms remain' : `${plural(left, 'alarm')} ${left === 1 ? 'remains' : 'remain'}`}.`
                 }
                 narrow="stack"
                 loading={

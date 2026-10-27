@@ -158,7 +158,7 @@ describe('DataTable markup', () => {
   });
 
   it('marks an abnormal row with its tone bar and the active row with aria-current and accent', () => {
-    render(
+    const { rerender } = render(
       table({
         rows: [alarm(1), alarm(2, 'acknowledged'), alarm(3)],
         rowTone: (row) => (row.state === 'unacknowledged' ? 'alarm' : undefined),
@@ -174,9 +174,20 @@ describe('DataTable markup', () => {
     const active = screen.getByTestId('alarm-row-a3');
     expect(active.getAttribute('aria-current')).toBe('true');
     expect(active.className).toMatch(/\bbg-accent-subtle\b/);
-    // The active bar wins over the tone bar.
-    expect(active.querySelector('td')?.className).toContain('var(--color-accent)');
-    expect(active.querySelector('td')?.className).not.toContain('alarm-border');
+    // An open abnormal row keeps its tone bar; the accent fill marks it open.
+    expect(active.querySelector('td')?.className).toContain('alarm-border');
+    expect(active.querySelector('td')?.className).not.toContain('var(--color-accent)');
+    // An open normal row takes the accent bar.
+    rerender(
+      table({
+        rows: [alarm(1), alarm(2, 'acknowledged'), alarm(3)],
+        rowTone: (row) => (row.state === 'unacknowledged' ? 'alarm' : undefined),
+        activeRowKey: 'a2',
+      }),
+    );
+    const open = screen.getByTestId('alarm-row-a2');
+    expect(open.className).toMatch(/\bbg-accent-subtle\b/);
+    expect(open.querySelector('td')?.className).toContain('var(--color-accent)');
   });
 
   it('makes an emphasised row bold in every cell, its row header included (rowEmphasis)', () => {

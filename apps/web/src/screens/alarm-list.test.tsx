@@ -342,7 +342,7 @@ describe('alarm list', () => {
     const app = await renderApp('/alarms');
     await app.open();
     await screen.findByTestId(`alarm-row-${a.id}`);
-    expect(screen.getByTestId<HTMLButtonElement>('ack-selected').disabled).toBe(true);
+    expect(screen.getByTestId('ack-selected').getAttribute('aria-disabled')).toBe('true');
     fireEvent.click(screen.getByTestId(`select-${a.id}`));
     fireEvent.click(screen.getByTestId(`select-${c.id}`));
     expect(screen.getByTestId('ack-selected').textContent).toContain('(2)');
@@ -401,7 +401,7 @@ describe('alarm list', () => {
     expect(message.textContent).toMatch(/^Not acknowledged/);
   });
 
-  it('says when a list cannot be read', async () => {
+  it('says when a list cannot be read, with no bulk action over the failed list', async () => {
     const server = mes(empty());
     vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) =>
       new URL(requestUrl(input), 'http://localhost').pathname === '/api/v1/alarms'
@@ -412,6 +412,7 @@ describe('alarm list', () => {
     const alerts = await screen.findAllByText(/Could not load the active alarms/);
     expect(alerts).toHaveLength(1);
     expect(screen.getAllByText(/database down/).length).toBeGreaterThan(0);
+    expect(screen.queryByTestId('ack-selected')).toBeNull();
   });
 
   it('shows a flood banner per position while an episode is open', async () => {
@@ -1064,10 +1065,22 @@ describe('the alarm list on the design system (UX-4a, #324)', () => {
       expect(screen.queryByTestId(`alarm-row-${a.id}`)).toBeNull();
     });
     expect(document.activeElement).toBe(screen.getByTestId(`ack-${b.id}`));
+    // Names first for a screen reader: the alarm's text, then the machine.
+    expect(document.activeElement?.getAttribute('aria-label')).toBe(
+      'Acknowledge Coolant pressure low, Machine cnc-01',
+    );
+    expect(screen.getByTestId(`details-${b.id}`).getAttribute('aria-label')).toBe(
+      'Details of Coolant pressure low, Machine cnc-01',
+    );
+    expect(screen.getByTestId(`select-${b.id}`).getAttribute('aria-label')).toBe(
+      'Select Coolant pressure low, Machine cnc-01',
+    );
     expect(
       screen
         .getAllByRole('status')
-        .some((status) => status.textContent === 'The alarm left the Active list; 1 alarm left.'),
+        .some(
+          (status) => status.textContent === 'The alarm left the Active list; 1 alarm remains.',
+        ),
     ).toBe(true);
   });
 
@@ -1095,6 +1108,16 @@ describe('the alarm list on the design system (UX-4a, #324)', () => {
       `#${title.id}`,
     );
     expect(screen.getByTestId(`alarm-row-${a.id}`).getAttribute('aria-current')).toBe('true');
+    // The open unacknowledged row keeps its priority bar beside the accent fill.
+    const open = screen.getByTestId(`alarm-row-${a.id}`);
+    expect(open.className).toContain('bg-accent-subtle');
+    expect(open.querySelector('[data-cell="select"]')?.className).toContain(
+      'var(--color-warn-border)',
+    );
+    // The state keeps to the condition beside the panel; the acknowledgement is said.
+    const state = open.querySelector<HTMLElement>('[data-cell="c-state"]');
+    expect(state?.textContent).toBe('Active, unacknowledged');
+    expect(state?.querySelector('.sr-only')?.textContent).toBe(', unacknowledged');
     // Beside the panel the machine joins the alarm's cell, so the actions stay in view.
     expect(screen.getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
       '',
@@ -1175,5 +1198,91 @@ describe('the alarm list on the design system (UX-4a, #324)', () => {
     const entries = await screen.findAllByTestId('history-entry');
     expect(entries[0]?.querySelector('p')?.textContent).toBe('Raised 08:00:01');
     expect(entries[0]?.querySelector('details summary')?.textContent).toBe('Technical details');
+  });
+});
+
+describe('the alarm list toolbar (#369 review)', () => {
+  it('shows the outcome of a write in its own reserved row and keeps it until the next outcome', async () => {
+    const a = occurrence(2);
+    const b = occurrence(1);
+    const server = mes({ ...empty(), active: [a, b] }, (path) =>
+      json({
+        occurrence: {
+          ...(path.includes(encodeURIComponent(a.id)) ? a : b),
+          state: 'acked-active',
+          acknowledged: ACK,
+        },
+        changed: true,
+      }),
+    );
+    let release: () => void = () => undefined;
+    let gate = Promise.resolve();
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'POST') await gate;
+      return server.fetch(input, init);
+    });
+    await renderApp('/alarms');
+    await screen.findByTestId(`alarm-row-${a.id}`);
+    // The row is there before any message, above the table, so a message does not move the rows.
+    const toolbar = screen.getByTestId('alarm-toolbar');
+    expect(toolbar.className).toContain('min-h-11');
+    expect(
+      toolbar.compareDocumentPosition(screen.getByTestId('alarm-table')) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    fireEvent.click(screen.getByTestId(`ack-${a.id}`));
+    const message = await within(toolbar).findByTestId('alarm-list-message');
+    expect(message.dataset.kind).toBe('saved');
+    expect(message.getAttribute('role')).toBe('status');
+    // The next acknowledgement leaves it in place while its answer is on the way.
+    gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    fireEvent.click(await screen.findByTestId(`ack-${b.id}`));
+    await waitFor(() => {
+      expect(screen.getByTestId(`ack-${b.id}`).getAttribute('aria-busy')).toBe('true');
+    });
+    expect(within(toolbar).getByTestId('alarm-list-message').textContent).toContain(a.code);
+    release();
+    await waitFor(() => {
+      expect(screen.queryByTestId(`alarm-row-${b.id}`)).toBeNull();
+    });
+  });
+
+  it('keeps the focus on "Acknowledge selected" after a bulk acknowledgement empties the selection', async () => {
+    const a = occurrence(1);
+    const b = occurrence(2);
+    const server = mes({ ...empty(), active: [a, b] }, () =>
+      json({
+        results: [
+          { id: a.id, changed: true },
+          { id: b.id, changed: true },
+        ],
+        acknowledged: 2,
+      }),
+    );
+    vi.stubGlobal('fetch', server.fetch);
+    await renderApp('/alarms');
+    await screen.findByTestId(`alarm-row-${a.id}`);
+    fireEvent.click(screen.getByTestId('select-all'));
+    const button = screen.getByTestId<HTMLButtonElement>('ack-selected');
+    expect(button.textContent).toContain('(2)');
+    button.focus();
+    fireEvent.click(button);
+    await waitFor(() => {
+      expect(screen.getByTestId('alarm-list-message').textContent).toBe('Acknowledged 2.');
+    });
+    expect(button.textContent).toContain('(0)');
+    // Not disabled, so the focus is not lost to the page; a press with nothing selected sends
+    // nothing.
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute('aria-disabled')).toBe('true');
+    expect(document.activeElement).toBe(button);
+    const posts = server.calls.filter((call) => call.method === 'POST').length;
+    await settle(() => {
+      fireEvent.click(button);
+    });
+    expect(server.calls.filter((call) => call.method === 'POST').length).toBe(posts);
+    expect(screen.getByTestId('alarm-list-message').textContent).toBe('Acknowledged 2.');
   });
 });

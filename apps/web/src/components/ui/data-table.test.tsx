@@ -737,6 +737,83 @@ describe('DataTable row actions and focus', () => {
     expect(document.activeElement).toBe(document.body);
   });
 
+  describe('when the rows are reordered (a live sort change, #371)', () => {
+    let reorder: (change: (rows: readonly Alarm[]) => Alarm[]) => void = () => undefined;
+    function Reordering() {
+      const [rows, setRows] = useState(() => rowsOf(3));
+      reorder = (change) => {
+        setRows((all) => change(all));
+      };
+      return (
+        <Section title="Active alarms" id="alarms-title">
+          {table({
+            rows,
+            actions: (row) => (
+              <>
+                <Button variant="ghost" size="sm">
+                  Details {row.code}
+                </Button>
+                <Button variant="ghost" size="sm" data-testid={`ack-${row.id}`}>
+                  Acknowledge {row.code}
+                </Button>
+              </>
+            ),
+            announceRemoval: (left: number) => `Alarm acknowledged; ${String(left)} left`,
+          })}
+          <button type="button">Elsewhere</button>
+        </Section>
+      );
+    }
+
+    it('puts the focus back on the same control of the moved row, without an announcement', () => {
+      render(<Reordering />);
+      const ack = screen.getByTestId('ack-a1');
+      ack.focus();
+      act(() => {
+        // The browser drops the focus to the page as the focused row's node moves.
+        ack.blur();
+        reorder((all) => [...all].reverse());
+      });
+      expect(screen.getAllByTestId(/^alarm-row-/).map((row) => row.dataset.rowKey)).toEqual([
+        'a3',
+        'a2',
+        'a1',
+      ]);
+      expect(document.activeElement).toBe(screen.getByTestId('ack-a1'));
+      expect(screen.getByRole('status').textContent).toBe('');
+    });
+
+    it('leaves the focus alone when the user moved it, or when the order did not change', () => {
+      render(<Reordering />);
+      const ack = screen.getByTestId('ack-a1');
+      ack.focus();
+      const elsewhere = screen.getByRole('button', { name: 'Elsewhere' });
+      act(() => {
+        elsewhere.focus();
+        reorder((all) => [...all].reverse());
+      });
+      expect(document.activeElement).toBe(elsewhere);
+
+      // Lost to nothing, then taken by a control outside while the row is still remembered.
+      const moved = screen.getByTestId('ack-a1');
+      moved.focus();
+      act(() => {
+        moved.blur();
+        elsewhere.focus();
+        reorder((all) => [...all].reverse());
+      });
+      expect(document.activeElement).toBe(elsewhere);
+
+      ack.focus();
+      act(() => {
+        // A click on the page with a render in between: the same order, so no move took it.
+        ack.blur();
+        reorder((all) => [...all]);
+      });
+      expect(document.activeElement).toBe(document.body);
+    });
+  });
+
   it('puts a "Skip to the details" link before the table that focuses the detail', () => {
     render(
       <>

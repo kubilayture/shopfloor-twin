@@ -467,6 +467,7 @@ interface DataTableProps<Row> {
   stickyHeader?: boolean; // default true when rows > 15
   bounded?: boolean; // always the bounded scroll box (a long list inside a detail)
   skipToDetails?: string; // the detail's id: a "Skip to the details" link before the table
+  skipLabel?: string; // the skip link's own words past a long table ("Skip past the units", G-33)
   announceRemoval?: (left: number) => string; // the polite status after a focused row went
   density?: 'compact' | 'default'; // 32 / 40 px rows
   narrow?: 'scroll' | 'stack'; // below md: scroll with an edge fade, or one card per row

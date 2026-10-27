@@ -3,7 +3,8 @@ import { useQuery } from '@tanstack/react-query';
 import { useId } from 'react';
 import { getCurrentShift, getShifts } from '../api/client.ts';
 import { queryKeys } from '../api/queries.ts';
-import { PLANT_TIME_ZONE } from '../domain/time.ts';
+import { PLANT_TIME_ZONE, formatClockTime, formatPlantTime, plantDayOf } from '../domain/time.ts';
+import { PlantTime } from './ui/format.tsx';
 
 const HOUR = 3_600_000;
 /** How far back the shift picker reaches. */
@@ -24,10 +25,42 @@ const clock = new Intl.DateTimeFormat('en-GB', {
   hourCycle: 'h23',
 });
 
+/**
+ * A shift key (`2026-10-12/A`) as words, for a shift outside the picker's list (an old one asked
+ * for by URL): `Mon 12 Oct, shift A`; an unparseable key as it is.
+ */
+export function shiftKeyLabel(key: string): string {
+  const match = /^(\d{4}-\d{2}-\d{2})\/([A-Za-z0-9]+)$/.exec(key);
+  const day = match?.[1];
+  const date = day === undefined ? Number.NaN : Date.parse(`${day}T00:00:00.000Z`);
+  if (!match || !Number.isFinite(date)) return key;
+  return `${shiftDay.format(new Date(date))}, shift ${match[2] ?? ''}`;
+}
+
 /** `Mon 12 Oct, shift A (06:00–14:00)`: the shift's own date, its times in plant time. */
 export function shiftLabel(shift: ShiftInstanceDto): string {
   const day = shiftDay.format(new Date(`${shift.date}T00:00:00.000Z`));
   return `${day}, shift ${shift.shift} (${clock.format(new Date(shift.start))}–${clock.format(new Date(shift.end))})`;
+}
+
+/**
+ * A shift's span (design system 6.2): `Mon 12 Oct, 06:00 – 14:00` within one plant day, the date
+ * on both sides only across midnight (`Mon 12 Oct, 22:00 – Tue 13 Oct, 06:00`).
+ */
+export function ShiftSpan({ start, end }: { readonly start: string; readonly end: string }) {
+  const oneDay = plantDayOf(start) === plantDayOf(end);
+  return (
+    <>
+      <PlantTime at={start} seconds={false} /> –{' '}
+      {oneDay ? (
+        <time dateTime={end} title={formatPlantTime(end)} className="tabular-nums">
+          {formatClockTime(end)}
+        </time>
+      ) : (
+        <PlantTime at={end} seconds={false} />
+      )}
+    </>
+  );
 }
 
 export interface ShiftSelection {
@@ -112,7 +145,7 @@ export function ShiftPicker({
       >
         {selection.selected !== undefined &&
         !options.some((shift) => shift.key === selection.selected) ? (
-          <option value={selection.selected}>{selection.selected}</option>
+          <option value={selection.selected}>{shiftKeyLabel(selection.selected)}</option>
         ) : null}
         {options.map((shift) => (
           <option key={shift.key} value={shift.key}>

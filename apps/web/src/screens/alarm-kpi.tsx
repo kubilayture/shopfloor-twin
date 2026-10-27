@@ -1,11 +1,14 @@
 import {
   ALARMS_TOPIC,
+  type AlarmConfig,
   type AlarmKpiBucketDto,
   type AlarmScopes,
+  type BadActorDto,
+  type FloodEpisodeDto,
 } from '@shopfloor/contracts/mes-api';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearch } from '@tanstack/react-router';
-import { useEffect, useId, useMemo, useRef, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import {
   getAlarmKpi,
   getAlarmScopes,
@@ -16,24 +19,59 @@ import {
   type AlarmScopeRef,
 } from '../api/client.ts';
 import { queryKeys, useAlarmConfig, usePlantClock } from '../api/queries.ts';
-import { alarmHourlyOption, alarmHourlyReading } from '../chart/alarm-options.ts';
+import {
+  alarmHourlyOption,
+  alarmHourlyReading,
+  type AlarmHourBar,
+} from '../chart/alarm-options.ts';
 import { EChart } from '../chart/echart.tsx';
-import { useHeadingFocus } from '../components/heading-focus.ts';
+import {
+  FlagBadges,
+  SectionFinality,
+  groupFinality,
+  itemFlags,
+  type GroupFinality,
+} from '../components/oee-ui.tsx';
 import { QueryError } from '../components/query-error.tsx';
-import { ShiftPicker, useShiftSelection } from '../components/shift-picker.tsx';
+import {
+  ShiftPicker,
+  ShiftSpan,
+  shiftKeyLabel,
+  useShiftSelection,
+} from '../components/shift-picker.tsx';
+import { Badge } from '../components/ui/badge.tsx';
+import { Card } from '../components/ui/card.tsx';
+import { Code } from '../components/ui/code.tsx';
+import { Select } from '../components/ui/controls.tsx';
+import { DataTable, type Column } from '../components/ui/data-table.tsx';
+import { DescriptionList, type Fact } from '../components/ui/description-list.tsx';
+import { EmptyState } from '../components/ui/empty-state.tsx';
+import { Missing, Percent, PlantTime, Ratio } from '../components/ui/format.tsx';
+import { PageHeader } from '../components/ui/page-header.tsx';
+import { Section } from '../components/ui/section.tsx';
+import { Skeleton } from '../components/ui/skeleton.tsx';
+import { KpiTile } from '../components/ui/stat.tsx';
 import {
   alarmBucketFlags,
+  alarmShiftHours,
   meanTimeToAck,
   msText,
   parseScopeKey,
   rateBand,
   rateBandText,
+  RATE_VERDICT,
   scopeKey,
   windowLabel,
+  type AlarmHourRow,
 } from '../domain/alarms.ts';
-import { NOT_APPLICABLE, percentText, pickBucket, ratioText } from '../domain/oee.ts';
-import { formatClockTime, formatPlantTime } from '../domain/time.ts';
-import { useLiveAlarmKpi, useLiveAlarms, useLiveSubscriptions } from '../live/live-context.tsx';
+import { NOT_APPLICABLE, pickBucket } from '../domain/oee.ts';
+import { formatClockTime } from '../domain/time.ts';
+import {
+  useLiveAlarmKpi,
+  useLiveAlarmKpis,
+  useLiveAlarms,
+  useLiveSubscriptions,
+} from '../live/live-context.tsx';
 
 const HOUR = 3_600_000;
 /** How far back the shift buckets of the bucket table reach. */
@@ -42,6 +80,10 @@ const SHIFT_BUCKETS_MS = 7 * 24 * HOUR;
 const REREAD_THROTTLE_MS = 2_000;
 
 type Scope = AlarmScopes['scopes'][number];
+interface Range {
+  readonly from: number;
+  readonly to: number;
+}
 
 /** `plant` → `plant`, `position:cell-m1` → `position-cell-m1` (test ids). */
 const testKey = (key: string): string => key.replace(':', '-');
@@ -71,174 +113,147 @@ function useThrottledReread(trigger: unknown, queryKey: readonly unknown[], enab
   );
 }
 
-function Flags({ bucket }: { readonly bucket: AlarmKpiBucketDto }) {
-  return (
-    <ul className="flex flex-wrap gap-1" aria-label="Status">
-      {alarmBucketFlags(bucket).map((flag) => (
-        <li
-          key={flag.key}
-          title={flag.title}
-          data-flag={flag.key}
-          className={`rounded border px-1.5 text-xs font-medium ${
-            flag.key === 'final'
-              ? 'border-emerald-800 text-emerald-900'
-              : 'border-amber-700 text-amber-950'
-          }`}
-        >
-          {flag.text}
-        </li>
-      ))}
-    </ul>
-  );
+/** A measure as a fact whose `dd` carries `data-measure` (the specs read it, #295). */
+const measure = (name: string, term: string, detail: ReactNode): Fact => ({
+  id: name,
+  term,
+  detail,
+  detailData: { 'data-measure': name },
+});
+
+/** The measures of a bucket under its headline and the raises and peak (K-01). */
+function bucketFacts(bucket: AlarmKpiBucketDto): Fact[] {
+  return [
+    measure(
+      'flood-windows',
+      'Flood windows',
+      `${String(bucket.floodWindows)} of ${String(bucket.windows)}`,
+    ),
+    measure(
+      'flood-episodes',
+      'Flood episodes (time)',
+      `${String(bucket.floods.length)} (${msText(bucket.floodMs)})`,
+    ),
+    measure(
+      'chattering',
+      'Chattering raises (points)',
+      `${String(bucket.chatteringRaises)} (${String(bucket.chatteringPoints.length)})`,
+    ),
+    measure(
+      'fleeting',
+      'Fleeting',
+      `${String(bucket.fleeting)}${bucket.fleetingUndecided > 0 ? ` (+${String(bucket.fleetingUndecided)} undecided)` : ''}`,
+    ),
+    measure(
+      'standing',
+      'Standing (active at end)',
+      `${String(bucket.standing.length)} (${String(bucket.activeAtEnd)})`,
+    ),
+    measure('active-time', 'Active time', msText(bucket.activeMs)),
+  ];
 }
 
-function RateText({ bucket }: { readonly bucket: AlarmKpiBucketDto }) {
-  // The benchmarks are the MES's (#160): no band until they arrived.
-  const config = useAlarmConfig();
-  const band = config ? rateBand(bucket.averageRate, config) : undefined;
-  return (
-    <span title={bucket.averageRate.fraction}>
-      <span className="font-mono tabular-nums">{bucket.averageRate.decimal}</span>{' '}
-      {config && band ? (
-        <span
-          data-band={band}
-          className={`rounded px-1 text-xs font-medium ${
-            band === 'acceptable'
-              ? 'bg-emerald-50 text-emerald-900'
-              : band === 'manageable'
-                ? 'bg-amber-100 text-amber-950'
-                : 'bg-red-700 text-white'
-          }`}
-        >
-          {rateBandText(band, config)}
-        </span>
-      ) : null}
-    </span>
-  );
-}
-
-function Measure({
-  name,
-  label,
-  children,
-}: {
-  readonly name: string;
-  readonly label: string;
-  readonly children: ReactNode;
-}) {
-  return (
-    <>
-      <dt className="text-slate-700">{label}</dt>
-      <dd data-measure={name} className="text-right tabular-nums">
-        {children}
-      </dd>
-    </>
-  );
-}
-
-/** One scope's KPIs over the shift: the pushed shift bucket over the REST one (`pickBucket`). */
-function ScopeCard({
+/**
+ * One scope's KPIs over the shift (K-01): the average per window with its EEMUA 191 verdict as
+ * the headline, the other measures in a compact list under it; its own flags beside the title
+ * only where they differ from the section's finality (E-03).
+ */
+function ScopeTile({
   scope,
-  range,
-  shiftKey,
+  bucket,
+  read,
+  finality,
+  config,
+  live,
 }: {
   readonly scope: Scope;
-  readonly range: { readonly from: number; readonly to: number };
-  readonly shiftKey: string;
+  readonly bucket: AlarmKpiBucketDto | undefined;
+  readonly read: {
+    readonly isError: boolean;
+    readonly error: unknown;
+    readonly loaded: boolean;
+    readonly retry: () => void;
+  };
+  readonly finality: GroupFinality | undefined;
+  readonly config: AlarmConfig | undefined;
+  /** The shift is running: the average is over the whole shift, which is not over. */
+  readonly live: boolean;
 }) {
-  const key = scopeKey(scope);
-  const titleId = useId();
-  const rest = useQuery({
-    queryKey: queryKeys.alarmKpi(key, 'shift', range.from, range.to),
-    queryFn: ({ signal }) =>
-      getAlarmKpi({ ...scope, bucket: 'shift', from: range.from, to: range.to }, signal),
-  });
-  const pushed = useLiveAlarmKpi(key)?.shift;
-  const bucket = pickBucket(
-    rest.data?.buckets.find((candidate) => candidate.key === shiftKey),
-    pushed?.key === shiftKey ? pushed : undefined,
-  );
-  const na = <span>{NOT_APPLICABLE}</span>;
+  const key = testKey(scopeKey(scope));
   // The window as served (#160, #147): `10 min` by default, `window` until the answer arrived.
-  const per = windowLabel(useAlarmConfig()?.kpi.windowMs);
+  const per = windowLabel(config?.kpi.windowMs);
+  const label = `Average per ${per}`;
+  // The benchmarks are the MES's (#160): no verdict until they arrived.
+  const band = bucket && config ? rateBand(bucket.averageRate, config) : undefined;
+  const flags = bucket ? itemFlags(alarmBucketFlags(bucket), finality) : [];
   return (
-    <li>
-      <article
-        aria-labelledby={titleId}
-        data-testid={`kpi-card-${testKey(key)}`}
-        data-raises={bucket ? String(bucket.raises) : NOT_APPLICABLE}
-        data-final={bucket ? String(bucket.final) : undefined}
-        data-revision={bucket ? String(bucket.revision) : undefined}
-        className="flex h-full flex-col gap-2 rounded-lg border border-slate-300 bg-white p-4 shadow-sm"
-      >
-        <h3 id={titleId} className="font-semibold">
-          {scope.name}
-        </h3>
-        {rest.isError ? (
-          <QueryError what="the KPIs" error={rest.error} onRetry={() => void rest.refetch()} />
-        ) : null}
-        {bucket ? <Flags bucket={bucket} /> : null}
-        {!bucket && rest.data ? (
-          <p className="text-sm" data-testid={`kpi-empty-${testKey(key)}`}>
-            No alarm KPIs for this shift yet: n/a.
-          </p>
-        ) : null}
-        <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-0.5 text-sm">
-          <Measure name="raises" label="Raises (high / medium / low)">
-            {bucket ? (
-              <>
-                <span className="font-semibold">{bucket.raises}</span> ({bucket.byPriority.high} /{' '}
-                {bucket.byPriority.medium} / {bucket.byPriority.low})
-              </>
-            ) : (
-              na
-            )}
-          </Measure>
-          <Measure name="average-rate" label={`Average per ${per}`}>
-            {bucket ? <RateText bucket={bucket} /> : na}
-          </Measure>
-          <Measure name="peak10" label={`Peak per ${per}`}>
-            {bucket ? bucket.peak10 : na}
-          </Measure>
-          <Measure name="flood-windows" label="Flood windows">
-            {bucket ? `${String(bucket.floodWindows)} of ${String(bucket.windows)}` : na}
-          </Measure>
-          <Measure name="flood-episodes" label="Flood episodes (time)">
-            {bucket ? `${String(bucket.floods.length)} (${msText(bucket.floodMs)})` : na}
-          </Measure>
-          <Measure name="chattering" label="Chattering raises (points)">
-            {bucket
-              ? `${String(bucket.chatteringRaises)} (${String(bucket.chatteringPoints.length)})`
-              : na}
-          </Measure>
-          <Measure name="fleeting" label="Fleeting">
-            {bucket
-              ? `${String(bucket.fleeting)}${bucket.fleetingUndecided > 0 ? ` (+${String(bucket.fleetingUndecided)} undecided)` : ''}`
-              : na}
-          </Measure>
-          <Measure name="standing" label="Standing (active at end)">
-            {bucket ? `${String(bucket.standing.length)} (${String(bucket.activeAtEnd)})` : na}
-          </Measure>
-          <Measure name="active-time" label="Active time">
-            {bucket ? msText(bucket.activeMs) : na}
-          </Measure>
-        </dl>
-      </article>
-    </li>
+    <KpiTile
+      title={scope.name}
+      testId={`kpi-card-${key}`}
+      data-raises={bucket ? String(bucket.raises) : NOT_APPLICABLE}
+      data-final={bucket ? String(bucket.final) : undefined}
+      data-revision={bucket ? String(bucket.revision) : undefined}
+      status={flags.length > 0 ? <FlagBadges flags={flags} /> : undefined}
+      headline={
+        bucket
+          ? {
+              label,
+              value: <Ratio ratio={bucket.averageRate} na="No raise rate" />,
+              verdict:
+                band && config
+                  ? { tone: RATE_VERDICT[band].tone, text: rateBandText(band, config) }
+                  : undefined,
+              tone: band === 'over' ? 'alarm' : undefined,
+              hint: live
+                ? 'Over the whole shift; the shift is not over'
+                : 'Verdict against the EEMUA 191 benchmarks',
+              detailData: { 'data-measure': 'average-rate', 'data-band': band },
+            }
+          : {
+              label,
+              testId: read.loaded ? `kpi-empty-${key}` : undefined,
+              missing: read.isError
+                ? 'Not available: the read failed'
+                : read.loaded
+                  ? 'No alarm KPIs for this shift yet'
+                  : 'Loading…',
+            }
+      }
+      details={
+        bucket
+          ? [
+              {
+                label: 'Raises',
+                value: String(bucket.raises),
+                hint: `${String(bucket.byPriority.high)} high · ${String(bucket.byPriority.medium)} medium · ${String(bucket.byPriority.low)} low`,
+                detailData: { 'data-measure': 'raises' },
+              },
+              {
+                label: `Peak per ${per}`,
+                value: String(bucket.peak10),
+                detailData: { 'data-measure': 'peak10' },
+              },
+            ]
+          : []
+      }
+    >
+      {read.isError ? <QueryError what="the KPIs" error={read.error} onRetry={read.retry} /> : null}
+      {bucket ? (
+        <DescriptionList
+          columns="tile"
+          label={`Measures of ${scope.name}`}
+          facts={bucketFacts(bucket)}
+        />
+      ) : null}
+    </KpiTile>
   );
-}
-
-function bucketLabel(bucket: AlarmKpiBucketDto): string {
-  return bucket.bucket === 'hour'
-    ? `${formatClockTime(bucket.from)}–${formatClockTime(bucket.to)}`
-    : bucket.key;
 }
 
 /** REST buckets with the pushed one of the same key over them, or added when it is new. */
 function withPushed(
   rest: readonly AlarmKpiBucketDto[],
   pushed: AlarmKpiBucketDto | null | undefined,
-  range: { readonly from: number; readonly to: number },
+  range: Range,
 ): AlarmKpiBucketDto[] {
   if (!pushed) return [...rest];
   const inRange = Date.parse(pushed.from) >= range.from && Date.parse(pushed.from) < range.to;
@@ -249,14 +264,172 @@ function withPushed(
   return merged.sort((a, b) => Date.parse(a.from) - Date.parse(b.from));
 }
 
+const QUIET = 'No alarm activity';
+const QUIET_STATUS = 'No bucket from the MES for this hour, so no finality';
+
+/** A cell of a row: the bucket's value, or the empty bucket's for an hour without activity. */
+function quietOr(
+  row: AlarmHourRow,
+  value: (bucket: AlarmKpiBucketDto) => ReactNode,
+  empty: string,
+) {
+  return row.bucket ? value(row.bucket) : <span className="text-ink-secondary">{empty}</span>;
+}
+
+/**
+ * The bucket table's columns (design system 4.5): the hour or shift names its row; numbers right
+ * aligned; the status only when a row says something its section does not (E-03). An hour the MES
+ * did not list (ADR-0024) holds the empty bucket's zeros under "No alarm activity" and no status.
+ */
+function bucketColumns(
+  bucket: 'hour' | 'shift',
+  per: string,
+  finality: GroupFinality | undefined,
+  withStatus: boolean,
+): readonly Column<AlarmHourRow>[] {
+  return [
+    {
+      key: 'when',
+      header: bucket === 'hour' ? 'Hour' : 'Shift',
+      rowHeader: true,
+      nowrap: true,
+      cell: (row) =>
+        bucket === 'hour' ? (
+          <span className="flex flex-col">
+            <span className="tabular-nums">
+              <time dateTime={row.from}>{formatClockTime(row.from)}</time>–
+              <time dateTime={row.to}>{formatClockTime(row.to)}</time>
+            </span>
+            {row.bucket ? null : <span className="text-xs text-ink-secondary">{QUIET}</span>}
+          </span>
+        ) : (
+          shiftKeyLabel(row.key)
+        ),
+    },
+    {
+      key: 'raises',
+      header: 'Raises',
+      numeric: true,
+      cell: (row) => quietOr(row, (b) => b.raises, '0'),
+    },
+    {
+      key: 'average',
+      header: `Avg / ${per}`,
+      numeric: true,
+      cell: (row) =>
+        quietOr(row, (b) => <Ratio ratio={b.averageRate} na="No raise rate" />, '0.0000'),
+    },
+    {
+      key: 'peak',
+      header: 'Peak',
+      numeric: true,
+      cell: (row) => quietOr(row, (b) => b.peak10, '0'),
+    },
+    {
+      key: 'flood-windows',
+      header: 'Flood windows',
+      numeric: true,
+      priority: 2,
+      cell: (row) => quietOr(row, (b) => b.floodWindows, '0'),
+    },
+    {
+      key: 'flood-time',
+      header: 'Flood time',
+      numeric: true,
+      priority: 3,
+      cell: (row) => quietOr(row, (b) => msText(b.floodMs), msText(0)),
+    },
+    {
+      key: 'chattering',
+      header: 'Chattering',
+      numeric: true,
+      priority: 3,
+      cell: (row) => quietOr(row, (b) => b.chatteringRaises, '0'),
+    },
+    {
+      key: 'fleeting',
+      header: 'Fleeting',
+      numeric: true,
+      priority: 3,
+      cell: (row) =>
+        quietOr(
+          row,
+          (b) => (
+            <>
+              {b.fleeting}
+              {b.fleetingUndecided > 0 ? (
+                <span title={`${String(b.fleetingUndecided)} not yet decided`}>
+                  {` +${String(b.fleetingUndecided)}?`}
+                </span>
+              ) : null}
+            </>
+          ),
+          '0',
+        ),
+    },
+    {
+      key: 'standing',
+      header: 'Standing',
+      numeric: true,
+      priority: 2,
+      cell: (row) => quietOr(row, (b) => b.standing.length, '0'),
+    },
+    ...(withStatus
+      ? [
+          {
+            key: 'status',
+            header: 'Status',
+            cell: (row: AlarmHourRow) => {
+              if (!row.bucket) return <Missing reason={QUIET_STATUS} />;
+              const flags = itemFlags(alarmBucketFlags(row.bucket), finality);
+              return flags.length > 0 ? (
+                <FlagBadges flags={flags} />
+              ) : (
+                <Missing reason="Nothing beyond the table’s status" />
+              );
+            },
+          },
+        ]
+      : []),
+  ];
+}
+
+/** The hourly chart's swatches: what the peak bars' shades mean, and the hours without a bar. */
+function HourLegend() {
+  return (
+    <p className="mt-2 flex flex-wrap gap-x-4 text-xs text-ink-secondary">
+      <span>
+        <span aria-hidden="true" className="mr-1 inline-block size-2.5 bg-chart-1" />
+        Peak, final
+      </span>
+      <span>
+        <span aria-hidden="true" className="mr-1 inline-block size-2.5 bg-line-strong" />
+        Peak, provisional
+      </span>
+      <span>No bar: no raise in that hour</span>
+    </p>
+  );
+}
+
+/**
+ * The focus's KPIs per hour of the shift, or per shift of the last week. Per hour (K-02, UX-B5):
+ * the MES lists only the hours where something happened and the hour in progress (ADR-0024), so
+ * the table fills in every other hour of the shift that has begun by the plant clock as "No alarm
+ * activity", with a zero bar in the chart, which so covers the shift as the OEE chart does.
+ */
 function BucketTable({
   scope,
   bucket,
   range,
+  clockHour,
+  live,
 }: {
   readonly scope: AlarmScopeRef;
   readonly bucket: 'hour' | 'shift';
-  readonly range: { readonly from: number; readonly to: number };
+  readonly range: Range;
+  /** The plant clock's hour (its start): only the hours before it are filled in. */
+  readonly clockHour: number | undefined;
+  readonly live: boolean;
 }) {
   const key = scopeKey(scope);
   const rest = useQuery({
@@ -264,131 +437,190 @@ function BucketTable({
     queryFn: ({ signal }) =>
       getAlarmKpi({ ...scope, bucket, from: range.from, to: range.to }, signal),
   });
-  const live = useLiveAlarmKpi(key);
+  const pushedKpi = useLiveAlarmKpi(key);
   const config = useAlarmConfig();
   const per = windowLabel(config?.kpi.windowMs);
-  const pushed = live?.[bucket];
-  const buckets = useMemo(
-    () => withPushed(rest.data?.buckets ?? [], pushed, { from: range.from, to: range.to }),
-    [rest.data, pushed, range.from, range.to],
+  const pushed = pushedKpi?.[bucket];
+  const loaded = rest.data !== undefined;
+  const rows = useMemo((): AlarmHourRow[] => {
+    const buckets = withPushed(rest.data?.buckets ?? [], pushed, range);
+    if (bucket === 'hour') return loaded ? alarmShiftHours(buckets, range, clockHour) : [];
+    return buckets.map((b) => ({ key: b.key, from: b.from, to: b.to, bucket: b }));
+  }, [rest.data, pushed, range, clockHour, bucket, loaded]);
+  const listed = useMemo(() => rows.flatMap((row) => (row.bucket ? [row.bucket] : [])), [rows]);
+  const finality = groupFinality(listed);
+  const withStatus = rows.some(
+    (row) => row.bucket && itemFlags(alarmBucketFlags(row.bucket), finality).length > 0,
   );
+  const quiet = rows.some((row) => !row.bucket);
+  const columns = useMemo(
+    () => bucketColumns(bucket, per, finality, withStatus),
+    [bucket, per, finality, withStatus],
+  );
+
   // Built again only when the data or the served config changes: a new option redraws the chart
   // (`notMerge`), which drops an open tooltip.
   const floodThreshold = config?.kpi.floodThreshold;
   const windowMs = config?.kpi.windowMs;
-  const option = useMemo(
-    () => (buckets.length > 0 ? alarmHourlyOption(buckets, floodThreshold, windowMs) : null),
-    [buckets, floodThreshold, windowMs],
+  const bars = useMemo(
+    (): AlarmHourBar[] =>
+      rows.map((row) => ({
+        from: row.from,
+        raises: row.bucket?.raises ?? 0,
+        peak10: row.bucket?.peak10 ?? 0,
+        final: row.bucket?.final,
+      })),
+    [rows],
   );
+  const option = useMemo(
+    () =>
+      bars.some((bar) => bar.raises > 0) ? alarmHourlyOption(bars, floodThreshold, windowMs) : null,
+    [bars, floodThreshold, windowMs],
+  );
+  const title = bucket === 'hour' ? 'Hours of the shift' : 'Shifts of the last week';
   return (
-    <div className="flex flex-col gap-3">
-      {rest.isError ? (
-        <QueryError what="the buckets" error={rest.error} onRetry={() => void rest.refetch()} />
-      ) : null}
-      {bucket === 'hour' ? (
+    <div className="flex flex-col gap-4">
+      {bucket === 'hour' && !rest.isError ? (
         <EChart
           testId="kpi-hourly"
           title={`Raises and peak per ${per}, by hour`}
-          description={`${alarmHourlyReading(buckets, config?.kpi.floodThreshold, config?.kpi.windowMs)}; the table below lists every value.`}
+          description={`${alarmHourlyReading(bars, floodThreshold, windowMs)}; the table below lists every value.`}
           option={option}
-          empty={rest.data ? 'No hour with alarms in this shift.' : undefined}
-        />
-      ) : null}
-      <div className="relative min-w-0 overflow-x-auto rounded-lg border border-slate-300 bg-white">
-        <table
-          className="w-full min-w-[48rem] text-sm"
-          data-testid="kpi-buckets"
-          data-bucket={bucket}
+          empty={
+            !loaded
+              ? undefined
+              : rows.length === 0
+                ? 'No hour of this shift has begun yet.'
+                : live
+                  ? 'No alarm raised in this shift so far.'
+                  : 'No alarm raised in this shift.'
+          }
         >
-          <caption className="sr-only">
-            Alarm KPIs per {bucket === 'hour' ? 'hour of the shift' : 'shift of the last week'}
-          </caption>
-          <thead className="bg-slate-100 text-left">
-            <tr>
-              <th scope="col" className="px-2 py-1">
-                {bucket === 'hour' ? 'Hour' : 'Shift'}
-              </th>
-              <th scope="col" className="px-2 py-1 text-right">
-                Raises
-              </th>
-              <th scope="col" className="px-2 py-1 text-right">
-                Avg / {per}
-              </th>
-              <th scope="col" className="px-2 py-1 text-right">
-                Peak
-              </th>
-              <th scope="col" className="px-2 py-1 text-right">
-                Flood windows
-              </th>
-              <th scope="col" className="px-2 py-1 text-right">
-                Flood time
-              </th>
-              <th scope="col" className="px-2 py-1 text-right">
-                Chattering
-              </th>
-              <th scope="col" className="px-2 py-1 text-right">
-                Fleeting
-              </th>
-              <th scope="col" className="px-2 py-1 text-right">
-                Standing
-              </th>
-              <th scope="col" className="px-2 py-1">
-                Status
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {buckets.map((row) => (
-              <tr
-                key={row.key}
-                data-testid={`kpi-row-${row.key}`}
-                data-final={String(row.final)}
-                data-revision={String(row.revision)}
-                className="border-t border-slate-200"
-              >
-                <th scope="row" className="px-2 py-1 text-left font-normal">
-                  {bucketLabel(row)}
-                </th>
-                <td className="px-2 py-1 text-right tabular-nums">{row.raises}</td>
-                <td className="px-2 py-1 text-right font-mono" title={row.averageRate.fraction}>
-                  {row.averageRate.decimal}
-                </td>
-                <td className="px-2 py-1 text-right tabular-nums">{row.peak10}</td>
-                <td className="px-2 py-1 text-right tabular-nums">{row.floodWindows}</td>
-                <td className="px-2 py-1 text-right">{msText(row.floodMs)}</td>
-                <td className="px-2 py-1 text-right tabular-nums">{row.chatteringRaises}</td>
-                <td className="px-2 py-1 text-right tabular-nums">
-                  {row.fleeting}
-                  {row.fleetingUndecided > 0 ? ` +${String(row.fleetingUndecided)}?` : ''}
-                </td>
-                <td className="px-2 py-1 text-right tabular-nums">{row.standing.length}</td>
-                <td className="px-2 py-1">
-                  <Flags bucket={row} />
-                </td>
-              </tr>
-            ))}
-            {rest.data && buckets.length === 0 ? (
-              <tr>
-                <td colSpan={10} className="px-2 py-3">
-                  No buckets with alarms.
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </div>
+          {option ? <HourLegend /> : null}
+        </EChart>
+      ) : null}
+      <Section
+        level={3}
+        id={`kpi-${bucket}-title`}
+        title={title}
+        status={<SectionFinality buckets={listed} testId="kpi-buckets-finality" />}
+      >
+        {rest.isError ? (
+          <QueryError what="the buckets" error={rest.error} onRetry={() => void rest.refetch()} />
+        ) : null}
+        <div data-testid="kpi-buckets" data-bucket={bucket} className="flex flex-col gap-2">
+          {rest.isError ? null : (
+            <DataTable
+              caption={`Alarm KPIs per ${bucket === 'hour' ? 'hour of the shift' : 'shift of the last week'}`}
+              testId="kpi-bucket-table"
+              columns={columns}
+              rows={rows}
+              rowKey={(row) => row.key}
+              rowTestId={(row) => (row.bucket ? `kpi-row-${row.key}` : `kpi-quiet-${row.key}`)}
+              rowProps={(row) =>
+                row.bucket
+                  ? {
+                      'data-final': String(row.bucket.final),
+                      'data-revision': String(row.bucket.revision),
+                    }
+                  : { 'data-quiet': 'true' }
+              }
+              density="compact"
+              loading={
+                rest.isPending
+                  ? `Loading the ${bucket === 'hour' ? 'hours' : 'shifts'}…`
+                  : undefined
+              }
+              empty={
+                <div className="px-4">
+                  <EmptyState
+                    size="inline"
+                    icon="info"
+                    title={
+                      bucket === 'hour'
+                        ? 'No hour of this shift has begun yet'
+                        : 'No shift in the last week'
+                    }
+                  />
+                </div>
+              }
+            />
+          )}
+          {bucket === 'hour' && quiet ? (
+            <p className="text-xs text-ink-secondary" data-testid="kpi-quiet-note">
+              The MES does not list an hour without alarm activity: it shows here as “{QUIET}”, with
+              no finality.
+            </p>
+          ) : null}
+        </div>
+      </Section>
     </div>
   );
+}
+
+function PointName({
+  equipment,
+  code,
+  name,
+}: {
+  readonly equipment: string;
+  readonly code: string;
+  readonly name: (id: string) => string;
+}) {
+  return (
+    <span className="flex flex-col">
+      <span>{name(equipment)}</span>
+      <Code className="whitespace-nowrap text-xs text-ink-secondary">{code}</Code>
+    </span>
+  );
+}
+
+function floodColumns(
+  clock: string | undefined,
+  name: (id: string) => string,
+): readonly Column<FloodEpisodeDto>[] {
+  return [
+    {
+      key: 'start',
+      header: 'Start',
+      nowrap: true,
+      cell: (episode) => <PlantTime at={episode.startAt} clock={clock} />,
+    },
+    {
+      key: 'end',
+      header: 'End',
+      nowrap: true,
+      cell: (episode) =>
+        episode.endAt ? (
+          <PlantTime at={episode.endAt} clock={clock} />
+        ) : (
+          <Badge tone="alarm" variant="soft">
+            In flood
+          </Badge>
+        ),
+    },
+    { key: 'peak', header: 'Peak', numeric: true, cell: (episode) => episode.peak },
+    { key: 'raises', header: 'Raises', numeric: true, cell: (episode) => episode.raises },
+    {
+      key: 'by',
+      header: 'Started by',
+      cell: (episode) => (
+        <PointName equipment={episode.equipment} code={episode.code} name={name} />
+      ),
+    },
+  ];
 }
 
 function FloodTable({
   scope,
   range,
   live,
+  name,
 }: {
   readonly scope: AlarmScopeRef;
-  readonly range: { readonly from: number; readonly to: number };
+  readonly range: Range;
   readonly live: boolean;
+  readonly name: (id: string) => string;
 }) {
   const key = scopeKey(scope);
   const queryKey = queryKeys.alarmFloods(key, range.from, range.to);
@@ -397,83 +629,84 @@ function FloodTable({
     queryFn: ({ signal }) => getFloods({ ...scope, ...range }, signal),
   });
   useThrottledReread(useLiveAlarmKpi(key), queryKey, live);
+  const { clock } = usePlantClock();
   return (
-    <section aria-labelledby="kpi-floods-title" className="min-w-0">
-      <h3 id="kpi-floods-title" className="font-semibold">
-        Flood episodes
-      </h3>
+    <Section
+      level={3}
+      id="kpi-floods-title"
+      title="Flood episodes"
+      description="Sliding windows with more raises than the flood threshold."
+      className="min-w-0"
+    >
       {floods.isError ? (
         <QueryError what="the floods" error={floods.error} onRetry={() => void floods.refetch()} />
-      ) : null}
-      <div className="relative mt-1 overflow-x-auto rounded-lg border border-slate-300 bg-white">
-        <table className="w-full min-w-[30rem] text-sm" data-testid="kpi-floods">
-          <caption className="sr-only">Sliding flood episodes in the shift</caption>
-          <thead className="bg-slate-100 text-left">
-            <tr>
-              <th scope="col" className="px-2 py-1">
-                Start
-              </th>
-              <th scope="col" className="px-2 py-1">
-                End
-              </th>
-              <th scope="col" className="px-2 py-1 text-right">
-                Peak
-              </th>
-              <th scope="col" className="px-2 py-1 text-right">
-                Raises
-              </th>
-              <th scope="col" className="px-2 py-1">
-                Started by
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {floods.data?.episodes.map((episode) => (
-              <tr
-                key={episode.id}
-                data-testid={`flood-${episode.id}`}
-                data-open={String(episode.endAt === null)}
-                className="border-t border-slate-200"
-              >
-                <td className="px-2 py-1">
-                  <time dateTime={episode.startAt}>{formatPlantTime(episode.startAt)}</time>
-                </td>
-                <td className="px-2 py-1">
-                  {episode.endAt ? (
-                    <time dateTime={episode.endAt}>{formatPlantTime(episode.endAt)}</time>
-                  ) : (
-                    <span className="font-semibold text-red-900">In flood</span>
-                  )}
-                </td>
-                <td className="px-2 py-1 text-right tabular-nums">{episode.peak}</td>
-                <td className="px-2 py-1 text-right tabular-nums">{episode.raises}</td>
-                <td className="px-2 py-1">
-                  {episode.equipment} {episode.code}
-                </td>
-              </tr>
-            ))}
-            {floods.data?.episodes.length === 0 ? (
-              <tr>
-                <td colSpan={5} className="px-2 py-3">
-                  No flood in this shift.
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </div>
-    </section>
+      ) : (
+        <DataTable
+          caption="Sliding flood episodes in the shift"
+          testId="kpi-floods"
+          columns={floodColumns(clock?.watermark, name)}
+          rows={floods.data?.episodes ?? []}
+          rowKey={(episode) => episode.id}
+          rowTestId={(episode) => `flood-${episode.id}`}
+          rowProps={(episode) => ({ 'data-open': String(episode.endAt === null) })}
+          rowTone={(episode) => (episode.endAt === null ? 'alarm' : undefined)}
+          density="compact"
+          narrow="stack"
+          loading={floods.isPending ? 'Loading flood episodes…' : undefined}
+          empty={
+            <div className="px-4">
+              <EmptyState size="inline" icon="check" title="No flood in this shift" />
+            </div>
+          }
+        />
+      )}
+    </Section>
   );
+}
+
+function actorColumns(
+  name: (id: string) => string,
+): readonly Column<{ actor: BadActorDto; rank: number }>[] {
+  return [
+    { key: 'rank', header: 'Rank', numeric: true, cell: ({ rank }) => rank },
+    {
+      key: 'point',
+      header: 'Point',
+      rowHeader: true,
+      cell: ({ actor }) => <PointName equipment={actor.equipment} code={actor.code} name={name} />,
+    },
+    { key: 'raises', header: 'Raises', numeric: true, cell: ({ actor }) => actor.raises },
+    {
+      key: 'share',
+      header: 'Share',
+      numeric: true,
+      cell: ({ actor }) => <Percent ratio={actor.share} na="No raise in the shift" />,
+    },
+    {
+      key: 'active',
+      header: 'Active time',
+      numeric: true,
+      cell: ({ actor }) => msText(actor.activeMs),
+    },
+    {
+      key: 'chattering',
+      header: 'Chattering',
+      numeric: true,
+      cell: ({ actor }) => actor.chatteringRaises,
+    },
+  ];
 }
 
 function BadActorTable({
   scope,
   range,
   live,
+  name,
 }: {
   readonly scope: AlarmScopeRef;
-  readonly range: { readonly from: number; readonly to: number };
+  readonly range: Range;
   readonly live: boolean;
+  readonly name: (id: string) => string;
 }) {
   const key = scopeKey(scope);
   const queryKey = queryKeys.badActors(key, range.from, range.to);
@@ -482,80 +715,53 @@ function BadActorTable({
     queryFn: ({ signal }) => getBadActors({ ...scope, ...range }, signal),
   });
   useThrottledReread(useLiveAlarmKpi(key), queryKey, live);
+  const rows = (actors.data?.actors ?? []).map((actor, index) => ({ actor, rank: index + 1 }));
   return (
-    <section aria-labelledby="kpi-bad-actors-title" className="min-w-0">
-      <h3 id="kpi-bad-actors-title" className="font-semibold">
-        Top 10 bad actors
-      </h3>
+    <Section
+      level={3}
+      id="kpi-bad-actors-title"
+      title="Top 10 bad actors"
+      description="The alarm points with the most raises in the shift, most first."
+      className="min-w-0"
+    >
       {actors.isError ? (
         <QueryError
           what="the bad actors"
           error={actors.error}
           onRetry={() => void actors.refetch()}
         />
-      ) : null}
-      <div className="relative mt-1 overflow-x-auto rounded-lg border border-slate-300 bg-white">
-        <table className="w-full min-w-[30rem] text-sm" data-testid="kpi-bad-actors">
-          <caption className="sr-only">
-            Alarm points with the most raises in the shift, most first
-          </caption>
-          <thead className="bg-slate-100 text-left">
-            <tr>
-              <th scope="col" className="px-2 py-1 text-right">
-                #
-              </th>
-              <th scope="col" className="px-2 py-1">
-                Point
-              </th>
-              <th scope="col" className="px-2 py-1 text-right">
-                Raises
-              </th>
-              <th scope="col" className="px-2 py-1 text-right">
-                Share
-              </th>
-              <th scope="col" className="px-2 py-1 text-right">
-                Active time
-              </th>
-              <th scope="col" className="px-2 py-1 text-right">
-                Chattering
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {actors.data?.actors.map((actor, index) => (
-              <tr
-                key={`${actor.equipment}/${actor.code}`}
-                data-testid={`bad-actor-${actor.equipment}-${actor.code}`}
-                data-raises={String(actor.raises)}
-                className="border-t border-slate-200"
-              >
-                <td className="px-2 py-1 text-right tabular-nums">{index + 1}</td>
-                <td className="px-2 py-1">
-                  {actor.equipment} <span className="font-mono text-xs">{actor.code}</span>
-                </td>
-                <td className="px-2 py-1 text-right tabular-nums">{actor.raises}</td>
-                <td
-                  className="px-2 py-1 text-right"
-                  title={actor.share.fraction}
-                  data-decimal={ratioText(actor.share)}
-                >
-                  {percentText(actor.share)}
-                </td>
-                <td className="px-2 py-1 text-right">{msText(actor.activeMs)}</td>
-                <td className="px-2 py-1 text-right tabular-nums">{actor.chatteringRaises}</td>
-              </tr>
-            ))}
-            {actors.data?.actors.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="px-2 py-3">
-                  No alarm in this shift.
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </div>
-    </section>
+      ) : (
+        <DataTable
+          caption="Alarm points with the most raises in the shift, most first"
+          testId="kpi-bad-actors"
+          columns={actorColumns(name)}
+          rows={rows}
+          rowKey={({ actor }) => `${actor.equipment}/${actor.code}`}
+          rowTestId={({ actor }) => `bad-actor-${actor.equipment}-${actor.code}`}
+          rowProps={({ actor }) => ({ 'data-raises': String(actor.raises) })}
+          density="compact"
+          narrow="stack"
+          loading={actors.isPending ? 'Loading bad actors…' : undefined}
+          empty={
+            <div className="px-4">
+              <EmptyState size="inline" icon="check" title="No alarm in this shift" />
+            </div>
+          }
+        />
+      )}
+    </Section>
+  );
+}
+
+const NO_ACK = 'No acknowledgement in this shift';
+
+/** A time to acknowledge without any: the dash with its reason as visible text, as a tile's. */
+function NoAck() {
+  return (
+    <span className="flex flex-col">
+      <Missing reason={NO_ACK} reasonShown />
+      <span className="text-xs text-ink-secondary">{NO_ACK}</span>
+    </span>
   );
 }
 
@@ -563,10 +769,12 @@ function OperatorMeasures({
   scope,
   range,
   live,
+  name,
 }: {
   readonly scope: AlarmScopeRef;
-  readonly range: { readonly from: number; readonly to: number };
+  readonly range: Range;
   readonly live: boolean;
+  readonly name: (id: string) => string;
 }) {
   const key = scopeKey(scope);
   const queryKey = queryKeys.operatorKpi(key, range.from, range.to);
@@ -577,21 +785,26 @@ function OperatorMeasures({
   // Acknowledgements and shelves change them; they come on the `alarms` topic.
   useThrottledReread(useLiveAlarms()?.seq, queryKey, live);
   const bucket = measures.data?.buckets[0];
-  const na = NOT_APPLICABLE;
   return (
-    <section
-      aria-labelledby="kpi-operator-title"
-      data-testid="kpi-operator"
+    <Card
+      as="section"
+      title="Operator measures"
+      headingLevel={3}
+      testId="kpi-operator"
       data-provisional={bucket ? String(bucket.provisional) : undefined}
-      className="min-w-0 rounded-lg border border-slate-300 bg-white p-4"
+      status={
+        bucket?.provisional ? (
+          <Badge
+            tone="neutral"
+            variant="dashed"
+            title="The shift is not over: these may still change"
+          >
+            Provisional
+          </Badge>
+        ) : undefined
+      }
+      description="From the MES only, not reconciled with the ground truth: they depend on what operators do."
     >
-      <h3 id="kpi-operator-title" className="font-semibold">
-        Operator measures
-      </h3>
-      <p className="text-xs text-slate-700">
-        MES only, not reconciled with the ground truth: they depend on what operators do.
-        {bucket?.provisional ? ' Provisional: the shift is not over.' : ''}
-      </p>
       {measures.isError ? (
         <QueryError
           what="the operator measures"
@@ -599,52 +812,67 @@ function OperatorMeasures({
           onRetry={() => void measures.refetch()}
         />
       ) : null}
-      <dl className="mt-2 grid grid-cols-[1fr_auto] gap-x-4 gap-y-0.5 text-sm">
-        <Measure name="annunciated" label="Annunciated raises">
-          {bucket ? bucket.annunciatedRaises : na}
-        </Measure>
-        <Measure name="shelved-raises" label="Raises while shelved">
-          {bucket ? bucket.shelvedRaises : na}
-        </Measure>
-        <Measure name="acknowledged" label="Acknowledged">
-          {bucket ? bucket.timeToAck.count : na}
-        </Measure>
-        <Measure name="mean-time-to-ack" label="Mean time to acknowledge">
-          {bucket ? meanTimeToAck(bucket.timeToAck) : na}
-        </Measure>
-        <Measure name="max-time-to-ack" label="Longest time to acknowledge">
-          {bucket ? msText(bucket.timeToAck.maxMs) : na}
-        </Measure>
-        <Measure name="unacknowledged" label="Unacknowledged at the end">
-          {bucket ? bucket.unacknowledgedAtEnd : na}
-        </Measure>
-      </dl>
-      {bucket && bucket.shelvedMs.length > 0 ? (
-        <>
-          <h4 className="mt-2 text-sm font-medium">Shelved time per point</h4>
-          <ul className="text-sm" data-testid="kpi-shelved-points">
-            {bucket.shelvedMs.map((point) => (
-              <li key={`${point.equipment}/${point.code}`}>
-                {point.equipment} <span className="font-mono text-xs">{point.code}</span>:{' '}
-                {msText(point.ms)}
-              </li>
-            ))}
-          </ul>
-        </>
+      {measures.isPending ? <Skeleton shape="text" label="Loading operator measures…" /> : null}
+      {measures.isSuccess && !bucket ? (
+        <EmptyState size="inline" icon="info" title="No operator measures for this shift yet" />
       ) : null}
-    </section>
+      {bucket ? (
+        <div className="flex flex-col gap-2">
+          <DescriptionList
+            facts={[
+              measure('annunciated', 'Annunciated raises', String(bucket.annunciatedRaises)),
+              measure('shelved-raises', 'Raises while shelved', String(bucket.shelvedRaises)),
+              measure('acknowledged', 'Acknowledged', String(bucket.timeToAck.count)),
+              measure(
+                'mean-time-to-ack',
+                'Mean time to acknowledge',
+                bucket.timeToAck.count === 0 ? <NoAck /> : meanTimeToAck(bucket.timeToAck),
+              ),
+              measure(
+                'max-time-to-ack',
+                'Longest time to acknowledge',
+                bucket.timeToAck.maxMs === null ? <NoAck /> : msText(bucket.timeToAck.maxMs),
+              ),
+              measure(
+                'unacknowledged',
+                'Unacknowledged at the end',
+                String(bucket.unacknowledgedAtEnd),
+              ),
+            ]}
+          />
+          {bucket.shelvedMs.length > 0 ? (
+            <div>
+              <h4 className="text-sm font-semibold text-ink">Shelved time per point</h4>
+              <ul className="mt-1 flex flex-col gap-1 text-sm" data-testid="kpi-shelved-points">
+                {bucket.shelvedMs.map((point) => (
+                  <li key={`${point.equipment}/${point.code}`} className="flex flex-wrap gap-x-2">
+                    <span>{name(point.equipment)}</span>
+                    <Code className="whitespace-nowrap text-ink-secondary">{point.code}</Code>
+                    <span className="tabular-nums">{msText(point.ms)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </Card>
   );
 }
 
+/**
+ * The alarm KPIs (UX-4b, #325; design system section 10): per scope a KPI tile with the average
+ * per window and its EEMUA 191 verdict as the headline (K-01), then one scope's hours, floods, bad
+ * actors and operator measures. Finality is said once per section (E-03); every hour of the shift
+ * is listed, the quiet ones as "No alarm activity" (K-02).
+ */
 export function AlarmKpi() {
-  const heading = useHeadingFocus<HTMLHeadingElement>();
   const search = useSearch({ from: '/alarms/kpi' });
   const navigate = useNavigate({ from: '/alarms/kpi' });
   const selection = useShiftSelection(search.shift);
   const shiftKey = selection.selected;
-  const focusId = useId();
-  const bucketId = useId();
   const { clock } = usePlantClock();
+  const config = useAlarmConfig();
   const scopes = useQuery({
     queryKey: queryKeys.alarmScopes,
     queryFn: ({ signal }) => getAlarmScopes(signal),
@@ -665,9 +893,22 @@ export function AlarmKpi() {
   const shift =
     selection.shifts.find((candidate) => candidate.key === shiftKey) ??
     (currentShift?.key === shiftKey ? currentShift : undefined);
-  const range = shift ? { from: Date.parse(shift.start), to: Date.parse(shift.end) } : undefined;
+  const from = shift ? Date.parse(shift.start) : undefined;
+  const to = shift ? Date.parse(shift.end) : undefined;
+  const range = useMemo(
+    () => (from === undefined || to === undefined ? undefined : { from, to }),
+    [from, to],
+  );
   const watermark = clock ? Date.parse(clock.watermark) : undefined;
-  const weekTo = watermark === undefined ? undefined : Math.floor(watermark / HOUR) * HOUR + HOUR;
+  // The hour the plant clock is in: stable within the hour, so the chart keeps its option.
+  const clockHour = watermark === undefined ? undefined : Math.floor(watermark / HOUR) * HOUR;
+  const weekTo = clockHour === undefined ? undefined : clockHour + HOUR;
+  const live = selection.isCurrent;
+
+  const week = useMemo(
+    () => (weekTo === undefined ? undefined : { from: weekTo - SHIFT_BUCKETS_MS, to: weekTo }),
+    [weekTo],
+  );
 
   // Live: the plant and every position (cards), and the focus (an equipment as well), plus
   // `alarms` for the operator measures; at most a handful of the MES's 16 alarm KPI topics.
@@ -675,85 +916,146 @@ export function AlarmKpi() {
     (key) => `alarm-kpi:${key}`,
   );
   useLiveSubscriptions(topics.length > 0 ? [...topics, ALARMS_TOPIC] : []);
-  const live = selection.isCurrent;
   const machineName = (id: string) => equipment.data?.find((item) => item.id === id)?.name ?? id;
+
+  // Each card's shift bucket: the pushed one over the REST one (`pickBucket`), read here so the
+  // section says its finality once (E-03).
+  const cardKeys = cards.map(scopeKey);
+  const cardReads = useQueries({
+    queries: cards.map((scope) => ({
+      queryKey: queryKeys.alarmKpi(scopeKey(scope), 'shift', range?.from ?? 0, range?.to ?? 0),
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        getAlarmKpi(
+          { ...scope, bucket: 'shift', from: range?.from ?? 0, to: range?.to ?? 0 },
+          signal,
+        ),
+      enabled: range !== undefined,
+    })),
+  });
+  const cardPushed = useLiveAlarmKpis(cardKeys);
+  const cardBuckets = cards.map((_, index) => {
+    const pushed = cardPushed[index]?.shift;
+    return pickBucket<AlarmKpiBucketDto>(
+      cardReads[index]?.data?.buckets.find((candidate) => candidate.key === shiftKey),
+      pushed && pushed.key === shiftKey ? pushed : undefined,
+    );
+  });
+  const shownBuckets = cardBuckets.filter((b) => b !== undefined);
+  const cardFinality = groupFinality(shownBuckets);
+
+  const focusName = focus ? (focus.scope === 'equipment' ? machineName(focus.id) : focus.name) : '';
 
   return (
     <section aria-labelledby="alarm-kpi-title">
-      <h1 ref={heading} id="alarm-kpi-title" tabIndex={-1} className="text-2xl font-bold">
-        Alarm KPIs
-      </h1>
-      <p className="mt-1 text-sm text-slate-700">
-        ISA-18.2 and EEMUA 191 measures per operator position and for the plant, exact as the MES
-        computes them. Every raise counts, shelved or not.
-      </p>
-      <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-6">
-        <ShiftPicker
-          selection={selection}
-          onChange={(key) => {
-            void navigate({ search: (previous) => ({ ...previous, shift: key }) });
-          }}
-        />
-        {shift ? (
-          <p className="text-sm text-slate-700">
-            <time dateTime={shift.start}>{formatPlantTime(shift.start)}</time> to{' '}
-            <time dateTime={shift.end}>{formatPlantTime(shift.end)}</time>
-            {live ? ' · live' : ''}
-          </p>
-        ) : null}
-      </div>
-      {selection.pending ? <p className="mt-4">Loading shifts…</p> : null}
+      <PageHeader
+        id="alarm-kpi-title"
+        title="Alarm KPIs"
+        size="dashboard"
+        description="The alarm load of each operator position and of the plant, by ISA-18.2 and EEMUA 191."
+        filters={
+          <ShiftPicker
+            selection={selection}
+            onChange={(key) => {
+              void navigate({ search: (previous) => ({ ...previous, shift: key }) });
+            }}
+          />
+        }
+        summary={
+          shift ? (
+            <span data-testid="kpi-shift-span">
+              <ShiftSpan start={shift.start} end={shift.end} />
+              {live ? ' · live' : ''}
+            </span>
+          ) : undefined
+        }
+      />
+      {selection.pending ? <Skeleton shape="card" label="Loading shifts…" /> : null}
       {selection.error ? (
-        <div className="mt-4">
-          <QueryError what="the shifts" error={selection.error} onRetry={selection.retry} />
-        </div>
+        <QueryError what="the shifts" error={selection.error} onRetry={selection.retry} />
       ) : null}
       {scopes.isError ? (
-        <div className="mt-4">
-          <QueryError
-            what="the alarm scopes"
-            error={scopes.error}
-            onRetry={() => void scopes.refetch()}
-          />
-        </div>
+        <QueryError
+          what="the alarm scopes"
+          error={scopes.error}
+          onRetry={() => void scopes.refetch()}
+        />
       ) : null}
       {!selection.pending && !selection.error && shiftKey !== undefined && !range ? (
-        <p className="mt-4">Choose a shift of the last week from the list.</p>
+        <Card padding="compact">
+          <EmptyState
+            icon="info"
+            title={`No KPIs for ${shiftKeyLabel(shiftKey)}`}
+            body="Choose a shift of the last week from the list."
+          />
+        </Card>
       ) : null}
       {!selection.pending && shiftKey === undefined && !selection.error ? (
-        <p className="mt-4">No shift yet: the plant clock has not started.</p>
+        <Card padding="compact">
+          <EmptyState
+            icon="clock"
+            title="No shift yet"
+            body="No shift yet: the plant clock has not started."
+          />
+        </Card>
+      ) : null}
+      {range && shiftKey && scopes.isPending ? (
+        <Skeleton shape="card" label="Loading the alarm scopes…" />
       ) : null}
 
-      {range && shiftKey ? (
-        <ul
-          className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3"
-          aria-label="Alarm KPIs of the shift per scope"
+      {range && shiftKey && scopes.data ? (
+        <Section
+          id="kpi-scopes-title"
+          title="Plant and operator positions"
+          status={<SectionFinality buckets={shownBuckets} testId="kpi-finality" />}
+          description="Over the shift, exact as the MES computes them; every raise counts, shelved or not."
         >
-          {cards.map((scope) => (
-            <ScopeCard key={scopeKey(scope)} scope={scope} range={range} shiftKey={shiftKey} />
-          ))}
-        </ul>
+          {cards.length === 0 ? (
+            <Card padding="compact">
+              <EmptyState icon="info" title="No alarm scopes yet" body="No equipment is seeded." />
+            </Card>
+          ) : (
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {cards.map((scope, index) => {
+                const read = cardReads[index];
+                return (
+                  <ScopeTile
+                    key={scopeKey(scope)}
+                    scope={scope}
+                    bucket={cardBuckets[index]}
+                    read={{
+                      isError: read?.isError ?? false,
+                      error: read?.error,
+                      loaded: read?.data !== undefined,
+                      retry: () => void read?.refetch(),
+                    }}
+                    finality={cardFinality}
+                    config={config}
+                    live={live}
+                  />
+                );
+              })}
+            </div>
+          )}
+        </Section>
       ) : null}
 
       {range && focus ? (
-        <section aria-labelledby="kpi-details-title" className="mt-6 flex flex-col gap-4">
-          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-6">
-            <h2 id="kpi-details-title" className="text-xl font-semibold">
-              Details: {focus.scope === 'equipment' ? machineName(focus.id) : focus.name}
-            </h2>
-            <div className="flex items-center gap-2">
-              <label htmlFor={focusId} className="text-sm font-medium">
-                Details for
-              </label>
-              <select
-                id={focusId}
+        <Section
+          id="kpi-details-title"
+          title={`Details: ${focusName}`}
+          description="Per hour or shift, the flood episodes, the bad actors and the operator measures of one scope."
+          actions={
+            <>
+              <Select
+                label="Details for"
+                inline
+                name="focus"
                 data-testid="kpi-focus"
                 value={scopeKey(focus)}
                 onChange={(event) => {
                   const value = event.target.value;
                   void navigate({ search: (previous) => ({ ...previous, focus: value }) });
                 }}
-                className="max-w-full rounded border border-slate-500 bg-white px-2 py-1 text-sm"
               >
                 {all.map((scope) => (
                   <option key={scopeKey(scope)} value={scopeKey(scope)}>
@@ -764,44 +1066,62 @@ export function AlarmKpi() {
                         : scope.name}
                   </option>
                 ))}
-              </select>
-            </div>
-            <div className="flex items-center gap-2">
-              <label htmlFor={bucketId} className="text-sm font-medium">
-                Buckets
-              </label>
-              <select
-                id={bucketId}
+              </Select>
+              <Select
+                label="Buckets"
+                inline
+                name="bucket"
                 data-testid="kpi-bucket"
                 value={bucket}
                 onChange={(event) => {
                   const value = event.target.value === 'shift' ? 'shift' : 'hour';
                   void navigate({ search: (previous) => ({ ...previous, bucket: value }) });
                 }}
-                className="rounded border border-slate-500 bg-white px-2 py-1 text-sm"
               >
                 <option value="hour">Hours of the shift</option>
                 <option value="shift">Shifts of the last week</option>
-              </select>
+              </Select>
+            </>
+          }
+        >
+          <div className="flex flex-col gap-6">
+            {bucket === 'hour' ? (
+              <BucketTable
+                scope={focus}
+                bucket="hour"
+                range={range}
+                clockHour={clockHour}
+                live={live}
+              />
+            ) : week === undefined ? (
+              <Card padding="compact">
+                <EmptyState
+                  icon="clock"
+                  title="No plant clock yet"
+                  body="The shifts of the last week follow the plant clock."
+                />
+              </Card>
+            ) : (
+              <BucketTable
+                scope={focus}
+                bucket="shift"
+                range={week}
+                clockHour={undefined}
+                live={live}
+              />
+            )}
+            <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
+              {/* Each in its own cell, so each section is the first of its kind (no top margin). */}
+              <div className="min-w-0">
+                <FloodTable scope={focus} range={range} live={live} name={machineName} />
+              </div>
+              <div className="min-w-0">
+                <BadActorTable scope={focus} range={range} live={live} name={machineName} />
+              </div>
             </div>
+            <OperatorMeasures scope={focus} range={range} live={live} name={machineName} />
           </div>
-          {bucket === 'hour' ? (
-            <BucketTable scope={focus} bucket="hour" range={range} />
-          ) : weekTo === undefined ? (
-            <p>No plant clock yet.</p>
-          ) : (
-            <BucketTable
-              scope={focus}
-              bucket="shift"
-              range={{ from: weekTo - SHIFT_BUCKETS_MS, to: weekTo }}
-            />
-          )}
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <FloodTable scope={focus} range={range} live={live} />
-            <BadActorTable scope={focus} range={range} live={live} />
-          </div>
-          <OperatorMeasures scope={focus} range={range} live={live} />
-        </section>
+        </Section>
       ) : null}
     </section>
   );

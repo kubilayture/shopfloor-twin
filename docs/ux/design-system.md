@@ -87,7 +87,7 @@ Five tones serve every status in the app. Each has an ink (text on the soft back
 
 Borders are given on white; on the canvas (`#f1f5f9`) the lowest is `info` at 4.72:1, still above 3:1. `info` (royal blue) and the accent (sky, `#075985`) are different hues so a status never looks like a link or a button.
 
-`ok` (green) is used sparingly: "final" and "completed" are normal and stay `neutral`. Green appears where a person made something good happen (a hold released) or a limit check passed ("Acceptable").
+`ok` (green) is used sparingly: "final" and "completed" are normal and stay `neutral`. Green appears where a person made something good happen (a hold released). A benchmark met is normal, so it stays `neutral`: the EEMUA 191 alarm rate verdict is Acceptable `neutral`, Manageable `warn`, Over the benchmark `alarm` (`RATE_VERDICT` in `domain/alarms.ts`, UX-4b; the alarm KPIs and the shift report use it).
 
 ### 2.4 Machine states
 
@@ -418,7 +418,7 @@ interface StatProps {
   emphasis?: 'headline' | 'default' | 'compact'; // text-3xl / text-2xl / text-lg
   hint?: React.ReactNode; // below: the raw fraction, a comparison, "of 18"
   tone?: Tone; // colours the value only when abnormal (above a limit)
-  verdict?: { tone: Tone; text: string }; // e.g. Acceptable / Overloaded, as a Badge
+  verdict?: { tone: Tone; text: string }; // e.g. Acceptable / Over the benchmark, as a Badge
   testId?: string;
   valueTestId?: string; // keeps today's ids on the figure itself (e.g. `${id}-percent`)
   dataValue?: string; // raw value for tests (#295)

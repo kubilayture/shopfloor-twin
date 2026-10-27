@@ -8,7 +8,7 @@ import {
   type OrderOeeDto,
   type TerminalViewDto,
 } from '@shopfloor/contracts/mes-api';
-import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query';
+import { skipToken, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   createContext,
   use,
@@ -359,6 +359,14 @@ export function useLiveOee(id: string): LiveOee | undefined {
   return useQuery<LiveOee>({ queryKey: liveKeys.oee(id), queryFn: skipToken }).data;
 }
 
+/** Pushed OEE buckets of several work centers or machines, in the order of `ids` (UX-3). */
+export function useLiveOees(ids: readonly string[]): readonly (LiveOee | undefined)[] {
+  return useQueries({
+    queries: ids.map((id) => ({ queryKey: liveKeys.oee(id), queryFn: skipToken })),
+    combine: (results) => results.map((result) => result.data as LiveOee | undefined),
+  });
+}
+
 /** Pushed downtime records (subscribe to `downtime` with `useLiveSubscription`). */
 export function useLiveDowntime(): LiveDowntime | undefined {
   return useQuery<LiveDowntime>({ queryKey: liveKeys.downtime, queryFn: skipToken }).data;
@@ -372,6 +380,14 @@ export function useLiveAlarms(): LiveAlarms | undefined {
 /** Pushed alarm KPIs of `alarm-kpi:<scope>` (`plant`, `position:<id>`, `equipment:<id>`). */
 export function useLiveAlarmKpi(scope: string): LiveAlarmKpi | undefined {
   return useQuery<LiveAlarmKpi>({ queryKey: liveKeys.alarmKpi(scope), queryFn: skipToken }).data;
+}
+
+/** `useLiveAlarmKpi` for several scopes at once, in the order of `scopes` (UX-4b: one section's cards). */
+export function useLiveAlarmKpis(scopes: readonly string[]): readonly (LiveAlarmKpi | undefined)[] {
+  return useQueries({
+    queries: scopes.map((scope) => ({ queryKey: liveKeys.alarmKpi(scope), queryFn: skipToken })),
+    combine: (results) => results.map((result) => result.data as LiveAlarmKpi | undefined),
+  });
 }
 
 export function useLiveTelemetry(equipment: string): LiveTelemetry | undefined {

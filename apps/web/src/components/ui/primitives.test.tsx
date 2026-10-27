@@ -139,6 +139,22 @@ describe('Stat', () => {
     expect(classesOf(verdict)).toContain('bg-ok-soft');
   });
 
+  it('puts its data attributes on the value with its verdict (UX-4b)', () => {
+    render(
+      <Stat
+        label="Average per 10 min"
+        value="0.2917"
+        verdict={{ tone: 'neutral', text: 'Acceptable' }}
+        hint="EEMUA 191"
+        detailData={{ 'data-measure': 'average-rate' }}
+      />,
+    );
+    const detail = document.querySelector<HTMLElement>('[data-measure="average-rate"]');
+    expect(detail?.tagName).toBe('DD');
+    expect(detail?.textContent).toBe('0.2917Acceptable');
+    expect(detail?.previousElementSibling?.textContent).toBe('Average per 10 min');
+  });
+
   it('with no value: an em dash at the same size and the reason, never "n/a"', () => {
     render(
       <Stat
@@ -202,6 +218,29 @@ describe('KpiTile', () => {
     const note = within(tile).getByText('Across the routing.');
     const last = within(tile).getByText('Blanks taken');
     expect(last.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+describe('KpiTile details grid (UX-3, #323)', () => {
+  const grid = (count: number) => {
+    const { unmount } = render(
+      <KpiTile
+        title="Cell M1"
+        testId="t"
+        headline={{ label: 'OEE', value: '63.00 %' }}
+        details={Array.from({ length: count }, (_, i) => ({ label: `d${String(i)}`, value: '1' }))}
+      />,
+    );
+    const classes = classesOf(screen.getByText('d0').closest('dl')?.parentElement as Element);
+    unmount();
+    return classes;
+  };
+
+  it('puts three figures (A, P and Q) in one row, two or four two by two', () => {
+    expect(grid(3)).toContain('grid-cols-3');
+    expect(grid(2)).toContain('grid-cols-2');
+    expect(grid(4)).toContain('grid-cols-2');
+    expect(grid(4)).not.toContain('grid-cols-3');
   });
 });
 
@@ -271,6 +310,28 @@ describe('DescriptionList', () => {
       .map((t) => t.textContent);
     expect(terms).toEqual(['Product', 'Quantity', 'Operator']);
     expect(screen.getByTestId('fact-product').textContent).toBe('ProductVB-100');
+  });
+
+  it('puts the data attributes of a fact on its detail (UX-4b)', () => {
+    render(
+      <DescriptionList
+        testId="f"
+        columns="tile"
+        facts={[
+          { term: 'Peak per 10 min', detail: '12', detailData: { 'data-measure': 'peak10' } },
+        ]}
+      />,
+    );
+    const detail = document.querySelector<HTMLElement>('[data-measure="peak10"]');
+    expect(detail?.tagName).toBe('DD');
+    expect(detail?.textContent).toBe('12');
+    expect(detail?.previousElementSibling?.textContent).toBe('Peak per 10 min');
+    // A tile's list: two columns at every width.
+    expect(screen.getByTestId('f').className.split(' ')).toEqual([
+      'columns-2',
+      'gap-x-6',
+      'text-sm',
+    ]);
   });
 
   it('takes one or two columns', () => {

@@ -38,7 +38,10 @@ const FILES = [
   // The chart frames (UX-1f, #320).
   'chart/echart.tsx',
   'chart/trend-chart.tsx',
-  // The migrated screens: a screen on the tokens draws only classes Tailwind generates.
+  // The migrated screens (UX-2 on): a screen on the tokens draws only classes Tailwind generates.
+  'screens/overview.tsx',
+  'screens/machine-detail.tsx',
+  'components/cause-text.tsx',
   'screens/order-list.tsx',
   'screens/order-detail.tsx',
   // Order actions and order OEE (UX-6b, #329).

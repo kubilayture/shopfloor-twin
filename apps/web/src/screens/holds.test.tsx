@@ -357,6 +357,8 @@ describe('a hold’s detail', () => {
     await app.open();
     fireEvent.click(await screen.findByTestId('hold-action-release'));
     const form = screen.getByTestId('hold-form-release');
+    expect(form.textContent).toContain('This cannot be undone.');
+    expect(screen.getByTestId('hold-submit').className).toContain('bg-accent');
     expect(form.dataset.version).toBe('1');
     await waitFor(() => {
       expect(screen.getByTestId<HTMLSelectElement>('hold-reason').value).toBe('CONFORMS');
@@ -370,6 +372,10 @@ describe('a hold’s detail', () => {
     expect(screen.getByTestId('hold-stale').dataset.version).toBe('2');
     expect(screen.getByTestId<HTMLButtonElement>('hold-submit').disabled).toBe(true);
     fireEvent.click(screen.getByTestId('hold-restart'));
+    // The focus goes to the send button once it is enabled again, not to the page.
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByTestId('hold-submit'));
+    });
     fireEvent.change(screen.getByTestId('hold-comment'), { target: { value: 'retested fine' } });
     fireEvent.click(screen.getByTestId('hold-submit'));
     expect((await screen.findByTestId('hold-done')).textContent).toContain('released');
@@ -430,5 +436,261 @@ describe('a hold’s detail', () => {
       app.history.push('/quality/holds/not-a-hold');
     });
     expect(await screen.findByTestId('hold-missing')).toBeTruthy();
+  });
+});
+
+describe('the holds screens on the design system (UX-9b, #333)', () => {
+  it('heads the list with its primary action, labelled filters and a count; Enter applies the subject', async () => {
+    const server = qualityMes(
+      qualityState({
+        holds: [hold(), hold({ id: HOLD_ID_2, state: 'released', version: 2 })],
+      }),
+    );
+    vi.stubGlobal('fetch', server.fetch);
+    const app = await renderApp('/quality/holds', { session: QUALITY });
+    await screen.findByTestId(`hold-row-${HOLD_ID}`);
+    expect(screen.getByRole('heading', { level: 1, name: 'Quality holds' })).toBeTruthy();
+    // H-01: "Open a hold" is the page's one primary action.
+    const open = screen.getByRole('link', { name: 'Open a hold' });
+    expect(open.getAttribute('href')).toBe('/quality/holds/new');
+    expect(open.className).toContain('bg-accent');
+    expect(screen.getByText('2 holds')).toBeTruthy();
+    // An open hold blocks: its row has the alarm bar; a released one has none.
+    const bar = (id: string) =>
+      screen.getByTestId(`hold-row-${id}`).querySelector('[data-cell="c-subject"]')?.className;
+    expect(bar(HOLD_ID)).toContain('inset_3px_0_0_var(--color-alarm-border)');
+    expect(bar(HOLD_ID_2)).not.toContain('inset_3px');
+    // Each row's link names its hold.
+    expect(
+      within(screen.getByTestId(`hold-row-${HOLD_ID}`)).getByRole('link', {
+        name: 'Details of the hold on Lot K1',
+      }),
+    ).toBe(screen.getByTestId(`hold-link-${HOLD_ID}`));
+    // H-02: the filters are inline label and control pairs.
+    expect(screen.getByLabelText('State')).toBe(screen.getByTestId('hold-filter-state'));
+    expect(screen.getByLabelText('Subject')).toBe(screen.getByTestId('hold-filter-kind'));
+    expect(screen.getByLabelText('Subject id')).toBe(screen.getByTestId('hold-filter-id'));
+    // The subject filter is a search form: Enter in the id applies it.
+    fireEvent.change(screen.getByTestId('hold-filter-id'), { target: { value: 'K1' } });
+    fireEvent.submit(screen.getByRole('search', { name: 'One subject’s holds' }));
+    await waitFor(() => {
+      expect(app.history.location.search).toContain('id=K1');
+    });
+    // A bad id is said once, tied to the field.
+    fireEvent.change(screen.getByTestId('hold-filter-id'), { target: { value: 'no such id!' } });
+    fireEvent.submit(screen.getByRole('search', { name: 'One subject’s holds' }));
+    const problem = screen.getByTestId('hold-filter-problem');
+    expect(problem.getAttribute('role')).toBe('alert');
+    expect(screen.getByTestId('hold-filter-id').getAttribute('aria-describedby')).toContain(
+      problem.id,
+    );
+  });
+
+  it('gives the empty list its action: open a hold, or show every hold when filtered', async () => {
+    vi.stubGlobal('fetch', qualityMes(qualityState()).fetch);
+    await renderApp('/quality/holds', { session: QUALITY });
+    const empty = await screen.findByTestId('holds-empty');
+    expect(empty.textContent).toContain('No quality hold yet');
+    expect(within(empty).getByRole('link', { name: 'Open a hold' }).getAttribute('href')).toBe(
+      '/quality/holds/new',
+    );
+  });
+
+  it('clears the filters from the empty state of a filtered list', async () => {
+    vi.stubGlobal('fetch', qualityMes(qualityState()).fetch);
+    const app = await renderApp('/quality/holds?state=rejected');
+    const empty = await screen.findByTestId('holds-empty');
+    expect(empty.textContent).toContain('No hold matches these filters');
+    fireEvent.click(within(empty).getByRole('link', { name: 'Show every hold' }));
+    await waitFor(() => {
+      expect(app.history.location.search).toBe('');
+    });
+  });
+
+  it('puts the new-hold form on fields with the reasons in full (H-05)', async () => {
+    vi.stubGlobal('fetch', qualityMes(qualityState()).fetch);
+    await renderApp('/quality/holds/new?kind=lot&id=K1', { session: QUALITY });
+    await screen.findByTestId('hold-open-form');
+    expect(screen.getByRole('heading', { level: 1, name: 'Open a quality hold' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: '‹ All holds' }).getAttribute('href')).toBe(
+      '/quality/holds',
+    );
+    const reason = screen.getByLabelText<HTMLSelectElement>('Reason');
+    expect(reason).toBe(screen.getByTestId('open-reason'));
+    await waitFor(() => {
+      expect([...reason.options].map((o) => o.textContent)).toEqual([
+        'Suspect lot (SUSPECT-LOT)',
+        'SPC signal (SPC-SIGNAL)',
+      ]);
+    });
+    // No width cap that cuts the option text.
+    expect(reason.className).not.toContain('max-w-md');
+    expect(screen.getByLabelText('Lot id')).toBe(screen.getByTestId('open-id'));
+    expect(screen.getByLabelText('Comment')).toBe(screen.getByTestId('open-comment'));
+    // Every control has a name (G-23).
+    expect(screen.getByTestId('open-id').getAttribute('name')).toBe('id');
+    expect(reason.getAttribute('name')).toBe('reason');
+  });
+
+  it('refuses the form under its header, naming the permission', async () => {
+    vi.stubGlobal('fetch', qualityMes(qualityState()).fetch);
+    await renderApp('/quality/holds/new', { session: sessionOf(['operator']) });
+    const forbidden = await screen.findByTestId('hold-open-forbidden');
+    expect(forbidden.textContent).toContain('quality:hold');
+    expect(screen.getByRole('heading', { level: 1, name: 'Open a quality hold' })).toBeTruthy();
+    expect(screen.queryByTestId('hold-open-form')).toBeNull();
+  });
+
+  it('heads the detail with the subject, its state, the way back and the actions in order', async () => {
+    const state = qualityState({ details: { [HOLD_ID]: holdDetail() } });
+    vi.stubGlobal('fetch', qualityMes(state).fetch);
+    await renderApp(`/quality/holds/${HOLD_ID}`, { session: QUALITY });
+    await screen.findByTestId('hold-summary');
+    expect(screen.getByRole('heading', { level: 1, name: 'Hold on Lot K1' })).toBeTruthy();
+    expect(document.title).toBe('Hold on Lot K1 · ShopFloor Twin');
+    // H-04: the way back to the list.
+    expect(screen.getByRole('link', { name: '‹ All holds' }).getAttribute('href')).toBe(
+      '/quality/holds',
+    );
+    const detail = screen.getByTestId('hold-detail');
+    expect([detail.dataset.state, detail.dataset.subject]).toEqual(['open', 'lot:K1']);
+    // Comment, then the decisions, release (the primary) last.
+    const actions = screen
+      .getAllByRole('button')
+      .filter((b) => b.dataset.testid?.startsWith('hold-action-'));
+    expect(actions.map((b) => b.textContent)).toEqual(['Comment', 'Reject', 'Release']);
+    expect(screen.getByTestId('hold-action-release').className).toContain('bg-accent');
+    expect(screen.getByTestId('hold-action-reject').className).toContain('alarm');
+    // The page's sections, with an index to them; the units, the longest, last.
+    const nav = screen.getByRole('navigation', { name: 'On this page' });
+    expect(
+      within(nav)
+        .getAllByRole('link')
+        .map((a) => a.getAttribute('href')),
+    ).toEqual([
+      '#hold-scope-title',
+      '#hold-units-title',
+      '#hold-history-title',
+      '#hold-incidents-title',
+    ]);
+    const headings = within(detail)
+      .getAllByRole('heading', { level: 2 })
+      .map((h) => h.textContent);
+    expect(headings).toEqual([
+      'Scope',
+      'Units in the scope',
+      'Transitions and comments',
+      'Held material consumed',
+    ]);
+  });
+
+  it('shows the scope counts as figures and links each order and carton once', async () => {
+    const state = qualityState({
+      details: { [HOLD_ID]: holdDetail(hold({ heldMaterialConsumed: 3 })) },
+    });
+    vi.stubGlobal('fetch', qualityMes(state).fetch);
+    await renderApp(`/quality/holds/${HOLD_ID}`);
+    const counts = await screen.findByTestId('hold-scope-counts');
+    const figures = [...counts.querySelectorAll('dl')].map((dl) => [
+      dl.querySelector('dt')?.textContent,
+      dl.querySelector('[data-value]')?.getAttribute('data-value'),
+    ]);
+    expect(figures).toEqual([
+      ['Units', '2'],
+      ['Cartons', '1'],
+      ['Orders', '1'],
+      ['Held material consumed', '3'],
+    ]);
+    // A consumed held lot is the one abnormal figure; the counts stay neutral.
+    expect(screen.getByTestId('hold-consumed').className).toContain('text-warn-ink');
+    expect(within(counts).getByText('2').className).not.toContain('text-warn-ink');
+    expect(screen.getByTestId('hold-orders').textContent).toBe('PO-1001');
+    expect(within(screen.getByTestId('hold-orders')).getByRole('link').getAttribute('href')).toBe(
+      '/orders/PO-1001',
+    );
+    // One link per unit row, its serial; the order and carton are linked once, above (G-33).
+    const row = screen.getByTestId('hold-unit-1-7');
+    expect(
+      within(row)
+        .getAllByRole('link')
+        .map((a) => a.textContent),
+    ).toEqual(['VB-100-000007']);
+    expect(row.textContent).toContain('PO-1001-C01');
+    // A unit with no serial yet says why, not a bare dash.
+    expect(screen.getByTestId('hold-unit-1-8').textContent).toContain('Part 8, no serial yet');
+    // The ids in monospace, as on the trace pages.
+    expect(within(screen.getByTestId('hold-orders')).getByText('PO-1001').tagName).toBe('CODE');
+  });
+
+  it('closes an action form with Escape or Cancel, the focus back on its button', async () => {
+    const state = qualityState({ details: { [HOLD_ID]: holdDetail() } });
+    vi.stubGlobal('fetch', qualityMes(state).fetch);
+    await renderApp(`/quality/holds/${HOLD_ID}`, { session: QUALITY });
+    fireEvent.click(await screen.findByTestId('hold-action-reject'));
+    const form = screen.getByTestId('hold-form-reject');
+    expect(document.activeElement).toBe(form);
+    expect(within(form).getByRole('heading', { level: 2, name: 'Reject' })).toBeTruthy();
+    // A decision is final: said in the form, and the reject's send is the solid danger button.
+    expect(form.textContent).toContain('This cannot be undone.');
+    expect(screen.getByTestId('hold-submit').className).toContain('bg-alarm-solid');
+    // The buttons give way to the form while it is open.
+    expect(screen.queryByTestId('hold-action-release')).toBeNull();
+    expect(form.textContent).not.toContain('(409)');
+    fireEvent.keyDown(form, { key: 'Escape' });
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByTestId('hold-action-reject'));
+    });
+    fireEvent.click(screen.getByTestId('hold-action-comment'));
+    fireEvent.click(screen.getByTestId('hold-cancel'));
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByTestId('hold-action-comment'));
+    });
+  });
+
+  it('answers an unknown hold and an id that cannot be one with the not-found page (G-21)', async () => {
+    const server = qualityMes(qualityState());
+    vi.stubGlobal('fetch', server.fetch);
+    const app = await renderApp(`/quality/holds/${HOLD_ID_2}`);
+    const missing = await screen.findByTestId('hold-missing');
+    expect(missing.textContent).toContain('The MES has no hold with this id.');
+    expect(screen.getByRole('heading', { level: 1, name: `Hold ${HOLD_ID_2}` })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'All holds' }).getAttribute('href')).toBe(
+      '/quality/holds',
+    );
+    await settle(() => {
+      app.history.push('/quality/holds/not-a-hold');
+    });
+    expect(await screen.findByRole('heading', { level: 1, name: 'Hold not-a-hold' })).toBeTruthy();
+    expect(screen.getByTestId('hold-missing')).toBeTruthy();
+    // An id that cannot be a hold is never asked for.
+    expect(server.reads('/api/v1/quality/holds/not-a-hold')).toEqual([]);
+  });
+
+  it('pages the units by 50 with a way past them to the history (G-33)', async () => {
+    const base = holdDetail();
+    const units = Array.from({ length: 60 }, (_, i) => ({
+      epoch: 1,
+      partId: i + 1,
+      serial: `VB-100-${String(i + 1).padStart(6, '0')}`,
+      orderId: 'PO-1001',
+      carton: null,
+      joinedAt: at(110),
+    }));
+    const state = qualityState({ details: { [HOLD_ID]: { ...base, units } } });
+    vi.stubGlobal('fetch', qualityMes(state).fetch);
+    await renderApp(`/quality/holds/${HOLD_ID}`);
+    const table = await screen.findByTestId('hold-units');
+    expect(table.dataset.count).toBe('60');
+    expect(table.querySelectorAll('tbody tr')).toHaveLength(50);
+    expect(screen.queryByTestId('hold-unit-1-51')).toBeNull();
+    const skip = screen.getByRole('link', { name: 'Skip past the units' });
+    expect(skip.getAttribute('href')).toBe('#hold-history-title');
+    fireEvent.click(skip);
+    expect(document.activeElement).toBe(
+      screen.getByRole('heading', { level: 2, name: 'Transitions and comments' }),
+    );
+    const pages = screen.getByRole('navigation', { name: "Units in the hold's scope: pages" });
+    fireEvent.click(within(pages).getByRole('button', { name: 'Next' }));
+    expect(screen.getByTestId('hold-unit-1-51')).toBeTruthy();
   });
 });

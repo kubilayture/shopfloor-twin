@@ -53,6 +53,8 @@ const FILES = [
   'screens/trace-serial.tsx',
   'screens/trace-lot.tsx',
   'screens/trace-carton.tsx',
+  // Quality holds (UX-9b, #333).
+  'screens/holds.tsx',
 ];
 
 /** Utility prefixes: a literal with one of these is a class list. */

@@ -2435,7 +2435,7 @@ describe('login throttling over HTTP (#242, S5)', () => {
     };
     try {
       for (const attackers of [4, 8]) {
-        const quietMs = await quietHashMs();
+        const quietBefore = await quietHashMs();
         // The event loop's delay over the round, apart from the hash times (#366).
         const loop = monitorEventLoopDelay({ resolution: 10 });
         loop.enable();
@@ -2485,13 +2485,18 @@ describe('login throttling over HTTP (#242, S5)', () => {
         const hashMs =
           (hashed.ms - hashesBefore.ms) / Math.max(1, hashed.count - hashesBefore.count);
         const budget = Math.max(1_000, 8 * hashMs);
-        const summary = `${String(attackers)} attackers: victim ${statuses.join(',')}, ${latencies.map((l) => Math.round(l)).join(',')} ms; a hash ${String(Math.round(hashMs))} ms (${String(Math.round(quietMs))} ms quiet), budget ${String(Math.round(budget))} ms, at most ${String(inFlight)} hashes in flight, event loop delay p99 ${String(Math.round(loopP99Ms))} ms (mean ${String(Math.round(loopMeanMs))} ms)`;
+        // After the round's hashes are counted above, so the reference's own hashes stay out of them.
+        const quietAfter = await quietHashMs();
+        const loopBound = Math.max(100, quietBefore, quietAfter);
+        const summary = `${String(attackers)} attackers: victim ${statuses.join(',')}, ${latencies.map((l) => Math.round(l)).join(',')} ms; a hash ${String(Math.round(hashMs))} ms (${String(Math.round(quietBefore))}/${String(Math.round(quietAfter))} ms quiet before/after), budget ${String(Math.round(budget))} ms, at most ${String(inFlight)} hashes in flight, event loop delay p99 ${String(Math.round(loopP99Ms))} ms (mean ${String(Math.round(loopMeanMs))} ms, bound ${String(Math.round(loopBound))} ms)`;
         // The measurements, in the JSON report's meta of this test.
         Object.assign(task.meta, {
           [`n1-${String(attackers)}`]: {
             latencies,
             hashMs,
-            quietMs,
+            quietBefore,
+            quietAfter,
+            loopBound,
             budget,
             inFlight,
             loopP99Ms,
@@ -2501,15 +2506,18 @@ describe('login throttling over HTTP (#242, S5)', () => {
         expect(p95(latencies), summary).toBeLessThanOrEqual(budget);
         // The hash times above include the wait for their callbacks, so a login path that blocked
         // the event loop would raise the budget with the latency (#365 review, 4). The loop's own
-        // delay is bounded apart, in hashes measured on an idle loop (so it follows the machine's
-        // load as the budget does, but not the loop's own delay): at most one hash time. Measured
-        // (#382, a run of this file at a load of about 3.5): p99 11.4 ms, mean 10.7 ms (the monitor's 10 ms resolution)
-        // against a quiet hash of 150 ms, 13 times below the bound. What it catches: anything that
-        // holds the loop for a whole hash at once, a synchronous hash (`scryptSync`) first of all,
-        // and work on the loop that at the attack's rate (20 to 40 logins a second) keeps it
-        // behind. What it doesn't: a short block per login (a few ms), which only spends the
-        // latency budget's headroom; the budget above still bounds the victim's latency.
-        expect(loopP99Ms, summary).toBeLessThanOrEqual(quietMs);
+        // delay is bounded apart, by a hash measured on an idle loop (so the bound follows the
+        // machine's load as the budget does, but not the loop's own delay): the larger of the quiet
+        // hash time before and after the round, so a load that rose during the round raises it too,
+        // and at least 100 ms, for a quiet machine's GC and scheduler pauses (#382 review: one hash
+        // alone was a real flake risk at the loads of 8 to 30 our gates reach). Measured (#382, a
+        // run of this file at a load of about 3.5): p99 11.4 ms, mean 10.7 ms (the monitor's 10 ms
+        // resolution) against a quiet hash of 150 ms. What it catches: anything that holds the loop
+        // for a whole hash at once, a synchronous hash (`scryptSync`) first of all, and work on the
+        // loop that at the attack's rate (20 to 40 logins a second) keeps it behind. What it
+        // doesn't: a short block per login (a few ms), which only spends the latency budget's
+        // headroom; the budget above still bounds the victim's latency.
+        expect(loopP99Ms, summary).toBeLessThanOrEqual(loopBound);
         expect(inFlight, summary).toBeLessThanOrEqual(LOGIN_HASH_SLOTS.total);
         // Every refusal of the victim is a 429 (a bucket, the ceiling or no hash slot).
         expect(

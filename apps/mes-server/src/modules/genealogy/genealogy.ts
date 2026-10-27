@@ -1219,8 +1219,8 @@ export class Genealogy {
    * most `limit` each, by id, with each one's status and order (#364). A range on the id in byte
    * order (`COLLATE "C"`), which the `*_prefix` indexes serve (review M6); the serials' newest
    * units are read after, by the serials found (index `serial_unit_serial`), and the orders'
-   * statuses from the orders module in one read: three queries more than before #364, whatever
-   * the results.
+   * statuses from the orders module in one read: at most two queries more than before #364,
+   * whatever the results.
    */
   async search(q: string, limit = 20): Promise<SearchResult[]> {
     // PostgreSQL text holds no U+0000: no id can start with it (the API refuses it with 400).

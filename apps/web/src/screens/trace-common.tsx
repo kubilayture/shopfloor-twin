@@ -5,9 +5,6 @@ import type {
   MaterialLotDto,
   TraceUnitDto,
 } from '@shopfloor/contracts/mes-api';
-
-type LotStatus = MaterialLotDto['status'];
-type CartonStatus = CartonDto['status'];
 import { useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import type { ReactNode } from 'react';
@@ -36,6 +33,9 @@ import {
   tracePoll,
   unitKey,
 } from '../domain/trace.ts';
+
+type LotStatus = MaterialLotDto['status'];
+type CartonStatus = CartonDto['status'];
 
 // Parts shared by the trace pages (#202; on the design system since UX-8, #331): the header's
 // back link and finality, the loading, not-found and invalid-id states, links between serials,

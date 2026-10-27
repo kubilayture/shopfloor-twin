@@ -52,6 +52,8 @@ const FILES = [
   'screens/trace-carton.tsx',
   // Quality holds (UX-9b, #333).
   'screens/holds.tsx',
+  // SPC (UX-9a, #332).
+  'screens/spc.tsx',
 ];
 
 /** Utility prefixes: a literal with one of these is a class list. */

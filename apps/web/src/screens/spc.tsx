@@ -9,7 +9,7 @@ import {
 } from '@shopfloor/contracts/mes-api';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router';
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type SubmitEvent } from 'react';
 import { ApiError } from '../api/client.ts';
 import {
   acknowledgeSignal,
@@ -24,22 +24,34 @@ import { useCan, useUnsavedDraft } from '../auth/auth.tsx';
 import { EChart } from '../chart/echart.tsx';
 import { spcChartOption } from '../chart/spc-options.ts';
 import { CHART_SIZES } from '../chart/theme.ts';
-import { useHeadingFocus } from '../components/heading-focus.ts';
 import { QueryError } from '../components/query-error.tsx';
 import {
   CommentInput,
   FailureMessage,
-  Section,
   SignalStatusBadge,
-  Table,
-  buttonClass,
-  cell,
-  inputClass,
-  primaryClass,
   plantBeside,
   timeOf,
   wallTimeOf,
 } from '../components/quality-ui.tsx';
+import { Badge } from '../components/ui/badge.tsx';
+import { Button, buttonClass } from '../components/ui/button.tsx';
+import { Callout } from '../components/ui/callout.tsx';
+import { Card } from '../components/ui/card.tsx';
+import { Code } from '../components/ui/code.tsx';
+import { Select } from '../components/ui/controls.tsx';
+import { DataTable, type Column } from '../components/ui/data-table.tsx';
+import { DescriptionList, type Fact } from '../components/ui/description-list.tsx';
+import { Disclosure } from '../components/ui/disclosure.tsx';
+import { EmptyState } from '../components/ui/empty-state.tsx';
+import { Missing } from '../components/ui/format.tsx';
+import { Icon } from '../components/ui/icons.tsx';
+import { NotFound } from '../components/ui/not-found.tsx';
+import { PageHeader, type PageHeaderBack } from '../components/ui/page-header.tsx';
+import { PlantTimeInput, readPlantTime } from '../components/ui/plant-time-input.tsx';
+import { Section } from '../components/ui/section.tsx';
+import { SectionNav, type SectionNavItem } from '../components/ui/section-nav.tsx';
+import { SegmentedLinks } from '../components/ui/segmented-links.tsx';
+import { Skeleton } from '../components/ui/skeleton.tsx';
 import {
   CHART_TEXT,
   COMMENT_MAX,
@@ -78,17 +90,47 @@ import type { SpcChartSearch } from '../routes/quality.ts';
 // and final points, retests apart, signal episodes (provisional, final, extent final, withdrawn),
 // acknowledgement (`spc:ack`), limit versions with re-estimation and ending (`spc:limits`) and the
 // `baseline-changed` notice; live through the `quality` topic (read first, then pushes by id).
+// On the design system since UX-9a (#332): `PageHeader`, the range on `SegmentedLinks` and
+// `PlantTimeInput`, episodes and limit versions on `DataTable`, every state.
 
 const CHARACTERISTIC_ID = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 /** Episodes listed at most at once (newest first); the rest are counted. */
 export const SIGNALS_SHOWN = 100;
 
+const BACK: PageHeaderBack = { label: 'SPC charts', link: { to: '/quality/spc' } };
+
+const plural = (n: number, word: string): string => `${String(n)} ${word}${n === 1 ? '' : 's'}`;
+
+/**
+ * Where the focus goes once a form has closed: the control named by its test id (the button that
+ * opened the form), else the section's heading. Set when the form closes, applied after the render
+ * that removed it.
+ */
+function useFocusAfterClose(): (testId: string | undefined, headingId: string) => void {
+  const next = useRef<{ testId: string | undefined; headingId: string } | null>(null);
+  useEffect(() => {
+    const target = next.current;
+    if (!target) return;
+    next.current = null;
+    const own =
+      target.testId === undefined
+        ? null
+        : document.querySelector<HTMLElement>(`[data-testid="${target.testId}"]`);
+    const heading = document.getElementById(target.headingId);
+    if (heading && !heading.hasAttribute('tabindex')) heading.tabIndex = -1;
+    (own ?? heading)?.focus();
+  });
+  return (testId, headingId) => {
+    next.current = { testId, headingId };
+  };
+}
+
 function Baseline({ characteristic }: { readonly characteristic: CharacteristicDto }) {
   const { baseline, currentLimits } = characteristic;
   return (
     <p
-      className="text-sm"
+      className="text-sm text-ink-secondary"
       data-testid="spc-baseline"
       data-limits={currentLimits === null ? 'none' : String(currentLimits)}
       data-final={String(baseline.final)}
@@ -111,35 +153,104 @@ function Notice({
   const notice = characteristic.notice;
   if (!notice) return null;
   return (
-    <div
+    <Callout
+      tone="warn"
       role="alert"
+      title="Baseline changed"
       data-testid="spc-notice"
       data-kind={notice.kind}
-      className="mt-3 rounded border border-amber-800 bg-amber-50 p-3 text-sm text-amber-950"
+      className="mb-6"
     >
-      <p className="font-semibold">Baseline changed</p>
       <p>
         {notice.detail} Version 1 is not re-derived: a quality user decides whether to estimate a
         new version (noticed {wallTimeOf(notice.at)}).
       </p>
       {onEstimate ? (
-        <button
-          type="button"
-          data-testid="notice-estimate"
-          className={`${buttonClass} mt-2`}
-          onClick={onEstimate}
-        >
+        <Button size="sm" data-testid="notice-estimate" className="mt-2" onClick={onEstimate}>
           Estimate a new version
-        </button>
+        </Button>
       ) : null}
-    </div>
+    </Callout>
+  );
+}
+
+/** The unacknowledged episodes as a count (C-01): `warn`, the reason to open the chart. */
+function UnacknowledgedBadge({ count }: { readonly count: number }) {
+  if (count === 0) return null;
+  return (
+    <Badge tone="warn" data-testid="spc-unacknowledged" data-count={String(count)}>
+      {count} not acknowledged
+    </Badge>
+  );
+}
+
+function NoticeBadge({ characteristic }: { readonly characteristic: CharacteristicDto }) {
+  return characteristic.notice ? (
+    <Badge tone="warn" variant="outline">
+      Baseline changed
+    </Badge>
+  ) : null;
+}
+
+// ---- The characteristics ----
+
+function CharacteristicCard({ characteristic: c }: { readonly characteristic: CharacteristicDto }) {
+  const facts: Fact[] = [
+    { term: 'Equipment', detail: <Code>{c.equipment}</Code> },
+    { term: 'Operation', detail: <Code>{c.operation}</Code> },
+    { term: 'Unit', detail: c.unit },
+    { term: 'Upper specification', detail: `${plainText(c.upperSpec)} ${c.unit}` },
+    {
+      term: 'Open episodes',
+      detail: <span className="tabular-nums">{c.signals.open}</span>,
+    },
+    {
+      term: 'Limits',
+      detail:
+        c.currentLimits === null ? (
+          <Missing reason="No limit version yet" />
+        ) : (
+          `Version ${String(c.currentLimits)}`
+        ),
+    },
+  ];
+  return (
+    <Card
+      as="article"
+      tone={c.signals.unacknowledged > 0 || c.notice ? 'warn' : undefined}
+      title={
+        <Link
+          to="/quality/spc/$characteristic"
+          params={{ characteristic: c.id }}
+          search={{}}
+          data-testid={`spc-link-${c.id}`}
+          className="text-link underline-offset-4 hover:underline"
+        >
+          {c.name}
+        </Link>
+      }
+      status={
+        <>
+          <UnacknowledgedBadge count={c.signals.unacknowledged} />
+          <NoticeBadge characteristic={c} />
+        </>
+      }
+      className="h-full"
+    >
+      <DescriptionList facts={facts} columns="compact" label={`${c.name}: facts`} />
+      <Baseline characteristic={c} />
+      {c.notice ? (
+        <p className="mt-2 text-sm text-ink">
+          A late reading changed the baseline: a decision on a new limit version is pending.
+        </p>
+      ) : null}
+    </Card>
   );
 }
 
 /** `/quality/spc`: the characteristics with their limits, baseline, notice and open episodes. */
 export function SpcList() {
   useQualityTopic();
-  const heading = useHeadingFocus<HTMLHeadingElement>();
   const read = useQuery({
     queryKey: qualityKeys.characteristics,
     queryFn: ({ signal }) => getCharacteristics(signal),
@@ -148,208 +259,256 @@ export function SpcList() {
   const items = (read.data?.characteristics ?? []).map((c) => newestCharacteristic(c, live));
   return (
     <section aria-labelledby="spc-title" data-testid="spc-list">
-      <h1 ref={heading} id="spc-title" tabIndex={-1} className="text-2xl font-bold">
-        SPC charts
-      </h1>
-      <p className="mt-1 text-sm text-slate-700">
-        Statistical process control on first-pass readings: I-MR and X̄-R charts against frozen limit
-        versions. A signal is an episode a person acknowledges; no hold opens by itself.
-      </p>
-      {read.isPending ? <p className="mt-4">Loading the characteristics…</p> : null}
-      {read.isError ? (
-        <div className="mt-4">
-          <QueryError
-            what="the characteristics"
-            error={read.error}
-            onRetry={() => void read.refetch()}
+      <PageHeader
+        id="spc-title"
+        title="SPC charts"
+        description="Control charts of first-pass readings; a signal is an episode a person acknowledges."
+        meta={
+          <Disclosure summary="What this page shows">
+            <p className="max-w-[90ch] text-ink-secondary">
+              Statistical process control on first-pass readings: I-MR and X̄-R charts against frozen
+              limit versions. A signal is an episode a person acknowledges; no hold opens by itself.
+            </p>
+          </Disclosure>
+        }
+        summary={read.data ? plural(items.length, 'characteristic') : undefined}
+      />
+      {read.isPending ? (
+        <Skeleton shape="card" label="Loading the characteristics…" />
+      ) : read.isError ? (
+        <QueryError
+          what="the characteristics"
+          error={read.error}
+          onRetry={() => void read.refetch()}
+        />
+      ) : items.length === 0 ? (
+        <Card>
+          <EmptyState
+            testId="spc-empty"
+            icon="search"
+            title="No characteristic is configured"
+            body="A characteristic is charted here once the plant configuration names one."
           />
-        </div>
-      ) : null}
-      {read.data && items.length === 0 ? (
-        <p className="mt-4" data-testid="spc-empty">
-          No characteristic is configured.
-        </p>
-      ) : null}
-      <ul className="mt-4 grid gap-3 md:grid-cols-2">
-        {items.map((c) => (
-          <li
-            key={c.id}
-            data-testid={`spc-characteristic-${c.id}`}
-            data-version={String(c.version)}
-            data-limits={c.currentLimits === null ? 'none' : String(c.currentLimits)}
-            data-open={String(c.signals.open)}
-            data-unacknowledged={String(c.signals.unacknowledged)}
-            data-notice={c.notice ? c.notice.kind : ''}
-            className="rounded-lg border border-slate-300 bg-white p-4"
-          >
-            <h2 className="text-lg font-semibold">
-              <Link
-                to="/quality/spc/$characteristic"
-                params={{ characteristic: c.id }}
-                search={{}}
-                data-testid={`spc-link-${c.id}`}
-                className="text-sky-800 underline"
-              >
-                {c.name}
-              </Link>
-            </h2>
-            <p className="text-sm text-slate-700">
-              {c.equipment} · {c.operation} · {c.unit} · upper specification{' '}
-              {plainText(c.upperSpec)}
-            </p>
-            <p className="mt-2 text-sm">
-              {c.signals.open} open episode{c.signals.open === 1 ? '' : 's'},{' '}
-              {c.signals.unacknowledged} not acknowledged
-            </p>
-            <Baseline characteristic={c} />
-            {c.notice ? (
-              <p className="mt-1 text-sm font-semibold text-amber-900">
-                Baseline changed: a decision on a new limit version is pending.
-              </p>
-            ) : null}
-          </li>
-        ))}
-      </ul>
+        </Card>
+      ) : (
+        <ul className="grid gap-4 md:grid-cols-2">
+          {items.map((c) => (
+            <li
+              key={c.id}
+              data-testid={`spc-characteristic-${c.id}`}
+              data-version={String(c.version)}
+              data-limits={c.currentLimits === null ? 'none' : String(c.currentLimits)}
+              data-open={String(c.signals.open)}
+              data-unacknowledged={String(c.signals.unacknowledged)}
+              data-notice={c.notice ? c.notice.kind : ''}
+            >
+              <CharacteristicCard characteristic={c} />
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }
 
-// ---- One characteristic ----
+// ---- One characteristic: the points shown ----
 
 type WindowMode = 'recent' | 'all' | 'range';
 
-function WindowPicker({
-  id,
-  search,
-  pointsFrom,
-}: {
-  readonly id: string;
-  readonly search: SpcChartSearch;
-  readonly pointsFrom: string | null;
-}) {
+/** The range's two ends read from the form: each empty, an instant, or not a time. */
+function readEnd(form: FormData, name: string): { kind: 'empty' | 'ok' | 'error'; iso?: string } {
+  const text = (key: string) => {
+    const value = form.get(key);
+    return typeof value === 'string' ? value : '';
+  };
+  const reading = readPlantTime(text(`${name}-date`), text(`${name}-time`), {
+    withSeconds: true,
+    variant: 'plant',
+  });
+  return reading.kind === 'ok'
+    ? { kind: 'ok', iso: new Date(reading.instant).toISOString() }
+    : { kind: reading.kind };
+}
+
+/**
+ * The points shown (C-07): the last 500 readings or every reading as links that change the URL,
+ * and a plant-time range on `PlantTimeInput` (two plain boxes each, not the native pickers).
+ */
+function WindowPicker({ id, search }: { readonly id: string; readonly search: SpcChartSearch }) {
   const navigate = useNavigate();
   const mode: WindowMode =
     search.from !== undefined || search.to !== undefined ? 'range' : search.all ? 'all' : 'recent';
-  const [from, setFrom] = useState(search.from ? toPlantInput(search.from) : '');
-  const [to, setTo] = useState(search.to ? toPlantInput(search.to) : '');
   const [problem, setProblem] = useState<string | undefined>(undefined);
-  const modeId = useId();
-  const go = (next: SpcChartSearch) => {
+  const problemId = useId();
+  const labelId = useId();
+  const onSubmit = (event: SubmitEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const a = readEnd(data, 'chart-window-from');
+    const b = readEnd(data, 'chart-window-to');
+    if (a.kind === 'error' || b.kind === 'error') {
+      setProblem('Give each time as a date and a time.');
+      return;
+    }
+    if (a.iso === undefined && b.iso === undefined) {
+      setProblem('Give at least one end of the range.');
+      return;
+    }
+    setProblem(undefined);
     void navigate({
       to: '/quality/spc/$characteristic',
       params: { characteristic: id },
-      search: next,
+      search: { from: a.iso, to: b.iso },
     });
   };
   return (
-    <div className="mt-3 flex flex-wrap items-end gap-3 text-sm" data-testid="chart-window">
-      <div className="flex flex-col gap-1">
-        <label htmlFor={modeId} className="font-medium">
+    <div data-testid="chart-window" data-mode={mode} className="flex w-full flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <span id={labelId} aria-hidden="true" className="text-sm font-medium text-ink">
           Points shown
-        </label>
-        <select
-          id={modeId}
-          data-testid="chart-window-mode"
-          value={mode}
-          className={inputClass}
-          onChange={(event) => {
-            const value = event.target.value as WindowMode;
-            setProblem(undefined);
-            if (value === 'recent') go({});
-            else if (value === 'all') go({ all: true });
-          }}
-        >
-          <option value="recent">The last 500 first-pass readings</option>
-          <option value="all">Every reading</option>
-          <option value="range">A plant-time range</option>
-        </select>
+        </span>
+        <SegmentedLinks
+          label="Points shown"
+          testId="chart-window-mode"
+          current={mode}
+          items={[
+            {
+              key: 'recent',
+              label: 'Last 500 readings',
+              to: '/quality/spc/$characteristic',
+              params: { characteristic: id },
+              search: {},
+              testId: 'chart-window-recent',
+            },
+            {
+              key: 'all',
+              label: 'Every reading',
+              to: '/quality/spc/$characteristic',
+              params: { characteristic: id },
+              search: { all: true },
+              testId: 'chart-window-all',
+            },
+          ]}
+        />
       </div>
-      <label className="flex flex-col gap-1 font-medium">
-        From (plant time)
-        <input
-          type="datetime-local"
-          step={1}
-          data-testid="chart-window-from"
-          value={from}
-          className={inputClass}
-          onChange={(event) => {
-            setFrom(event.target.value);
-          }}
-        />
-      </label>
-      <label className="flex flex-col gap-1 font-medium">
-        To (plant time)
-        <input
-          type="datetime-local"
-          step={1}
-          data-testid="chart-window-to"
-          value={to}
-          className={inputClass}
-          onChange={(event) => {
-            setTo(event.target.value);
-          }}
-        />
-      </label>
-      <button
-        type="button"
-        data-testid="chart-window-apply"
-        className={buttonClass}
-        onClick={() => {
-          const a = from === '' ? undefined : fromPlantInput(from);
-          const b = to === '' ? undefined : fromPlantInput(to);
-          if ((from !== '' && a === undefined) || (to !== '' && b === undefined)) {
-            setProblem('Give each time as a date and a time.');
-            return;
-          }
-          if (a === undefined && b === undefined) {
-            setProblem('Give at least one end of the range.');
-            return;
-          }
-          setProblem(undefined);
-          go({ from: a, to: b });
-        }}
+      <form
+        noValidate
+        aria-label="A plant-time range"
+        className="flex flex-wrap items-end gap-x-4 gap-y-3"
+        onSubmit={onSubmit}
       >
-        Show the range
-      </button>
-      {problem ? (
-        <p role="alert" className="text-red-900" data-testid="chart-window-problem">
-          {problem}
-        </p>
-      ) : null}
-      <p className="w-full text-slate-700" data-testid="chart-points-from">
-        {pointsFrom === null ? (
-          'Every point up to the end of the range is shown.'
-        ) : (
-          <>
-            Points before {timeOf(pointsFrom)} are left out; limits, counts and episodes stay whole.
-          </>
-        )}
-      </p>
+        <PlantTimeInput
+          label="From"
+          name="chart-window-from"
+          testId="chart-window-from"
+          withSeconds
+          value={search.from ?? null}
+          onChange={() => {
+            setProblem(undefined);
+          }}
+        />
+        <PlantTimeInput
+          label="To"
+          name="chart-window-to"
+          testId="chart-window-to"
+          withSeconds
+          value={search.to ?? null}
+          onChange={() => {
+            setProblem(undefined);
+          }}
+        />
+        {/* Level with the boxes, above their hint lines. */}
+        <div className="pb-5">
+          <Button
+            type="submit"
+            data-testid="chart-window-apply"
+            aria-describedby={problem ? problemId : undefined}
+          >
+            Show the range
+          </Button>
+        </div>
+        {problem ? (
+          <p
+            id={problemId}
+            role="alert"
+            data-testid="chart-window-problem"
+            className="flex w-full items-start gap-1 text-sm font-medium text-alarm-ink"
+          >
+            <Icon name="alert" size={16} className="mt-0.5 shrink-0" />
+            {problem}
+          </p>
+        ) : null}
+      </form>
     </div>
   );
 }
 
-function pointRows(points: readonly SpcPointDto[], precision: SpcPrecision, places: number) {
-  return points.map((p) => (
-    <tr
-      key={`${String(p.epoch)}-${String(p.seq)}-${String(p.partId)}`}
-      data-final={String(p.final)}
-      data-rules={p.rules.join(',')}
-    >
-      <td className={cell}>{timeOf(p.at)}</td>
-      <td className={cell}>{p.partId}</td>
-      <td className={`${cell} font-mono`}>{spcValueText(p.value, precision, places)}</td>
-      <td className={cell}>{p.version === null ? 'not judged' : `v${String(p.version)}`}</td>
-      <td className={cell}>{p.rules.length === 0 ? '–' : p.rules.join(', ')}</td>
-      <td className={cell}>
-        {p.final ? 'Final' : 'Provisional'}
-        {p.baseline ? ', baseline' : ''}
-      </td>
-    </tr>
-  ));
+function PointsFrom({ pointsFrom }: { readonly pointsFrom: string | null }) {
+  return (
+    <span data-testid="chart-points-from">
+      {pointsFrom === null ? (
+        'Every point up to the end of the range is shown.'
+      ) : (
+        <>
+          Points before {timeOf(pointsFrom)} are left out; limits, counts and episodes stay whole.
+        </>
+      )}
+    </span>
+  );
 }
 
-const POINT_COLUMNS = ['Plant time', 'Part', 'Value', 'Limits', 'Rules firing', 'Status'];
+// ---- The charts ----
+
+function pointColumns(
+  precision: SpcPrecision,
+  places: number,
+  unit: string,
+): readonly Column<SpcPointDto>[] {
+  return [
+    { key: 'at', header: 'Plant time', width: '7rem', cell: (p) => timeOf(p.at) },
+    { key: 'part', header: 'Part', numeric: true, cell: (p) => p.partId },
+    {
+      key: 'value',
+      header: `Value (${unit})`,
+      numeric: true,
+      cell: (p) => <span className="font-mono">{spcValueText(p.value, precision, places)}</span>,
+    },
+    {
+      key: 'limits',
+      header: 'Limits',
+      priority: 3,
+      nowrap: true,
+      cell: (p) =>
+        p.version === null ? (
+          <span className="text-ink-secondary">Not judged</span>
+        ) : (
+          `v${String(p.version)}`
+        ),
+    },
+    {
+      key: 'rules',
+      header: 'Rules',
+      cell: (p) => (p.rules.length === 0 ? <Missing reason="No rule fires" /> : p.rules.join(', ')),
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      cell: (p) => (
+        <>
+          {p.final ? 'Final' : 'Provisional'}
+          {p.baseline ? ', baseline' : ''}
+        </>
+      ),
+    },
+  ];
+}
+
+const pointKey = (p: SpcPointDto): string =>
+  `${String(p.epoch)}-${String(p.seq)}-${String(p.partId)}`;
+const pointProps = (p: SpcPointDto) => ({
+  'data-final': String(p.final),
+  'data-rules': p.rules.join(','),
+});
 
 function ChartFigure({
   chart,
@@ -361,9 +520,11 @@ function ChartFigure({
   readonly signals: readonly SpcSignalDto[];
 }) {
   const [showAll, setShowAll] = useState(false);
+  const valuesId = useId();
   const points = view.points[chart];
   const precision = spcPrecision(view.characteristic.resolution);
   const places = pointDecimals(precision, chart);
+  const unit = chart === 'I' || chart === 'Xbar' ? view.characteristic.unit : 'range';
   const option = useMemo(
     () =>
       points.length === 0
@@ -374,73 +535,77 @@ function ChartFigure({
             limits: view.limits,
             signals,
             retests: view.retests,
-            unit: chart === 'I' || chart === 'Xbar' ? view.characteristic.unit : 'range',
+            unit,
             resolution: view.characteristic.resolution,
           }),
-    [
-      chart,
-      points,
-      view.limits,
-      view.retests,
-      view.characteristic.unit,
-      view.characteristic.resolution,
-      signals,
-    ],
+    [chart, points, view.limits, view.retests, unit, view.characteristic.resolution, signals],
+  );
+  const columns = useMemo(
+    () => pointColumns(precision, places, view.characteristic.unit),
+    [precision, places, view.characteristic.unit],
   );
   const firing = points.filter((p) => p.rules.length > 0);
   const provisional = points.filter((p) => !p.final).length;
+  const label = CHART_TEXT[chart].label;
   return (
     <EChart
       testId={`spc-chart-${chart}`}
-      title={CHART_TEXT[chart].label}
-      description={`${CHART_TEXT[chart].label}: ${String(points.length)} points, ${String(firing.length)} firing a rule, ${String(provisional)} provisional; the values are in the tables below.`}
+      title={label}
+      description={`${label}: ${String(points.length)} points, ${String(firing.length)} firing a rule, ${String(provisional)} provisional; the values are in the tables below.`}
       option={option}
       height={CHART_SIZES.compact}
     >
-      <p className="mt-2 text-sm" data-testid={`spc-summary-${chart}`}>
+      {points.length === 0 ? (
+        <EmptyState
+          testId={`spc-no-points-${chart}`}
+          title="No point yet"
+          body="Points appear as the tester's first-pass readings arrive."
+        />
+      ) : null}
+      <p className="mt-2 text-sm text-ink-secondary" data-testid={`spc-summary-${chart}`}>
         {points.length} points ({provisional} provisional), {firing.length} firing a rule.
       </p>
-      {points.length === 0 ? (
-        <p className="text-sm text-slate-700" data-testid={`spc-no-points-${chart}`}>
-          No point yet.
-        </p>
-      ) : null}
       {firing.length > 0 ? (
         <div className="mt-2">
-          <Table
+          <DataTable
             testId={`spc-signal-points-${chart}`}
-            caption={`${CHART_TEXT[chart].label}: points firing a rule`}
-            columns={POINT_COLUMNS}
+            caption={`${label}: points firing a rule`}
+            columns={columns}
+            rows={firing.slice(-50)}
             count={firing.length}
-          >
-            {pointRows(firing.slice(-50), precision, places)}
-          </Table>
+            rowKey={pointKey}
+            rowProps={pointProps}
+            density="compact"
+            bounded
+          />
         </div>
       ) : null}
       {points.length > 0 ? (
-        <div className="mt-2">
-          <button
-            type="button"
-            className={buttonClass}
+        <div className="mt-3">
+          <Button
+            size="sm"
             data-testid={`spc-values-toggle-${chart}`}
             aria-expanded={showAll}
+            aria-controls={showAll ? valuesId : undefined}
             onClick={() => {
               setShowAll((v) => !v);
             }}
           >
             {showAll ? 'Hide the values' : `Show all ${String(points.length)} values`}
-          </button>
+          </Button>
           {showAll ? (
-            <div className="mt-2">
-              <Table
+            <div id={valuesId} className="mt-2">
+              <DataTable
                 bounded
                 testId={`spc-values-${chart}`}
-                caption={`${CHART_TEXT[chart].label}: every point shown`}
-                columns={POINT_COLUMNS}
+                caption={`${label}: every point shown`}
+                columns={columns}
+                rows={points}
                 count={points.length}
-              >
-                {pointRows(points, precision, places)}
-              </Table>
+                rowKey={pointKey}
+                rowProps={pointProps}
+                density="compact"
+              />
             </div>
           ) : null}
         </div>
@@ -479,6 +644,10 @@ interface AckDraft {
   readonly version: number;
   readonly comment: string;
 }
+
+/** The inline forms' frame, as the hold and order actions' (UX-9b). */
+const FORM_FRAME =
+  'mb-4 flex max-w-3xl flex-col gap-4 rounded-lg border border-line bg-surface p-4 text-ink sm:p-5';
 
 function AckForm({
   signal,
@@ -537,7 +706,7 @@ function AckForm({
       data-testid="ack-form"
       data-signal={String(signal.id)}
       data-version={String(draft.version)}
-      className="mt-2 flex flex-col gap-2 rounded border border-slate-400 bg-slate-50 p-3"
+      className={FORM_FRAME}
       onKeyDown={(event) => {
         if (event.key === 'Escape') onClose();
       }}
@@ -552,9 +721,48 @@ function AckForm({
         write.mutate(draft);
       }}
     >
-      <p className="text-sm">
-        Acknowledges the episode once, with your comment (audited). No hold follows by itself.
-      </p>
+      <div className="flex flex-col gap-1">
+        <h3 className="text-base font-semibold">Acknowledge episode {signal.id}</h3>
+        <p className="text-sm">
+          {CHART_TEXT[signal.chart].short} chart, rule {signal.rule}: {signal.ruleText}.
+          Acknowledges the episode once, with your comment (audited). No hold follows by itself.
+        </p>
+      </div>
+      {failure ? <FailureMessage failure={failure} testId="ack-message" /> : null}
+      {problem ? (
+        <Callout tone="alarm" role="alert" data-testid="ack-invalid">
+          {problem}
+        </Callout>
+      ) : null}
+      {stale ? (
+        <Callout
+          tone="warn"
+          role="alert"
+          data-testid="ack-stale"
+          data-version={String(signal.rowVersion)}
+          title="The episode changed while you wrote this"
+        >
+          <p>
+            It is now at version {signal.rowVersion}, {signal.status}
+            {signal.acknowledged ? `, acknowledged by ${signal.acknowledged.by}` : ''}. Nothing is
+            sent with the newer version.
+            {applies ? ' Check it, then start again: your comment is kept.' : ''}
+          </p>
+          {applies ? (
+            <Button
+              size="sm"
+              data-testid="ack-restart"
+              className="mt-2"
+              onClick={() => {
+                setDraft((d) => ({ ...d, version: signal.rowVersion }));
+                setFailure(undefined);
+              }}
+            >
+              Start again on version {signal.rowVersion}
+            </Button>
+          ) : null}
+        </Callout>
+      ) : null}
       <CommentInput
         id={commentId}
         label="Comment"
@@ -566,159 +774,98 @@ function AckForm({
           setDraft((d) => ({ ...d, comment }));
         }}
       />
-      {stale ? (
-        <div
-          role="alert"
-          data-testid="ack-stale"
-          data-version={String(signal.rowVersion)}
-          className="rounded border border-red-800 bg-red-50 p-2 text-sm text-red-950"
-        >
-          <p>
-            The episode changed while you wrote this (now version {signal.rowVersion},{' '}
-            {signal.status}
-            {signal.acknowledged ? `, acknowledged by ${signal.acknowledged.by}` : ''}). Nothing is
-            sent with the newer version.
-            {applies ? ' Check it, then start again: your comment is kept.' : ''}
-          </p>
-          {applies ? (
-            <button
-              type="button"
-              data-testid="ack-restart"
-              className={`${buttonClass} mt-2`}
-              onClick={() => {
-                setDraft((d) => ({ ...d, version: signal.rowVersion }));
-                setFailure(undefined);
-              }}
-            >
-              Start again on version {signal.rowVersion}
-            </button>
-          ) : null}
-        </div>
-      ) : null}
-      {problem ? (
-        <p role="alert" className="text-sm text-red-900" data-testid="ack-invalid">
-          {problem}
-        </p>
-      ) : null}
-      {failure ? <FailureMessage failure={failure} testId="ack-message" /> : null}
+      {/* Cancel first, the send button last (design system 4.1). */}
       <div className="flex flex-wrap gap-2">
-        <button
-          type="submit"
-          data-testid="ack-submit"
-          disabled={write.isPending || stale || !applies}
-          className={primaryClass}
-        >
-          {write.isPending ? 'Sending…' : 'Acknowledge'}
-        </button>
-        <button
-          type="button"
+        <Button
           data-testid="ack-cancel"
-          className={buttonClass}
           onClick={() => {
             onClose();
           }}
         >
           Cancel
-        </button>
+        </Button>
+        <Button
+          type="submit"
+          variant="primary"
+          data-testid="ack-submit"
+          disabled={stale || !applies}
+          loading={write.isPending}
+        >
+          Acknowledge
+        </Button>
       </div>
     </form>
   );
 }
 
-function SignalRow({
-  signal,
-  ackOpen,
-  canAck,
-  canHold,
-  onAck,
-}: {
-  readonly signal: SpcSignalDto;
-  readonly ackOpen: boolean;
-  readonly canAck: boolean;
-  readonly canHold: boolean;
-  readonly onAck: () => void;
-}) {
-  return (
-    <tr
-      data-testid={`signal-row-${String(signal.id)}`}
-      data-status={signal.status}
-      data-chart={signal.chart}
-      data-rule={String(signal.rule)}
-      data-open={String(isOpenEpisode(signal))}
-      data-extent-final={String(signal.extentFinal)}
-      data-baseline={String(signal.baseline)}
-      data-acknowledged={String(signal.acknowledged !== null)}
-      data-orphaned={String(signal.orphaned)}
-      data-row-version={String(signal.rowVersion)}
-    >
-      <td className={cell}>{signal.id}</td>
-      <td className={cell}>
-        {CHART_TEXT[signal.chart].short}, rule {signal.rule}
-        <span className="block text-xs text-slate-700">{signal.ruleText}</span>
-      </td>
-      <td className={cell}>
-        <SignalStatusBadge signal={signal} />
-        <span className="block text-xs" data-testid="signal-finality">
-          {finalityText(signal)}
+const SIGNAL_COLUMNS: readonly Column<SpcSignalDto>[] = [
+  { key: 'id', header: 'Id', numeric: true, cell: (s) => s.id },
+  {
+    key: 'rule',
+    header: 'Chart and rule',
+    width: '10rem',
+    cell: (s) => (
+      <>
+        <span className="whitespace-nowrap">
+          {CHART_TEXT[s.chart].short}, rule {s.rule}
         </span>
-        {signal.baseline ? (
+        <span className="block text-xs text-ink-secondary">{s.ruleText}</span>
+      </>
+    ),
+  },
+  {
+    key: 'status',
+    header: 'Status',
+    width: '12rem',
+    cell: (s) => (
+      <>
+        <SignalStatusBadge signal={s} />
+        <span className="mt-0.5 block text-xs text-ink-secondary" data-testid="signal-finality">
+          {finalityText(s)}
+        </span>
+        {s.baseline ? (
           <span className="block text-xs font-semibold" data-testid="signal-baseline">
-            Baseline episode (judged when version {signal.version} was created)
+            Baseline episode (judged when version {s.version} was created)
           </span>
         ) : null}
-        {signal.withdrawnReason ? (
+        {s.withdrawnReason ? (
           <span className="block text-xs" data-testid="signal-withdrawn-reason">
-            Withdrawn: {signal.withdrawnReason}
+            Withdrawn: {s.withdrawnReason}
           </span>
         ) : null}
-      </td>
-      <td className={cell}>
-        {timeOf(signal.first.at)} (part {signal.first.partId})
-        <span className="block text-xs text-slate-700">
-          {isOpenEpisode(signal) ? 'open, last ' : 'closed, last '}
-          {timeOf(signal.last.at)} · {signal.points} point{signal.points === 1 ? '' : 's'} · v
-          {signal.version}
+      </>
+    ),
+  },
+  {
+    key: 'first',
+    header: 'First point',
+    width: '11rem',
+    cell: (s) => (
+      <>
+        <span className="whitespace-nowrap">{timeOf(s.first.at)}</span>{' '}
+        <span className="whitespace-nowrap">(part {s.first.partId})</span>
+        <span className="block text-xs text-ink-secondary">
+          {isOpenEpisode(s) ? 'open, last ' : 'closed, last '}
+          {timeOf(s.last.at)} · {plural(s.points, 'point')} · v{s.version}
         </span>
-      </td>
-      <td className={cell}>
-        {signal.acknowledged ? (
-          <span data-testid="signal-ack">
-            {signal.acknowledged.by}, {wallTimeOf(signal.acknowledged.at)}
-            {plantBeside(signal.acknowledged.plantAt)}: “{signal.acknowledged.comment}”
-            {signal.orphaned ? ' (orphaned: the episode was withdrawn)' : ''}
-          </span>
-        ) : (
-          '–'
-        )}
-      </td>
-      <td className={cell}>
-        <div className="flex flex-wrap gap-2">
-          {canAck && canAcknowledgeSignal(signal) && !ackOpen ? (
-            <button
-              type="button"
-              data-testid={`ack-${String(signal.id)}`}
-              className={buttonClass}
-              aria-label={`Acknowledge episode ${String(signal.id)}`}
-              onClick={onAck}
-            >
-              Acknowledge
-            </button>
-          ) : null}
-          {canHold && canSuggestHold(signal) ? (
-            <Link
-              to="/quality/holds/new"
-              search={{ signal: signal.id }}
-              data-testid={`hold-from-${String(signal.id)}`}
-              className="text-sm text-sky-800 underline"
-            >
-              Hold from this episode
-            </Link>
-          ) : null}
-        </div>
-      </td>
-    </tr>
-  );
-}
+      </>
+    ),
+  },
+  {
+    key: 'ack',
+    header: 'Acknowledged',
+    cell: (s) =>
+      s.acknowledged ? (
+        <span data-testid="signal-ack">
+          {s.acknowledged.by}, {wallTimeOf(s.acknowledged.at)}
+          {plantBeside(s.acknowledged.plantAt)}: “{s.acknowledged.comment}”
+          {s.orphaned ? ' (orphaned: the episode was withdrawn)' : ''}
+        </span>
+      ) : (
+        <Missing reason="Not acknowledged" />
+      ),
+  },
+];
 
 function Signals({
   signals,
@@ -732,39 +879,68 @@ function Signals({
   const [filter, setFilter] = useState<SignalFilter>('all');
   const [open, setOpen] = useState<number | undefined>(undefined);
   const [done, setDone] = useState<string | undefined>(undefined);
-  const filterId = useId();
   const shown = filtered(signals, filter);
   const opened = open === undefined ? undefined : signals.find((s) => s.id === open);
+  const hasActions = canAck || canHold;
+  const focusAfterClose = useFocusAfterClose();
+  const rowActions = (s: SpcSignalDto) => (
+    <>
+      {canAck && canAcknowledgeSignal(s) && open !== s.id ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          data-testid={`ack-${String(s.id)}`}
+          aria-label={`Acknowledge episode ${String(s.id)}`}
+          onClick={() => {
+            setDone(undefined);
+            setOpen(s.id);
+          }}
+        >
+          Acknowledge
+        </Button>
+      ) : null}
+      {canHold && canSuggestHold(s) ? (
+        <Link
+          to="/quality/holds/new"
+          search={{ signal: s.id }}
+          data-testid={`hold-from-${String(s.id)}`}
+          // The containing block of its visually hidden words (UX-8).
+          className={`${buttonClass({ variant: 'ghost', size: 'sm' })} relative`}
+        >
+          Open a hold <span className="sr-only">from episode {s.id}</span>
+        </Link>
+      ) : null}
+    </>
+  );
   return (
-    <Section id="spc-signals" title="Signal episodes">
-      <div className="flex flex-wrap items-end gap-3 text-sm">
-        <label htmlFor={filterId} className="flex flex-col gap-1 font-medium">
-          Show
-          <select
-            id={filterId}
-            data-testid="signal-filter"
-            value={filter}
-            className={inputClass}
-            onChange={(event) => {
-              setFilter(event.target.value as SignalFilter);
-            }}
-          >
-            {SIGNAL_FILTERS.map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <p className="text-slate-700">
-          Provisional until the tester is final through the triggering point; final episodes keep
-          their identity, their extent is final with “extent final”.
-        </p>
-      </div>
-      {done ? (
-        <p role="status" data-testid="ack-done" className="mt-2 text-sm text-emerald-900">
+    <Section
+      id="spc-signals-title"
+      testId="spc-signals"
+      title="Signal episodes"
+      description="Provisional until the tester is final through the triggering point; final episodes keep their identity, their extent is final with “extent final”."
+      actions={
+        <Select
+          label="Show"
+          inline
+          name="signal-filter"
+          data-testid="signal-filter"
+          value={filter}
+          onChange={(event) => {
+            setFilter(event.target.value as SignalFilter);
+          }}
+        >
+          {SIGNAL_FILTERS.map((f) => (
+            <option key={f.id} value={f.id}>
+              {f.label}
+            </option>
+          ))}
+        </Select>
+      }
+    >
+      {done && !opened ? (
+        <Callout tone="ok" role="status" data-testid="ack-done" className="mb-4">
           {done}
-        </p>
+        </Callout>
       ) : null}
       {opened ? (
         <AckForm
@@ -772,44 +948,60 @@ function Signals({
           signal={opened}
           onRead={onRead}
           onClose={(text) => {
+            const id = opened.id;
             setOpen(undefined);
             setDone(text);
+            // Back to the button that opened it; once acknowledged (it is gone), the heading.
+            focusAfterClose(
+              text === undefined ? `ack-${String(id)}` : undefined,
+              'spc-signals-title',
+            );
           }}
         />
       ) : null}
-      {shown.length === 0 ? (
-        <p className="mt-2 text-sm" data-testid="signals-empty">
-          No episode in this view.
+      <DataTable
+        testId="signal-list"
+        caption="Signal episodes, newest first"
+        columns={SIGNAL_COLUMNS}
+        rows={shown.slice(0, SIGNALS_SHOWN)}
+        count={shown.length}
+        rowKey={(s) => String(s.id)}
+        rowTestId={(s) => `signal-row-${String(s.id)}`}
+        rowProps={(s) => ({
+          'data-status': s.status,
+          'data-chart': s.chart,
+          'data-rule': String(s.rule),
+          'data-open': String(isOpenEpisode(s)),
+          'data-extent-final': String(s.extentFinal),
+          'data-baseline': String(s.baseline),
+          'data-acknowledged': String(s.acknowledged !== null),
+          'data-orphaned': String(s.orphaned),
+          'data-row-version': String(s.rowVersion),
+        })}
+        // Not yet acknowledged is what needs a person: the bar, as the list's count badge.
+        rowTone={(s) => (canAcknowledgeSignal(s) ? 'warn' : undefined)}
+        {...(hasActions ? { actions: rowActions } : {})}
+        narrow="stack"
+        skipToDetails={hasActions && shown.length > 0 ? 'spc-limits-title' : undefined}
+        skipLabel="Skip past the episodes"
+        empty={
+          <EmptyState
+            testId="signals-empty"
+            icon={filter === 'all' ? 'check' : 'search'}
+            title="No episode in this view"
+            body={
+              filter === 'all'
+                ? 'No rule has fired on this characteristic’s points.'
+                : 'Choose another view of the episodes.'
+            }
+          />
+        }
+      />
+      {shown.length > SIGNALS_SHOWN ? (
+        <p className="mt-2 text-sm text-ink-secondary" data-testid="signals-more">
+          {shown.length - SIGNALS_SHOWN} older episodes are not listed.
         </p>
-      ) : (
-        <div className="mt-2">
-          <Table
-            testId="signal-list"
-            caption="Signal episodes, newest first"
-            columns={['Id', 'Chart and rule', 'Status', 'First point', 'Acknowledged', 'Actions']}
-            count={shown.length}
-          >
-            {shown.slice(0, SIGNALS_SHOWN).map((s) => (
-              <SignalRow
-                key={s.id}
-                signal={s}
-                canAck={canAck}
-                canHold={canHold}
-                ackOpen={open === s.id}
-                onAck={() => {
-                  setDone(undefined);
-                  setOpen(s.id);
-                }}
-              />
-            ))}
-          </Table>
-          {shown.length > SIGNALS_SHOWN ? (
-            <p className="mt-1 text-sm" data-testid="signals-more">
-              {shown.length - SIGNALS_SHOWN} older episodes are not listed.
-            </p>
-          ) : null}
-        </div>
-      )}
+      ) : null}
     </Section>
   );
 }
@@ -822,10 +1014,14 @@ interface LimitsDraft {
   readonly version: number;
   /** The limit version to end. */
   readonly limit?: number | undefined;
+  /** Plant-time inputs (`toPlantInput`), empty for none. */
   readonly from: string;
   readonly to: string;
   readonly comment: string;
 }
+
+const isoOf = (input: string): string | null =>
+  input === '' ? null : (fromPlantInput(input) ?? null);
 
 function LimitsForm({
   characteristic,
@@ -893,6 +1089,10 @@ function LimitsForm({
     from !== undefined && to !== undefined
       ? pointsInWindow(chart.points.I, from, to, chart.pointsFrom)
       : undefined;
+  const title =
+    draft.kind === 'create'
+      ? 'Estimate a new limit version'
+      : `End limit version ${String(draft.limit)}`;
   return (
     <form
       ref={form}
@@ -901,7 +1101,7 @@ function LimitsForm({
       aria-label={draft.kind === 'create' ? 'Estimate a new limit version' : 'End a limit version'}
       data-testid={draft.kind === 'create' ? 'limits-form' : 'limits-end-form'}
       data-version={String(draft.version)}
-      className="mt-2 flex flex-col gap-2 rounded border border-slate-400 bg-slate-50 p-3"
+      className={FORM_FRAME}
       onKeyDown={(event) => {
         if (event.key === 'Escape') onClose();
       }}
@@ -919,53 +1119,78 @@ function LimitsForm({
         write.mutate(draft);
       }}
     >
-      <h3 className="font-semibold">
-        {draft.kind === 'create'
-          ? 'Estimate a new limit version'
-          : `End limit version ${String(draft.limit)}`}
-      </h3>
-      <p className="text-sm">
-        {draft.kind === 'create'
-          ? 'From the final first-pass readings whose plant time lies in the window (both ends included): I-MR from every reading, X̄-R from the complete subgroups inside. It applies after every reading received so far; earlier points keep their version. Clears a baseline-changed notice. Audited.'
-          : 'Points after every reading received so far are judged by the highest other version open there, or not at all. Audited.'}
-      </p>
-      <p className="text-xs text-slate-700">
-        Prepared on version {draft.version} of the characteristic; the MES refuses it if the
-        characteristic has changed since (409).
-      </p>
+      <div className="flex flex-col gap-1">
+        <h3 className="text-base font-semibold">{title}</h3>
+        <p className="text-sm">
+          {draft.kind === 'create'
+            ? 'From the final first-pass readings whose plant time lies in the window (both ends included): I-MR from every reading, X̄-R from the complete subgroups inside. It applies after every reading received so far; earlier points keep their version. Clears a baseline-changed notice. Audited.'
+            : 'Points after every reading received so far are judged by the highest other version open there, or not at all. Audited.'}
+        </p>
+        <p className="text-xs text-ink-secondary">
+          Prepared on version {draft.version} of the characteristic; the MES refuses it if the
+          characteristic has changed since.
+        </p>
+      </div>
+      {failure ? <FailureMessage failure={failure} testId="limits-message" /> : null}
+      {problems.length > 0 ? (
+        <Callout tone="alarm" role="alert" data-testid="limits-invalid">
+          {problems.join(' ')}
+        </Callout>
+      ) : null}
+      {stale ? (
+        <Callout
+          tone="warn"
+          role="alert"
+          data-testid="limits-stale"
+          data-version={String(characteristic.version)}
+          title="The characteristic changed while you prepared this"
+        >
+          <p>
+            It is now at version {characteristic.version}: limits or a notice moved. Nothing is sent
+            with the newer version. Check the limits, then start again: what you entered is kept.
+          </p>
+          <Button
+            size="sm"
+            data-testid="limits-restart"
+            className="mt-2"
+            onClick={() => {
+              setDraft((d) => ({ ...d, version: characteristic.version }));
+              setFailure(undefined);
+            }}
+          >
+            Start again on version {characteristic.version}
+          </Button>
+        </Callout>
+      ) : null}
       {draft.kind === 'create' ? (
-        <div className="flex flex-wrap gap-3">
-          <label className="flex flex-col gap-1 text-sm font-medium">
-            Window from (plant time)
-            <input
-              type="datetime-local"
-              step={1}
-              data-testid="limits-from"
-              value={draft.from}
-              className={inputClass}
-              onChange={(event) => {
-                const value = event.target.value;
-                setDraft((d) => ({ ...d, from: value }));
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap gap-x-4 gap-y-3">
+            <PlantTimeInput
+              label="Window from"
+              name="limits-from"
+              testId="limits-from"
+              withSeconds
+              required
+              value={isoOf(draft.from)}
+              onChange={(iso) => {
+                setDraft((d) => ({ ...d, from: iso === null ? '' : toPlantInput(iso) }));
               }}
             />
-          </label>
-          <label className="flex flex-col gap-1 text-sm font-medium">
-            Window to (plant time)
-            <input
-              type="datetime-local"
-              step={1}
-              data-testid="limits-to"
-              value={draft.to}
-              className={inputClass}
-              onChange={(event) => {
-                const value = event.target.value;
-                setDraft((d) => ({ ...d, to: value }));
+            <PlantTimeInput
+              label="Window to"
+              name="limits-to"
+              testId="limits-to"
+              withSeconds
+              required
+              value={isoOf(draft.to)}
+              onChange={(iso) => {
+                setDraft((d) => ({ ...d, to: iso === null ? '' : toPlantInput(iso) }));
               }}
             />
-          </label>
+          </div>
           {inWindow !== undefined ? (
             <p
-              className="self-end text-sm"
+              className="text-sm"
               data-testid="limits-window-points"
               data-final={String(inWindow.final)}
               data-beyond-shown={String(inWindow.beyondShown)}
@@ -990,128 +1215,102 @@ function LimitsForm({
           setDraft((d) => ({ ...d, comment }));
         }}
       />
-      {stale ? (
-        <div
-          role="alert"
-          data-testid="limits-stale"
-          data-version={String(characteristic.version)}
-          className="rounded border border-red-800 bg-red-50 p-2 text-sm text-red-950"
-        >
-          <p>
-            The characteristic changed while you prepared this (now version {characteristic.version}
-            : limits or a notice moved). Nothing is sent with the newer version. Check the limits
-            above, then start again: what you entered is kept.
-          </p>
-          <button
-            type="button"
-            data-testid="limits-restart"
-            className={`${buttonClass} mt-2`}
-            onClick={() => {
-              setDraft((d) => ({ ...d, version: characteristic.version }));
-              setFailure(undefined);
-            }}
-          >
-            Start again on version {characteristic.version}
-          </button>
-        </div>
-      ) : null}
-      {problems.length > 0 ? (
-        <p role="alert" className="text-sm text-red-900" data-testid="limits-invalid">
-          {problems.join(' ')}
-        </p>
-      ) : null}
-      {failure ? <FailureMessage failure={failure} testId="limits-message" /> : null}
       <div className="flex flex-wrap gap-2">
-        <button
-          type="submit"
-          data-testid="limits-submit"
-          disabled={write.isPending || stale}
-          className={primaryClass}
-        >
-          {write.isPending ? 'Sending…' : draft.kind === 'create' ? 'Create the version' : 'End it'}
-        </button>
-        <button
-          type="button"
+        <Button
           data-testid="limits-cancel"
-          className={buttonClass}
           onClick={() => {
             onClose();
           }}
         >
           Cancel
-        </button>
+        </Button>
+        <Button
+          type="submit"
+          variant={draft.kind === 'create' ? 'primary' : 'danger'}
+          data-testid="limits-submit"
+          disabled={stale}
+          loading={write.isPending}
+        >
+          {draft.kind === 'create' ? 'Create the version' : 'End it'}
+        </Button>
       </div>
     </form>
   );
 }
 
-function LimitRow({
-  limit,
-  precision,
-  canLimits,
-  onEnd,
-}: {
-  readonly limit: LimitVersionDto;
-  readonly precision: SpcPrecision;
-  readonly canLimits: boolean;
-  readonly onEnd: () => void;
-}) {
-  const open = limit.endedAt === null;
-  const stat = (v: LimitVersionDto['charts']['I']['centre']): string =>
-    spcValueText(v, precision, precision.statistic);
-  return (
-    <tr
-      data-testid={`limit-version-${String(limit.version)}`}
-      data-open={String(open)}
-      data-created-by={limit.createdBy}
-    >
-      <td className={cell}>v{limit.version}</td>
-      <td className={cell}>
-        {limit.createdBy}, {timeOf(limit.createdAt)}
-        {limit.comment ? <span className="block text-xs">“{limit.comment}”</span> : null}
-      </td>
-      <td className={cell}>
-        {timeOf(limit.window.from.at)} – {timeOf(limit.window.to.at)}
-        <span className="block text-xs text-slate-700">
-          {limit.counts.readings} readings, {limit.counts.subgroups} subgroups
-        </span>
-      </td>
-      <td className={cell}>
-        {limit.from === null ? 'from the first reading' : <>from {timeOf(limit.from.at)}</>}
-        {limit.until ? <> until {timeOf(limit.until.at)}</> : null}
-        {limit.endedAt ? (
-          <span className="block text-xs" data-testid="limit-ended">
-            ended by {limit.endedBy ?? '–'}, {timeOf(limit.endedAt)}
-          </span>
-        ) : null}
-      </td>
-      <td className={`${cell} font-mono`}>
-        {stat(limit.charts.I.lower)} / {stat(limit.charts.I.centre)} / {stat(limit.charts.I.upper)}
-      </td>
-      <td className={`${cell} font-mono`}>
-        {stat(limit.charts.Xbar.lower)} / {stat(limit.charts.Xbar.centre)} /{' '}
-        {stat(limit.charts.Xbar.upper)}
-      </td>
-      <td className={`${cell} font-mono`}>
-        {stat(limit.charts.MR.upper)} / {stat(limit.charts.R.upper)}
-      </td>
-      <td className={cell} data-testid="limit-cpk">
-        {limit.capability === null ? 'n/a' : fixedText(limit.capability.cpk, 2)}
-      </td>
-      <td className={cell}>
-        {canLimits && open ? (
-          <button
-            type="button"
-            data-testid={`limits-end-${String(limit.version)}`}
-            className={buttonClass}
-            onClick={onEnd}
-          >
-            End
-          </button>
-        ) : null}
-      </td>
-    </tr>
+/** One column per value (C-07): the I and X̄ limits as lower, centre, upper; MR and R upper. */
+function limitColumns(precision: SpcPrecision): readonly Column<LimitVersionDto>[] {
+  const stat = (v: LimitVersionDto['charts']['I']['centre']) => (
+    <span className="font-mono">{spcValueText(v, precision, precision.statistic)}</span>
   );
+  const value = (
+    key: string,
+    header: string,
+    pick: (l: LimitVersionDto) => LimitVersionDto['charts']['I']['centre'],
+  ): Column<LimitVersionDto> => ({ key, header, numeric: true, cell: (l) => stat(pick(l)) });
+  return [
+    {
+      // The version names its row; who made it, from which window and why go under it, so the
+      // values keep one column each and the table fits a desktop page (C-07).
+      key: 'version',
+      header: 'Version',
+      rowHeader: true,
+      width: '14rem',
+      cell: (l) => (
+        <>
+          <span className="font-semibold">v{l.version}</span>
+          <span className="block text-xs text-ink-secondary" data-testid="limit-created">
+            {l.createdBy}, {timeOf(l.createdAt)}
+          </span>
+          <span className="block text-xs text-ink-secondary">
+            From {timeOf(l.window.from.at)} – {timeOf(l.window.to.at)}: {l.counts.readings}{' '}
+            readings, {l.counts.subgroups} subgroups
+          </span>
+          {l.comment ? (
+            <span className="block text-xs text-ink-secondary">“{l.comment}”</span>
+          ) : null}
+        </>
+      ),
+    },
+    {
+      key: 'applies',
+      header: 'Applies',
+      width: '10rem',
+      cell: (l) => (
+        <>
+          {l.from === null ? 'from the first reading' : <>from {timeOf(l.from.at)}</>}
+          {l.until ? <> until {timeOf(l.until.at)}</> : null}
+          {l.endedAt ? (
+            <span className="block text-xs text-ink-secondary" data-testid="limit-ended">
+              ended by {l.endedBy ?? <Missing reason="Not recorded" />}, {timeOf(l.endedAt)}
+            </span>
+          ) : null}
+        </>
+      ),
+    },
+    value('i-lower', 'I lower', (l) => l.charts.I.lower),
+    value('i-centre', 'I centre', (l) => l.charts.I.centre),
+    value('i-upper', 'I upper', (l) => l.charts.I.upper),
+    value('xbar-lower', 'X̄ lower', (l) => l.charts.Xbar.lower),
+    value('xbar-centre', 'X̄ centre', (l) => l.charts.Xbar.centre),
+    value('xbar-upper', 'X̄ upper', (l) => l.charts.Xbar.upper),
+    value('mrange-upper', 'MR upper', (l) => l.charts.MR.upper),
+    value('r-upper', 'R upper', (l) => l.charts.R.upper),
+    {
+      key: 'cpk',
+      header: 'Cpk',
+      numeric: true,
+      cell: (l) => (
+        <span data-testid="limit-cpk">
+          {l.capability === null ? (
+            <Missing reason="Not estimated" />
+          ) : (
+            fixedText(l.capability.cpk, 2)
+          )}
+        </span>
+      ),
+    },
+  ];
 }
 
 function Limits({
@@ -1131,15 +1330,59 @@ function Limits({
   const [done, setDone] = useState<string | undefined>(undefined);
   const versions = [...chart.limits].sort((a, b) => b.version - a.version);
   const precision = spcPrecision(characteristic.resolution);
+  const columns = useMemo(() => limitColumns(precision), [precision]);
+  const canCreate = canLimits && !draft && characteristic.currentLimits !== null;
+  const focusAfterClose = useFocusAfterClose();
+  const endAction = (l: LimitVersionDto) =>
+    l.endedAt === null ? (
+      <Button
+        variant="ghost"
+        size="sm"
+        data-testid={`limits-end-${String(l.version)}`}
+        aria-label={`End limit version ${String(l.version)}`}
+        onClick={() => {
+          setDone(undefined);
+          setDraft({
+            kind: 'end',
+            version: characteristic.version,
+            limit: l.version,
+            from: '',
+            to: '',
+            comment: '',
+          });
+        }}
+      >
+        End
+      </Button>
+    ) : null;
   return (
-    <Section id="spc-limits" title="Control limit versions">
-      <p className="text-sm text-slate-700">
-        Frozen and append-only: limits never move by themselves, so a drift can’t hide in its own
-        limits. Values as lower / centre / upper; MR and R as upper limits; Cpk against the upper
-        specification ({plainText(characteristic.upperSpec)} {characteristic.unit}), shown, not
-        reconciled.
-      </p>
-      <p className="mt-1 text-sm">
+    <Section
+      id="spc-limits-title"
+      testId="spc-limits"
+      title="Control limit versions"
+      description={`Frozen and append-only: limits never move by themselves, so a drift can’t hide in its own limits. Values in ${characteristic.unit}; Cpk against the upper specification (${plainText(characteristic.upperSpec)} ${characteristic.unit}), shown, not reconciled.`}
+      actions={
+        canCreate ? (
+          <Button
+            data-testid="limits-create"
+            onClick={() => {
+              const window = suggestedWindow(chart);
+              setDone(undefined);
+              setDraft({
+                kind: 'create',
+                version: characteristic.version,
+                from: window ? toPlantInput(window.from) : '',
+                to: window ? toPlantInput(window.to) : '',
+                comment: '',
+              });
+            }}
+          >
+            Estimate a new version
+          </Button>
+        ) : undefined
+      }
+    >
+      <p className="mb-4 text-sm text-ink-secondary" data-testid="spc-rules">
         Rules on I: {rulesText(characteristic.rules.I)}; MR: {rulesText(characteristic.rules.MR)};
         X̄: {rulesText(characteristic.rules.Xbar)}; R: {rulesText(characteristic.rules.R)} (
         {[...new Set(Object.values(characteristic.rules).flat())]
@@ -1149,29 +1392,9 @@ function Limits({
         ).
       </p>
       {done && !draft ? (
-        <p role="status" data-testid="limits-done" className="mt-2 text-sm text-emerald-900">
+        <Callout tone="ok" role="status" data-testid="limits-done" className="mb-4">
           {done}
-        </p>
-      ) : null}
-      {canLimits && !draft && characteristic.currentLimits !== null ? (
-        <button
-          type="button"
-          data-testid="limits-create"
-          className={`${buttonClass} mt-2`}
-          onClick={() => {
-            const window = suggestedWindow(chart);
-            setDone(undefined);
-            setDraft({
-              kind: 'create',
-              version: characteristic.version,
-              from: window ? toPlantInput(window.from) : '',
-              to: window ? toPlantInput(window.to) : '',
-              comment: '',
-            });
-          }}
-        >
-          Estimate a new version
-        </button>
+        </Callout>
       ) : null}
       {draft ? (
         <LimitsForm
@@ -1181,61 +1404,85 @@ function Limits({
           initial={draft}
           onRead={onRead}
           onClose={(text) => {
+            const opener =
+              draft.kind === 'end' ? `limits-end-${String(draft.limit)}` : 'limits-create';
             setDraft(undefined);
             setDone(text);
+            // Back to the button that opened it; once done, the heading above the outcome.
+            focusAfterClose(text === undefined ? opener : undefined, 'spc-limits-title');
           }}
         />
       ) : null}
-      {versions.length === 0 ? (
-        <p className="mt-2 text-sm" data-testid="limits-empty">
-          No limit version yet.
-        </p>
-      ) : (
-        <div className="mt-2">
-          <Table
-            testId="limit-versions"
-            caption="Control limit versions, newest first"
-            columns={[
-              'Version',
-              'Created',
-              'Window',
-              'Applies',
-              'I limits',
-              'X̄ limits',
-              'MR / R upper',
-              'Cpk',
-              'Actions',
-            ]}
-            count={versions.length}
-          >
-            {versions.map((limit) => (
-              <LimitRow
-                key={limit.version}
-                limit={limit}
-                precision={precision}
-                canLimits={canLimits && !draft}
-                onEnd={() => {
-                  setDone(undefined);
-                  setDraft({
-                    kind: 'end',
-                    version: characteristic.version,
-                    limit: limit.version,
-                    from: '',
-                    to: '',
-                    comment: '',
-                  });
-                }}
-              />
-            ))}
-          </Table>
-        </div>
-      )}
+      <DataTable
+        testId="limit-versions"
+        caption="Control limit versions, newest first"
+        columns={columns}
+        rows={versions}
+        rowKey={(l) => String(l.version)}
+        rowTestId={(l) => `limit-version-${String(l.version)}`}
+        rowProps={(l) => ({
+          'data-open': String(l.endedAt === null),
+          'data-created-by': l.createdBy,
+        })}
+        {...(canLimits && !draft ? { actions: endAction } : {})}
+        empty={
+          <EmptyState
+            testId="limits-empty"
+            title="No limit version yet"
+            body="Version 1 is estimated from the baseline once its first-pass readings are final."
+          />
+        }
+      />
     </Section>
   );
 }
 
+// ---- The chart page ----
+
+const SECTIONS: readonly SectionNavItem[] = [
+  { id: 'spc-charts-title', label: 'Charts' },
+  { id: 'spc-signals-title', label: 'Signal episodes' },
+  { id: 'spc-limits-title', label: 'Control limit versions' },
+];
+
+function ChartFacts({
+  characteristic,
+  view,
+}: {
+  readonly characteristic: CharacteristicDto;
+  readonly view: SpcChartDto;
+}) {
+  const count = (n: number) => <span className="tabular-nums">{n}</span>;
+  const facts: Fact[] = [
+    { term: 'Equipment', detail: <Code>{characteristic.equipment}</Code> },
+    { term: 'Operation', detail: <Code>{characteristic.operation}</Code> },
+    { term: 'Unit', detail: characteristic.unit },
+    { term: 'Subgroup size', detail: count(characteristic.subgroupSize) },
+    { term: 'First-pass readings', detail: count(view.readings.firstPass) },
+    { term: 'Retests (shown apart, never charted)', detail: count(view.readings.retests) },
+    { term: 'Complete subgroups', detail: count(view.subgroups.complete) },
+    { term: 'Readings waiting', detail: count(view.subgroups.pending) },
+    {
+      term: 'Tester final through',
+      detail: view.finalThrough ? (
+        timeOf(view.finalThrough.at)
+      ) : (
+        <Missing reason="No final reading yet" />
+      ),
+    },
+  ];
+  return (
+    <div
+      data-testid="spc-header"
+      data-version={String(characteristic.version)}
+      className="flex flex-col gap-2"
+    >
+      <DescriptionList facts={facts} columns="compact" label="Characteristic facts" />
+    </div>
+  );
+}
+
 function SpcChartScreen({ id, search }: { readonly id: string; readonly search: SpcChartSearch }) {
-  const heading = useHeadingFocus<HTMLHeadingElement>();
   const queryClient = useQueryClient();
   const canLimits = useCan('spc:limits');
   const window: ChartWindow = { all: search.all ?? false, from: search.from, to: search.to };
@@ -1248,78 +1495,107 @@ function SpcChartScreen({ id, search }: { readonly id: string; readonly search: 
   const onRead = async () => {
     await queryClient.refetchQueries({ queryKey: qualityKeys.chartAll(id) });
   };
-  const missing = read.error instanceof ApiError && read.error.status === 404;
   const view = read.data;
   const characteristic = view ? newestCharacteristic(view.characteristic, live) : undefined;
   const signals = useMemo(
     () => (view ? mergeSignals(id, view.signals, live) : []),
     [id, view, live],
   );
+
+  if (read.error instanceof ApiError && read.error.status === 404) {
+    return <CharacteristicNotFound id={id} />;
+  }
+  if (read.isPending) {
+    // No `h1` until the chart is read: the heading takes the focus when it mounts.
+    return (
+      <div className="flex flex-col gap-6" data-testid="spc-chart-page" data-characteristic={id}>
+        <p className="text-sm">
+          <Link {...BACK.link} className="text-link underline-offset-4 hover:underline">
+            ‹ {BACK.label}
+          </Link>
+        </p>
+        <Skeleton shape="chart" label="Loading the charts…" />
+      </div>
+    );
+  }
+  if (read.isError || !view || !characteristic) {
+    return (
+      <section
+        aria-labelledby="spc-chart-title"
+        data-testid="spc-chart-page"
+        data-characteristic={id}
+      >
+        <PageHeader
+          id="spc-chart-title"
+          back={BACK}
+          title={
+            <>
+              Characteristic <Code className="break-all">{id}</Code>
+            </>
+          }
+          documentTitle={`Characteristic ${id}`}
+        />
+        <QueryError what="the charts" error={read.error} onRetry={() => void read.refetch()} />
+      </section>
+    );
+  }
+
   return (
     <section
       aria-labelledby="spc-chart-title"
       data-testid="spc-chart-page"
       data-characteristic={id}
+      data-limits={
+        characteristic.currentLimits === null ? 'none' : String(characteristic.currentLimits)
+      }
     >
-      <p className="text-sm">
-        <Link to="/quality/spc" className="text-sky-800 underline">
-          All characteristics
-        </Link>
-      </p>
-      <h1 ref={heading} id="spc-chart-title" tabIndex={-1} className="mt-1 text-2xl font-bold">
-        {characteristic ? characteristic.name : `Characteristic ${id}`}
-      </h1>
-      {read.isPending ? <p className="mt-4">Loading the charts…</p> : null}
-      {missing ? (
-        <p className="mt-4" data-testid="spc-missing">
-          The MES has no characteristic {id}.
-        </p>
-      ) : read.isError ? (
-        <div className="mt-4">
-          <QueryError what="the charts" error={read.error} onRetry={() => void read.refetch()} />
-        </div>
-      ) : null}
-      {view && characteristic ? (
-        <>
-          <p
-            className="text-sm text-slate-700"
-            data-testid="spc-header"
-            data-version={String(characteristic.version)}
-          >
-            {characteristic.equipment} · {characteristic.operation} · {characteristic.unit} ·
-            subgroups of {characteristic.subgroupSize} · {view.readings.firstPass} first-pass
-            readings, {view.readings.retests} retests (shown apart, never charted) ·{' '}
-            {view.subgroups.complete} complete subgroups, {view.subgroups.pending} readings waiting
-            {view.finalThrough ? <> · tester final through {timeOf(view.finalThrough.at)}</> : null}
-          </p>
-          <Notice
-            characteristic={characteristic}
-            onEstimate={
-              canLimits && characteristic.currentLimits !== null && !limitsDraft
-                ? () => {
-                    const suggested = suggestedWindow(view);
-                    setLimitsDraft({
-                      kind: 'create',
-                      version: characteristic.version,
-                      from: suggested ? toPlantInput(suggested.from) : '',
-                      to: suggested ? toPlantInput(suggested.to) : '',
-                      comment: '',
-                    });
-                    // The form takes focus when it opens, so the browser brings it into view.
-                  }
-                : undefined
-            }
-          />
+      <PageHeader
+        id="spc-chart-title"
+        back={BACK}
+        title={characteristic.name}
+        status={
+          <>
+            <UnacknowledgedBadge count={characteristic.signals.unacknowledged} />
+            <NoticeBadge characteristic={characteristic} />
+          </>
+        }
+        description="I-MR and X̄-R charts of first-pass readings against frozen limit versions."
+        meta={<ChartFacts characteristic={characteristic} view={view} />}
+        filters={
+          <WindowPicker key={`${search.from ?? ''}|${search.to ?? ''}`} id={id} search={search} />
+        }
+        summary={<PointsFrom pointsFrom={view.pointsFrom} />}
+      />
+      <Notice
+        characteristic={characteristic}
+        onEstimate={
+          canLimits && characteristic.currentLimits !== null && !limitsDraft
+            ? () => {
+                const suggested = suggestedWindow(view);
+                setLimitsDraft({
+                  kind: 'create',
+                  version: characteristic.version,
+                  from: suggested ? toPlantInput(suggested.from) : '',
+                  to: suggested ? toPlantInput(suggested.to) : '',
+                  comment: '',
+                });
+                // The form takes focus when it opens, so the browser brings it into view.
+              }
+            : undefined
+        }
+      />
+      <SectionNav items={SECTIONS} testId="spc-section-nav" />
+      <div className="mt-6">
+        <Section id="spc-charts-title" testId="spc-charts-section" title="Charts">
           <Baseline characteristic={characteristic} />
-          <WindowPicker id={id} search={search} pointsFrom={view.pointsFrom} />
-          <div className="mt-4 grid gap-4 xl:grid-cols-2" data-testid="spc-charts">
+          <div className="mt-3 grid gap-4 xl:grid-cols-2" data-testid="spc-charts">
             {SPC_CHART_NAMES.map((chart) => (
               <ChartFigure key={chart} chart={chart} view={view} signals={signals} />
             ))}
           </div>
           {view.retests.length > 0 ? (
             <p
-              className="mt-2 text-sm"
+              className="mt-3 text-sm text-ink-secondary"
               data-testid="spc-retests"
               data-count={String(view.retests.length)}
             >
@@ -1327,17 +1603,29 @@ function SpcChartScreen({ id, search }: { readonly id: string; readonly search: 
               never charted as points (another population).
             </p>
           ) : null}
-          <Signals signals={signals} onRead={onRead} />
-          <Limits
-            characteristic={characteristic}
-            chart={view}
-            draft={limitsDraft}
-            setDraft={setLimitsDraft}
-            onRead={onRead}
-          />
-        </>
-      ) : null}
+        </Section>
+        <Signals signals={signals} onRead={onRead} />
+        <Limits
+          characteristic={characteristic}
+          chart={view}
+          draft={limitsDraft}
+          setDraft={setLimitsDraft}
+          onRead={onRead}
+        />
+      </div>
     </section>
+  );
+}
+
+/** An unknown characteristic, or an id that cannot be one: the not-found page (G-21). */
+function CharacteristicNotFound({ id }: { readonly id: string }) {
+  return (
+    <NotFound
+      kind="characteristic"
+      id={id}
+      back={{ to: '/quality/spc', label: BACK.label }}
+      testId="spc-missing"
+    />
   );
 }
 
@@ -1347,14 +1635,7 @@ export function SpcChartRoute() {
   const search = useSearch({ from: '/quality/spc/$characteristic' });
   useQualityTopic();
   if (!CHARACTERISTIC_ID.test(characteristic)) {
-    return (
-      <section>
-        <h1 className="text-2xl font-bold">Characteristic {characteristic}</h1>
-        <p className="mt-2" data-testid="spc-missing">
-          No characteristic has this id.
-        </p>
-      </section>
-    );
+    return <CharacteristicNotFound id={characteristic} />;
   }
   return <SpcChartScreen key={characteristic} id={characteristic} search={search} />;
 }

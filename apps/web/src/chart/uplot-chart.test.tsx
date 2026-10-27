@@ -5,6 +5,7 @@ import type { ChartData } from '../domain/series.ts';
 import { readFont, readTokens, uplotTheme } from './theme.ts';
 import {
   UplotChart,
+  budgetTicks,
   isolatedIndices,
   latestIndex,
   options,
@@ -108,6 +109,39 @@ describe('the time axis (#360): the state timeline’s ticks and dates', () => {
   });
 });
 
+describe('the tick budget when the window is aligned (#380 review)', () => {
+  const nine = [0, 1, 2, 3, 4, 5, 6, 7, 8].map((step) => step * 10_800);
+  it('drops the start tick of a window that starts on a whole step and gets one too many', () => {
+    expect(budgetTicks(nine, 0, 1000)).toEqual([null, ...nine.slice(1)]);
+    // Not on a whole step: the first tick is inside the window, nothing to drop.
+    expect(budgetTicks(nine, -1, 1000)).toEqual(nine);
+    // Within the budget: kept.
+    expect(budgetTicks(nine.slice(0, 8), 0, 1000)).toEqual(nine.slice(0, 8));
+    // The narrow budget of 4.
+    expect(budgetTicks(nine.slice(0, 5), 0, 330)).toEqual([null, ...nine.slice(1, 5)]);
+    expect(budgetTicks([], 0, 330)).toEqual([]);
+  });
+
+  it('labels nothing for a dropped tick, and dates the first one shown', () => {
+    const splits = [null, 15, 21, 24, 27].map((hours) =>
+      hours === null ? null : s('2026-10-13T00:00:00Z') + hours * 3600,
+    );
+    // 15:00 plant on 13 Oct to 06:00 on 14 Oct.
+    expect(
+      timeAxisLabels(splits, s('2026-10-13T09:00:00Z'), s('2026-10-14T03:00:00Z'), 1000),
+    ).toEqual(['', '18:00\nTue 13 Oct', '00:00\nWed 14 Oct', '03:00', '06:00']);
+    // The first shown gives way to a midnight close after it.
+    expect(
+      timeAxisLabels(
+        [null, s('2026-10-13T18:00:00Z'), s('2026-10-13T21:00:00Z')],
+        s('2026-10-13T15:00:00Z'),
+        s('2026-10-14T15:00:00Z'),
+        1000,
+      ),
+    ).toEqual(['', '21:00', '00:00\nWed 14 Oct']);
+  });
+});
+
 describe('a trend’s data (#360)', () => {
   it('finds the values no line reaches: between gaps, at either end', () => {
     expect(isolatedIndices([1, null, 2, null, null, 3, 4, null, 5])).toEqual([0, 2, 8]);
@@ -203,6 +237,14 @@ describe('the trend’s options (#360)', () => {
       dim: number,
     ) => number;
     expect(space(chartOf(), 0, 0, 1, 1000)).toBe(tickSpace(1000));
+    // Labels and tick marks leave out the same start tick.
+    const filter = x?.filter as (u: uPlot, splits: number[]) => (number | null)[];
+    const ticks = x?.ticks?.filter as (u: uPlot, splits: number[]) => (number | null)[];
+    const aligned = chartOf(DATA, 0, 8 * 10_800, 1000);
+    const nine = [0, 1, 2, 3, 4, 5, 6, 7, 8].map((step) => step * 10_800);
+    expect(filter(aligned, nine)[0]).toBeNull();
+    expect(ticks(aligned, nine)[0]).toBeNull();
+    expect(x?.ticks).toMatchObject({ size: 4 });
     const values = x?.values as (u: uPlot, splits: number[]) => string[];
     const chart = chartOf(DATA, s('2026-10-13T11:00:00Z'), s('2026-10-14T11:00:00Z'));
     expect(values(chart, [s('2026-10-13T12:00:00Z'), s('2026-10-13T21:00:00Z')])).toEqual([

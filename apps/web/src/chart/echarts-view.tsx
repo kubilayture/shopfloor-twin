@@ -44,42 +44,93 @@ export function themedOption(option: EChartsCoreOption, read: TokenReader): ECha
   );
 }
 
+/** The components a live update replaces rather than merges (`LIVE_UPDATE`). */
+const REPLACED = new Set(['series', 'xAxis', 'yAxis']);
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
 /**
- * An option's shape (#356): each component it has and how many, `series:2|xAxis:1|yAxis:1|...`.
- * Two options of the same shape differ only in their values.
+ * The keys of a merged component, nested: `{formatter,trigger}`. An array in it is replaced
+ * whole by a merge, so only its place counts, not its length or items.
+ */
+function keysOf(value: unknown): string {
+  if (Array.isArray(value)) return '[]';
+  if (!isRecord(value)) return '';
+  return `{${Object.keys(value)
+    .sort()
+    .map((key) => `${key}${keysOf(value[key])}`)
+    .join(',')}}`;
+}
+
+/**
+ * An option's shape (#356): each component it has, how many of the replaced ones (series and
+ * axes: `series:2`), and every key of the merged ones (`tooltip{formatter,trigger}`), which a
+ * merge would keep when a push leaves it out (#380 review). Two options of the same shape differ
+ * only in their values, and in what the replaced components hold.
  */
 export function optionShape(option: EChartsCoreOption): string {
   return Object.keys(option)
     .sort()
     .map((key) => {
       const value = option[key];
-      return Array.isArray(value) ? `${key}:${String(value.length)}` : key;
+      if (REPLACED.has(key)) return Array.isArray(value) ? `${key}:${String(value.length)}` : key;
+      // A merged component given as a list is merged item by item.
+      return Array.isArray(value) ? `${key}[${value.map(keysOf).join(',')}]` : key + keysOf(value);
     })
     .join('|');
+}
+
+/** How many categories an option's category axes hold, all axes together. */
+export function categoryCount(option: EChartsCoreOption): number {
+  let count = 0;
+  for (const key of ['xAxis', 'yAxis']) {
+    const value = option[key];
+    const axes: unknown[] = Array.isArray(value) ? value : [value];
+    for (const axis of axes) {
+      if (isRecord(axis) && Array.isArray(axis.data)) count += axis.data.length;
+    }
+  }
+  return count;
 }
 
 /**
  * A live update (#356): merged into the chart, with the series and axes replaced (so a series or
  * a mark left out goes), keeps the hover tooltip and highlight, which a redraw from scratch
- * (`notMerge`) drops on every push, so the OEE page's tooltip never stayed. A new shape (a series
- * or component added or gone) is drawn from scratch: ECharts would show the kept tooltip again
- * for a series or axis that is no longer there, and fail.
+ * (`notMerge`) drops on every push, so the OEE page's tooltip never stayed. It also keeps a
+ * legend toggle. A new shape (a series, component or merged key added or gone) is drawn from
+ * scratch: ECharts would show the kept tooltip again for a series or axis that is no longer
+ * there, and fail, and keep a merged key the push left out.
  */
 export const LIVE_UPDATE: SetOptionOpts = {
   notMerge: false,
   replaceMerge: ['series', 'xAxis', 'yAxis'],
 };
 
-/** Gives the chart its option (#356); returns the option's shape for the next update. */
+/** What the chart was last given: the option's shape and its category count. */
+export interface Applied {
+  readonly shape: string;
+  readonly categories: number;
+}
+
+/**
+ * Gives the chart its option (#356); returns what it applied, for the next update. When a merged
+ * update has fewer categories (a new shift's first hour), the kept tooltip is hidden first: it
+ * would show again over a category that is gone, with dashes for its values (#380 review).
+ */
 export function applyOption(
-  instance: Pick<EChartsType, 'setOption'>,
+  instance: Pick<EChartsType, 'setOption' | 'dispatchAction'>,
   option: EChartsCoreOption,
-  previousShape: string | undefined,
-): string {
-  const shape = optionShape(option);
-  if (shape === previousShape) instance.setOption(option, LIVE_UPDATE);
-  else instance.setOption(option, { notMerge: true });
-  return shape;
+  previous: Applied | undefined,
+): Applied {
+  const applied = { shape: optionShape(option), categories: categoryCount(option) };
+  if (applied.shape === previous?.shape) {
+    if (applied.categories < previous.categories) instance.dispatchAction({ type: 'hideTip' });
+    instance.setOption(option, LIVE_UPDATE);
+  } else {
+    instance.setOption(option, { notMerge: true });
+  }
+  return applied;
 }
 
 /**
@@ -99,8 +150,8 @@ export function EChartsView({
   const snapshot = useRef<HTMLImageElement>(null);
   const chart = useRef<EChartsType | null>(null);
   const read = useRef<TokenReader | null>(null);
-  /** The shape of the option the chart has, so a live update is merged (#356). */
-  const shape = useRef<string | undefined>(undefined);
+  /** What the chart was given last, so a live update is merged (#356). */
+  const applied = useRef<Applied | undefined>(undefined);
   const themeVersion = useThemeVersion();
 
   useEffect(() => {
@@ -149,10 +200,10 @@ export function EChartsView({
   useEffect(() => {
     const instance = chart.current;
     if (!instance) return;
-    shape.current = applyOption(
+    applied.current = applyOption(
       instance,
       themedOption(option, read.current ?? readTokens()),
-      shape.current,
+      applied.current,
     );
   }, [option, height, themeVersion]);
 

@@ -4,7 +4,7 @@ import { SVGRenderer } from 'echarts/renderers';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ECHARTS_MODULES } from './echarts-modules.ts';
 import { limitVersion, point, signal } from '../test/quality-fixtures.ts';
-import { applyOption, themedOption } from './echarts-view.tsx';
+import { applyOption, optionShape, themedOption } from './echarts-view.tsx';
 import { RULE_LANE, spcChartOption, type SpcChartInput } from './spc-options.ts';
 import { echartsTheme, readTokens } from './theme.ts';
 
@@ -158,6 +158,63 @@ describe('SPC chart rendering (#308)', () => {
       const newest = laneLabels(chart).reduce((a, b) => (b.at > a.at ? b : a));
       expect(newest.at).toBe(Date.parse(signals[11]?.first.at ?? ''));
       expect(newest.hidden).toBe(false);
+    },
+  );
+
+  it.each([1440, 390])(
+    'keeps the rule labels apart over merged live updates of 0, 1, 12 and 0 episodes at %i px (#380 review)',
+    (width) => {
+      chart = init(document.createElement('div'), undefined, {
+        renderer: 'svg',
+        width,
+        height: 240,
+      });
+      const base = input('I', 500);
+      const episodes = (count: number) =>
+        Array.from({ length: count }, (_, k) => {
+          const minutes = 3 * (10 + 4 * k);
+          const ref = {
+            epoch: 1,
+            partId: minutes,
+            pass: 1,
+            at: point(minutes, 0).at,
+            seq: minutes,
+          };
+          return signal(k + 1, {
+            rule: (k % 3) + 1,
+            status: 'final',
+            extentFinal: true,
+            first: ref,
+            last: ref,
+          });
+        });
+      const option = (count: number) => asSet({ ...base, signals: episodes(count) });
+      // The same shape each time: every push after the first is merged, as live updates are.
+      expect(new Set([0, 1, 12].map((count) => optionShape(option(count)))).size).toBe(1);
+      let applied = applyOption(chart, option(0), undefined);
+      expect(laneLabels(chart)).toHaveLength(0);
+      applied = applyOption(chart, option(1), applied);
+      expect(laneLabels(chart).map((l) => l.hidden)).toEqual([false]);
+      applied = applyOption(chart, option(12), applied);
+      const labels = laneLabels(chart);
+      const shown = labels.filter((l) => !l.hidden);
+      expect(labels).toHaveLength(12);
+      expect(shown.length).toBeGreaterThan(0);
+      expect(shown.length).toBeLessThan(12);
+      for (const [i, a] of shown.entries()) {
+        for (const b of shown.slice(i + 1)) expect(a.rect.intersect(b.rect)).toBe(false);
+      }
+      const newest = labels.reduce((a, b) => (b.at > a.at ? b : a));
+      expect(newest.at).toBe(Date.parse(episodes(12)[11]?.first.at ?? ''));
+      expect(newest.hidden).toBe(false);
+      expect(markers(chart)).toEqual({ count: 500, shown: 500 });
+      applyOption(chart, option(0), applied);
+      expect(laneLabels(chart)).toHaveLength(0);
+      const series = (
+        chart.getOption() as { series: { name: string; markArea?: { data?: unknown[] } }[] }
+      ).series;
+      expect(series.flatMap((s) => s.markArea?.data ?? [])).toEqual([]);
+      expect(markers(chart)).toEqual({ count: 500, shown: 500 });
     },
   );
 

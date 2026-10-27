@@ -18,7 +18,7 @@ export const HEIGHT = 240;
 
 /**
  * The time axis' tick budget, the state timeline's rule (#359, `timelineTicks`): at most 8 ticks,
- * 4 on an axis narrower than 640 px (#360).
+ * 4 on an axis narrower than 640 px (#360); `budgetTicks` keeps it when the window is aligned.
  */
 export const MAX_TICKS = 8;
 export const NARROW_TICKS = 4;
@@ -31,15 +31,36 @@ export const MIN_DATE_GAP = 20;
  */
 export const MIN_DATE_GAP_PX = 80;
 
+/** The tick budget of an axis `width` px wide. */
+export function tickBudget(width: number): number {
+  return width < NARROW_AXIS ? NARROW_TICKS : MAX_TICKS;
+}
+
 /**
  * The least space between two time ticks, in CSS px, for an axis `width` px wide: uPlot then
- * takes the first of its round steps (10 min, 1 h, 3 h, ...) that gives at most the budget, as
- * the timeline does. A hair under the even share, so a step that gives exactly the budget (3 h
- * over 24 h) is not lost to rounding.
+ * takes the first of its round steps (10 min, 1 h, 3 h, ...) that gives at most the budget of
+ * intervals, as the timeline does. A hair under the even share, so a step that gives exactly the
+ * budget (3 h over 24 h) is not lost to rounding.
  */
 export function tickSpace(width: number): number {
-  const budget = width < NARROW_AXIS ? NARROW_TICKS : MAX_TICKS;
-  return (width / budget) * (1 - 1e-6);
+  return (width / tickBudget(width)) * (1 - 1e-6);
+}
+
+/**
+ * The ticks shown (#360 review): a window that starts on a whole step gets a tick at both ends,
+ * one more than the budget, so its start goes, as on the timeline. A tick left out is `null`,
+ * which uPlot neither draws nor labels. `splits` and `min` are in seconds.
+ */
+export function budgetTicks(
+  splits: readonly number[],
+  min: number,
+  width: number,
+): (number | null)[] {
+  const first = splits[0];
+  if (splits.length > tickBudget(width) && first !== undefined && first <= min) {
+    return [null, ...splits.slice(1)];
+  }
+  return [...splits];
 }
 
 /**
@@ -47,10 +68,11 @@ export function tickSpace(width: number): number {
  * under it the plant day (`Tue 13 Oct`) on the first tick and on the first tick of each new day,
  * only when the window spans more than one plant day; a date within `MIN_DATE_GAP` of the one
  * before (or `MIN_DATE_GAP_PX` on a plot `width` px wide) is left out, and when that one is the
- * first tick's, the first gives way to the new day. `splits`, `min` and `max` are in seconds.
+ * first tick's, the first gives way to the new day. `splits`, `min` and `max` are in seconds; a
+ * tick left out (`null`) has no label.
  */
 export function timeAxisLabels(
-  splits: readonly number[],
+  splits: readonly (number | null)[],
   min: number,
   max: number,
   width: number,
@@ -60,15 +82,21 @@ export function timeAxisLabels(
   const spansDays = span > 0 && plantDayOf(min * 1000) !== plantDayOf(max * 1000);
   const dates: (string | undefined)[] = [];
   let previousDay: string | undefined;
+  let firstShown: number | undefined;
   let lastDated: number | undefined;
   splits.forEach((seconds, index) => {
+    if (seconds === null) {
+      dates.push(undefined);
+      return;
+    }
+    firstShown ??= index;
     const day = plantDayOf(seconds * 1000);
     let date = spansDays && day !== previousDay ? plantDayLabel(day) : undefined;
     previousDay = day;
     if (date !== undefined && lastDated !== undefined) {
       const gap = ((seconds - (splits[lastDated] ?? seconds)) / span) * 100;
       if (gap < minGap) {
-        if (lastDated === 0) dates[0] = undefined;
+        if (lastDated === firstShown) dates[lastDated] = undefined;
         else date = undefined;
       }
     }
@@ -76,6 +104,7 @@ export function timeAxisLabels(
     dates.push(date);
   });
   return splits.map((seconds, index) => {
+    if (seconds === null) return '';
     const time = formatClockTime(seconds * 1000);
     const date = dates[index];
     return date === undefined ? time : `${time}\n${date}`;
@@ -156,6 +185,8 @@ export function options(
       },
     },
   });
+  const shownTicks = (chart: uPlot, splits: number[]) =>
+    budgetTicks(splits, chart.scales.x?.min ?? 0, chart.over.clientWidth);
   return {
     width,
     height: HEIGHT,
@@ -175,6 +206,8 @@ export function options(
       {
         ...theme.x,
         space: (_chart, _axis, _min, _max, dim) => tickSpace(dim),
+        filter: shownTicks,
+        ticks: { ...theme.x.ticks, filter: shownTicks },
         values: (chart, splits) =>
           timeAxisLabels(
             splits,

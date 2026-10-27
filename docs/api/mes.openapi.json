@@ -27812,26 +27812,149 @@
                     "results": {
                       "type": "array",
                       "items": {
-                        "type": "object",
-                        "properties": {
-                          "kind": {
-                            "type": "string",
-                            "enum": [
-                              "serial",
-                              "lot",
-                              "carton",
-                              "order"
-                            ]
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "serial"
+                                ]
+                              },
+                              "id": {
+                                "type": "string"
+                              },
+                              "status": {
+                                "type": "string",
+                                "enum": [
+                                  "wip",
+                                  "packed",
+                                  "scrapped",
+                                  "lost"
+                                ],
+                                "description": "The status of the newest unit with this serial (highest device epoch; serials repeat across runs)"
+                              },
+                              "order": {
+                                "description": "The order of that unit; null when its job named none",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "id"
+                            ],
+                            "additionalProperties": false
                           },
-                          "id": {
-                            "type": "string"
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "lot"
+                                ]
+                              },
+                              "id": {
+                                "type": "string"
+                              },
+                              "status": {
+                                "type": "string",
+                                "enum": [
+                                  "active",
+                                  "retired"
+                                ],
+                                "description": "The lot’s status as imported from the ERP"
+                              },
+                              "order": {
+                                "type": "null",
+                                "description": "Null: a lot is used by any number of orders (its forward trace lists them)"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "id"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "carton"
+                                ]
+                              },
+                              "id": {
+                                "type": "string"
+                              },
+                              "status": {
+                                "type": "string",
+                                "enum": [
+                                  "open",
+                                  "closed"
+                                ]
+                              },
+                              "order": {
+                                "type": "string",
+                                "description": "The order the carton was formed for"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "id"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "order"
+                                ]
+                              },
+                              "id": {
+                                "type": "string"
+                              },
+                              "status": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "imported",
+                                      "rejected",
+                                      "released",
+                                      "dispatched",
+                                      "in-progress",
+                                      "completed",
+                                      "closed",
+                                      "cancelled"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "The order’s MES status; null when the orders module no longer holds it"
+                              },
+                              "order": {
+                                "type": "null",
+                                "description": "Null: the result is the order itself"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "id"
+                            ],
+                            "additionalProperties": false
                           }
-                        },
-                        "required": [
-                          "kind",
-                          "id"
-                        ],
-                        "additionalProperties": false
+                        ]
                       }
                     }
                   },
@@ -27840,7 +27963,7 @@
                     "results"
                   ],
                   "additionalProperties": false,
-                  "description": "`GET /trace/search?q=`: serials, lots, cartons and orders starting with q"
+                  "description": "`GET /trace/search?q=`: serials, lots, cartons and orders starting with q, each with its status and order (#364)"
                 }
               }
             }

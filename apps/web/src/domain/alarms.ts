@@ -313,16 +313,30 @@ export function rateBand(
   return 'over';
 }
 
+/**
+ * The EEMUA 191 verdict of a rate band (UX-4b, #325; design system 2.3): its tone and its word.
+ * Colour only for abnormal: a benchmark met is normal, so Acceptable is `neutral`; Manageable is a
+ * `warn`, Over the benchmark an `alarm`. One mapping for every screen that shows the verdict (the
+ * alarm KPIs, the shift report).
+ */
+export const RATE_VERDICT: Readonly<
+  Record<RateBand, { readonly tone: 'neutral' | 'warn' | 'alarm'; readonly label: string }>
+> = {
+  acceptable: { tone: 'neutral', label: 'Acceptable' },
+  manageable: { tone: 'warn', label: 'Manageable' },
+  over: { tone: 'alarm', label: 'Over the benchmark' },
+};
+
 /** A rate band as text, with the served benchmarks (#160). */
 export function rateBandText(band: RateBand, config: Pick<AlarmConfig, 'benchmarks'>): string {
   const { acceptablePer10Min: acceptable, manageablePer10Min: manageable } = config.benchmarks;
   switch (band) {
     case 'acceptable':
-      return `Acceptable (≤ ${String(acceptable)} per 10 min)`;
+      return `${RATE_VERDICT.acceptable.label} (≤ ${String(acceptable)} per 10 min)`;
     case 'manageable':
-      return `Manageable (≤ ${String(manageable)} per 10 min)`;
+      return `${RATE_VERDICT.manageable.label} (≤ ${String(manageable)} per 10 min)`;
     case 'over':
-      return `Over the benchmark (> ${String(manageable)} per 10 min)`;
+      return `${RATE_VERDICT.over.label} (> ${String(manageable)} per 10 min)`;
   }
 }
 
@@ -369,3 +383,49 @@ export function meanTimeToAck(timeToAck: OperatorBucketDto['timeToAck']): string
   if (timeToAck.count === 0) return NOT_APPLICABLE;
   return minutesText(fraction(BigInt(timeToAck.sumMs), BigInt(timeToAck.count)));
 }
+
+/**
+ * One hour of a shift on the alarm KPI screen (UX-4b, #325): the MES's hour bucket, or none when
+ * the MES did not list the hour. It lists only the hours where something happened and the hour in
+ * progress (ADR-0024); any other hour is the empty bucket, so it is shown as "No alarm activity",
+ * without an invented finality.
+ */
+export interface AlarmHourRow {
+  /** The hour start (ISO 8601 UTC), the MES's hour bucket key. */
+  readonly key: string;
+  readonly from: string;
+  readonly to: string;
+  readonly bucket: AlarmKpiBucketDto | undefined;
+}
+
+/**
+ * Every hour of `range` that ended by the plant clock's hour (`clock`), aligned on the hour as the
+ * MES's buckets are, each with the bucket of the same start from `buckets` (REST with the pushed
+ * one over it). The hour the clock is in is left to the MES, which always lists the hour in
+ * progress (ADR-0024), so a fresh hour never shows as "No alarm activity" before its bucket
+ * arrives. Without a clock nothing is filled. A bucket outside those hours is kept in its place:
+ * the MES's list is never shortened.
+ */
+export function alarmShiftHours(
+  buckets: readonly AlarmKpiBucketDto[],
+  range: { readonly from: number; readonly to: number },
+  clock: number | undefined,
+): AlarmHourRow[] {
+  const byFrom = new Map<number, AlarmKpiBucketDto | undefined>(
+    buckets.map((bucket) => [Date.parse(bucket.from), bucket]),
+  );
+  const end = clock === undefined ? range.from : Math.min(range.to, hourStart(clock));
+  for (let hour = hourStart(range.from); hour < end; hour += HOUR) {
+    if (!byFrom.has(hour)) byFrom.set(hour, undefined);
+  }
+  return [...byFrom.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([from, bucket]): AlarmHourRow => {
+      const start = new Date(from).toISOString();
+      return bucket
+        ? { key: bucket.key, from: bucket.from, to: bucket.to, bucket }
+        : { key: start, from: start, to: new Date(from + HOUR).toISOString(), bucket: undefined };
+    });
+}
+
+const hourStart = (ms: number): number => Math.floor(ms / HOUR) * HOUR;

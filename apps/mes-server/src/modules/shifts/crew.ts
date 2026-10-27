@@ -263,12 +263,13 @@ export async function endCrew(
  * Inside a caller's transaction (#177 review, MEDIUM-1): the open crew row of the user at the work
  * center held by the session, locked `FOR SHARE` until that transaction ends, so no sign-off, session
  * end or shift end can close it while a terminal write that relies on it commits (they lock it `FOR
- * UPDATE` and wait). False when there is none.
+ * UPDATE` and wait). Its id (the activity intervals started under it carry it, #366); undefined when
+ * there is none.
  */
 export async function lockCrew(
   trx: Transaction<Database>,
   who: { readonly userId: number; readonly workCenter: string; readonly sessionId: string },
-): Promise<boolean> {
+): Promise<number | undefined> {
   const row = await trx
     .selectFrom('shifts.crew_assignment')
     .select('id')
@@ -278,7 +279,7 @@ export async function lockCrew(
     .where('to_at', 'is', null)
     .forShare()
     .executeTakeFirst();
-  return row !== undefined;
+  return row?.id;
 }
 
 async function close(

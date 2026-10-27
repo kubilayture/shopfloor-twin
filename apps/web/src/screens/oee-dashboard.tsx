@@ -29,7 +29,7 @@ import {
   type GroupFinality,
 } from '../components/oee-ui.tsx';
 import { QueryError } from '../components/query-error.tsx';
-import { ShiftPicker, useShiftSelection } from '../components/shift-picker.tsx';
+import { ShiftPicker, ShiftSpan, useShiftSelection } from '../components/shift-picker.tsx';
 import { Badge } from '../components/ui/badge.tsx';
 import { Callout } from '../components/ui/callout.tsx';
 import { Card } from '../components/ui/card.tsx';
@@ -38,7 +38,7 @@ import { Select } from '../components/ui/controls.tsx';
 import { DataTable, type Column } from '../components/ui/data-table.tsx';
 import { Disclosure } from '../components/ui/disclosure.tsx';
 import { EmptyState } from '../components/ui/empty-state.tsx';
-import { Missing, Percent, PlantTime } from '../components/ui/format.tsx';
+import { Missing, Percent } from '../components/ui/format.tsx';
 import { PageHeader } from '../components/ui/page-header.tsx';
 import { Section } from '../components/ui/section.tsx';
 import { Skeleton } from '../components/ui/skeleton.tsx';
@@ -55,7 +55,7 @@ import {
   waterfall,
   type WaterfallStep,
 } from '../domain/oee.ts';
-import { formatClockTime, formatPlantTime, plantDayOf } from '../domain/time.ts';
+import { formatClockTime } from '../domain/time.ts';
 import {
   useLiveDowntime,
   useLiveOee,
@@ -792,26 +792,6 @@ function FocusDetails({
         />
       </div>
     </div>
-  );
-}
-
-/**
- * A shift's span (design system 6.2): `Mon 12 Oct, 06:00 – 14:00` within one plant day, the date
- * on both sides only across midnight (`Mon 12 Oct, 22:00 – Tue 13 Oct, 06:00`).
- */
-export function ShiftSpan({ start, end }: { readonly start: string; readonly end: string }) {
-  const oneDay = plantDayOf(start) === plantDayOf(end);
-  return (
-    <>
-      <PlantTime at={start} seconds={false} /> –{' '}
-      {oneDay ? (
-        <time dateTime={end} title={formatPlantTime(end)} className="tabular-nums">
-          {formatClockTime(end)}
-        </time>
-      ) : (
-        <PlantTime at={end} seconds={false} />
-      )}
-    </>
   );
 }
 

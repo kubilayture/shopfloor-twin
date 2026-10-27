@@ -130,6 +130,20 @@ describe('Tabs', () => {
   });
 });
 
+describe('TabPanel', () => {
+  it('passes data-* through to the panel, which stays a focusable tabpanel', () => {
+    render(
+      <TabPanel id="p" labelledBy="t" testId="alarm-list" data-view="active" data-count="3">
+        rows
+      </TabPanel>,
+    );
+    const panel = screen.getByTestId('alarm-list');
+    expect(panel.getAttribute('role')).toBe('tabpanel');
+    expect(panel.getAttribute('tabindex')).toBe('0');
+    expect([panel.dataset.view, panel.dataset.count]).toEqual(['active', '3']);
+  });
+});
+
 describe('tabTarget', () => {
   it('wraps at both ends and leaves other keys alone', () => {
     expect(tabTarget('ArrowRight', 0, 3)).toBe(1);

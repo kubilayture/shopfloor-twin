@@ -45,6 +45,9 @@ export function SegmentedLinks({ label, items, current, testId }: SegmentedLinks
             {...(item.params === undefined ? {} : { params: item.params })}
             {...(item.search === undefined ? {} : { search: item.search })}
             data-testid={item.testId}
+            // `current` alone says which item is current: the router's own match would mark a link
+            // whose search is a subset of the URL's (`{}` under `?from=…`) as the page too (#332).
+            activeOptions={{ exact: true, includeSearch: true }}
             aria-current={active ? 'page' : undefined}
             className={`${ITEM} ${active ? 'bg-accent font-semibold text-on-accent' : 'text-ink hover:bg-surface-hover'}`}
           >

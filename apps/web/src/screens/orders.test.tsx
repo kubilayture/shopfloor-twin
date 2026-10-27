@@ -325,6 +325,10 @@ describe('order detail', () => {
     expect(server.posts()).toHaveLength(0);
     fireEvent.click(within(form).getByTestId('action-restart'));
     expect(screen.getByTestId('action-form-dispatch').dataset.version).toBe('3');
+    // The focus goes to the send button once it is enabled again, not to the page (#333 review).
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByTestId('action-submit'));
+    });
     expect(screen.getByTestId<HTMLSelectElement>('action-cnc').value).toBe('cnc-01');
     fireEvent.click(screen.getByTestId('action-submit'));
     await screen.findByTestId('action-done');

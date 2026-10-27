@@ -224,11 +224,18 @@ export function ActionForm({
   const submit = useRef<HTMLButtonElement>(null);
   const form = useRef<HTMLFormElement>(null);
   const sending = useRef(false);
+  // "Start again" clears the stale state; the send button is enabled only after that render.
+  const focusSubmit = useRef(false);
   // The form takes focus when it opens (and the browser brings it into view).
   useEffect(() => {
     form.current?.focus();
   }, []);
   const stale = isStaleDraft(draft, order);
+  useEffect(() => {
+    if (!focusSubmit.current || stale) return;
+    focusSubmit.current = false;
+    submit.current?.focus();
+  }, [stale]);
   const applies = stillApplies(draft, order, commands);
   const unsettled = draft.action === 'redispatch' ? unsettledCommands(commands) : [];
   const text = ACTION_TEXT[draft.action];
@@ -324,7 +331,7 @@ export function ActionForm({
               onClick={() => {
                 setDraft((current) => ({ ...current, version: order.version }));
                 setFailure(undefined);
-                submit.current?.focus();
+                focusSubmit.current = true;
               }}
             >
               Start again on version {order.version}

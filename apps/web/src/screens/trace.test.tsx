@@ -94,6 +94,61 @@ describe('trace search', () => {
     expect((await screen.findByTestId('trace-serial')).dataset.serial).toBe('VB-100-000042');
   });
 
+  it('shows each result’s status and order, and a dash where the MES sent none (#364)', async () => {
+    const server = traceMes(
+      traceState({
+        search: {
+          P: [
+            { kind: 'serial', id: 'P-7', status: 'scrapped', order: 'PO-1001' },
+            { kind: 'serial', id: 'P-8', status: 'wip', order: null },
+            { kind: 'lot', id: 'P-LOT', status: 'retired', order: null },
+            { kind: 'carton', id: 'PO-1001-C01', status: 'open', order: 'PO-1001' },
+            { kind: 'order', id: 'PO-1001', status: 'in-progress', order: null },
+            { kind: 'order', id: 'PO-1002', status: null, order: null },
+            // A MES before #364: kind and id only.
+            { kind: 'carton', id: 'PO-1002-C01' },
+          ],
+        },
+      }),
+    );
+    vi.stubGlobal('fetch', server.fetch);
+    await renderApp('/trace?q=P');
+    const results = await screen.findByTestId('trace-results');
+    expect(
+      within(results)
+        .getAllByRole('columnheader')
+        .map((th) => th.textContent),
+    ).toEqual(['Id', 'Type', 'Status', 'Order', 'Opens']);
+    const status = (id: string) => screen.getByTestId(`result-status-${id}`);
+    expect([status('serial-P-7').dataset.status, status('serial-P-7').textContent]).toEqual([
+      'scrapped',
+      'Scrapped',
+    ]);
+    expect(status('serial-P-8').textContent).toBe('In work');
+    expect(status('lot-P-LOT').textContent).toBe('ERP retired');
+    expect(status('carton-PO-1001-C01').textContent).toBe('Open');
+    expect(status('order-PO-1001').textContent).toBe('In progress');
+    // No status: the dash with its reason, never an empty cell.
+    for (const id of ['order-PO-1002', 'carton-PO-1002-C01']) {
+      expect([status(id).dataset.status, status(id).textContent]).toEqual([
+        '',
+        '—status not known',
+      ]);
+    }
+    const order = (id: string) => screen.getByTestId(`result-order-${id}`);
+    expect(order('serial-P-7').getAttribute('href')).toBe('/orders/PO-1001');
+    expect(order('carton-PO-1001-C01').getAttribute('href')).toBe('/orders/PO-1001');
+    expect(order('serial-P-8').getAttribute('href')).toBeNull();
+    expect(order('serial-P-8').textContent).toContain('No order (schedule mode)');
+    expect(order('lot-P-LOT').textContent).toContain('used by any number of orders');
+    expect(order('order-PO-1001').textContent).toContain('the result is the order');
+    // A MES before #364: no order sent.
+    expect(order('carton-PO-1002-C01').textContent).toContain('no order known');
+    // Several rows may name one order: no row repeats the order pages' ids.
+    expect(screen.queryByTestId('trace-order-PO-1001')).toBeNull();
+    expect(screen.queryByTestId('order-status')).toBeNull();
+  });
+
   it('takes a query of digits from the URL as text', async () => {
     const server = traceMes(traceState({ search: { '42': [{ kind: 'serial', id: '42-A' }] } }));
     vi.stubGlobal('fetch', server.fetch);

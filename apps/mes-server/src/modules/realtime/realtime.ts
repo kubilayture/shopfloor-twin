@@ -311,7 +311,7 @@ export interface RealtimeOptions {
   readonly loginRate?: { readonly perSecond: number; readonly burst: number };
   /** Logins per (user name, client address) (default `LIMITS`: 1 per second, bursts of 5). */
   readonly userLoginRate?: { readonly perSecond: number; readonly burst: number };
-  /** All logins together, a ceiling for the server only (default `LIMITS`: 100/s, 200). */
+  /** All logins together, a ceiling for the server only (default `LIMITS`: 10/s, bursts of 20). */
   readonly loginCeiling?: { readonly perSecond: number; readonly burst: number };
   /**
    * The clock of every token bucket here, the write and the login buckets, in milliseconds,

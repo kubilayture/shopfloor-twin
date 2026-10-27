@@ -370,9 +370,11 @@
   /*
    * G-22: the heading and `main` that only ever take focus from script after a navigation show no
    * ring. `:focus:not(:focus-visible)` would not do: after a keyboard-triggered navigation the
-   * browser treats the script's `focus()` as focus-visible.
+   * browser treats the script's `focus()` as focus-visible. The same for a detail panel's or
+   * sheet's `h2`, which takes the focus when the detail opens (UX-4a, #324).
    */
   h1[tabindex='-1']:focus-visible,
+  h2[tabindex='-1']:focus-visible,
   main[tabindex='-1']:focus {
     outline: none;
   }

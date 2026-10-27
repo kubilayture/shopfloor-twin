@@ -64,6 +64,19 @@ export interface JudgeOptions {
   readonly seenWithin?: {
     readonly truth: ReadonlyMap<string, readonly Change[]>;
     readonly windowMs: number;
+    /**
+     * Values told apart by more than the page shows (#376): the OEE dashboard shows four decimals,
+     * and a value can repeat within the window as OEE moves down and up, so a fresh value the
+     * polls missed was taken for the stale one of a second before. `key` names a page sample's
+     * bucket (the decimal with the inputs the push carried) and `truth` holds the truth's buckets
+     * per key in time order; a sample counts as seen only when the truth held that bucket within
+     * the window. A sample `key` can't name (no push carried it) is judged by its state against
+     * the outer `truth`, as without this option: never counted fresh just for lacking a bucket.
+     */
+    readonly identify?: {
+      readonly truth: ReadonlyMap<string, readonly Change[]>;
+      readonly key: (machine: string, sample: Change) => string | undefined;
+    };
   };
 }
 
@@ -102,13 +115,15 @@ export function judgeLatency(
     const observed = options.observed?.get(machine);
     const window = options.seenWithin;
     const held = window?.truth.get(machine) ?? [];
+    const buckets = window?.identify?.truth.get(machine) ?? [];
     /** Undefined: no notion of unseen values (every value must be a later truth state). */
-    const seen = (sample: Change): boolean | undefined =>
-      window
+    const seen = (sample: Change): boolean | undefined => {
+      if (!window) return observed === undefined ? undefined : observed.has(sample.state);
+      const key = window.identify?.key(machine, sample);
+      return key === undefined
         ? heldWithin(held, sample.state, sample.at, window.windowMs)
-        : observed === undefined
-          ? undefined
-          : observed.has(sample.state);
+        : heldWithin(buckets, key, sample.at, window.windowMs);
+    };
     changes.forEach((change, i) => {
       const deadline = change.at + limitMs;
       if (deadline > until) {

@@ -24,7 +24,7 @@ import type { EquipmentPath } from '@shopfloor/contracts';
 import { loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
 import type { Kysely } from 'kysely';
 import type { StartedTestContainer } from 'testcontainers';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Database } from './db/database.ts';
 import { buildMesHttp } from './http.ts';
 import {
@@ -582,16 +582,28 @@ describe('genealogy: lots, links, incidents and cartons (#199)', () => {
     ]).toEqual(['closed', 1, [1]]);
     expect(carton?.carton.closedAt).toEqual((await h.orders.order('X-1'))?.completedAt);
     expect(await h.genealogy.incidents()).toEqual([]);
+    // Each result with its status and order (#364).
     expect(await h.genealogy.search('VB-100-0000')).toEqual([
-      { kind: 'serial', id: 'VB-100-000001' },
+      { kind: 'serial', id: 'VB-100-000001', status: 'packed', order: 'X-1' },
     ]);
+    // The orders' statuses in one read, never one order at a time (#364 review).
+    const statuses = vi.spyOn(h.orders, 'statuses');
+    const single = vi.spyOn(h.orders, 'order');
     expect(await h.genealogy.search('X-1')).toEqual([
-      { kind: 'carton', id: 'X-1-C01' },
-      { kind: 'order', id: 'X-1' },
+      { kind: 'carton', id: 'X-1-C01', status: 'closed', order: 'X-1' },
+      { kind: 'order', id: 'X-1', status: 'completed', order: null },
     ]);
+    expect([statuses.mock.calls, single.mock.calls.length]).toEqual([[[['X-1']]], 0]);
+    statuses.mockRestore();
+    single.mockRestore();
+    // An order the orders module doesn't hold is absent from the batch, its status null.
+    expect(await h.orders.statuses(['X-1', 'NOPE', 'X-1'])).toEqual(
+      new Map([['X-1', 'completed']]),
+    );
+    expect(await h.orders.statuses([])).toEqual(new Map());
     expect(await h.genealogy.search('K')).toEqual([
-      { kind: 'lot', id: 'K1' },
-      { kind: 'lot', id: 'K2' },
+      { kind: 'lot', id: 'K1', status: 'active', order: null },
+      { kind: 'lot', id: 'K2', status: 'active', order: null },
     ]);
     expect(await h.genealogy.search('%')).toEqual([]);
     // A restarted module catches up from the tables and gives the same answer.
@@ -648,7 +660,11 @@ describe('genealogy: lots, links, incidents and cartons (#199)', () => {
     const run1 = h.line;
     const run2 = new Line(h.feed, E2);
     await send(h, [
-      run1.cycle('cnc-01', 1, { lots: [{ material: 'BLANK-100', lot: 'B1' }] }),
+      run1.cycle('cnc-01', 1, {
+        lots: [{ material: 'BLANK-100', lot: 'B1' }],
+        result: 'scrap',
+        reason: 'DIMENSIONAL',
+      }),
       run1.cycle('cnc-01', 2, { lots: [{ material: 'BLANK-100', lot: 'B1' }] }),
     ]);
     await settle(h);
@@ -661,9 +677,16 @@ describe('genealogy: lots, links, incidents and cartons (#199)', () => {
     expect(reused.map((i) => [i.type, i.epoch, i.closedAt])).toEqual([['serial-reused', E2, null]]);
     expect(reused[0]?.message).toContain(`${String(E1)} and ${String(E2)}`);
     const trace = await h.genealogy.serial('VB-100-000001');
-    expect(trace?.units.map((u) => [u.epoch, u.records[0]?.lots?.map((x) => x.lot)])).toEqual([
-      [E2, ['B2']],
-      [E1, ['B1']],
+    expect(
+      trace?.units.map((u) => [u.epoch, u.status, u.records[0]?.lots?.map((x) => x.lot)]),
+    ).toEqual([
+      [E2, 'wip', ['B2']],
+      [E1, 'scrapped', ['B1']],
+    ]);
+    // The search names a serial once, with its newest unit's status and order (#364): the run in
+    // work, not the scrapped unit of the earlier run.
+    expect(await h.genealogy.search('VB-100-000001')).toEqual([
+      { kind: 'serial', id: 'VB-100-000001', status: 'wip', order: null },
     ]);
     // A lot is not tied to a run: its forward trace spans epochs.
     expect((await h.genealogy.lot('B1'))?.units.map((u) => [u.epoch, u.partId])).toEqual([
@@ -788,9 +811,20 @@ describe('the trace API (#199)', () => {
       carton.lots.map((x) => x.lot),
     ]).toEqual(['closed', ['VB-100-000001'], ['B1', 'K1', 'P1']]);
     expect(traceSearchSchema.parse((await get('/api/v1/trace/search?q=B')).body).results).toEqual([
-      { kind: 'lot', id: 'B1' },
-      { kind: 'lot', id: 'B2' },
+      { kind: 'lot', id: 'B1', status: 'active', order: null },
+      { kind: 'lot', id: 'B2', status: 'active', order: null },
     ]);
+    // Status and order per result (#364), in the API's own words.
+    expect(traceSearchSchema.parse((await get('/api/v1/trace/search?q=X-1')).body)).toEqual({
+      q: 'X-1',
+      results: [
+        { kind: 'carton', id: 'X-1-C01', status: 'closed', order: 'X-1' },
+        { kind: 'order', id: 'X-1', status: 'completed', order: null },
+      ],
+    });
+    expect(
+      traceSearchSchema.parse((await get('/api/v1/trace/search?q=VB-100-000001')).body).results,
+    ).toEqual([{ kind: 'serial', id: 'VB-100-000001', status: 'packed', order: 'X-1' }]);
     expect(
       genealogyIncidentListSchema.parse((await get('/api/v1/genealogy-incidents?open=true')).body),
     ).toEqual({ incidents: [] });

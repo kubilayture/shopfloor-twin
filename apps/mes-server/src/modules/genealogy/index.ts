@@ -52,6 +52,7 @@ export type {
   MaterialLot,
   ScopeSubject,
   SearchKind,
+  SearchResult,
   SerialTrace,
   TraceUnitRecord,
   UnitRef,

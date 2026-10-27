@@ -753,12 +753,12 @@ export class Shifts {
 
   /**
    * Locks the user's open crew row at the work center held by the session `FOR SHARE` inside the
-   * caller's transaction (a terminal write, #177 review): false when there is none.
+   * caller's transaction (a terminal write, #177 review): its id, undefined when there is none.
    */
   lockCrew(
     trx: Transaction<Database>,
     who: { readonly userId: number; readonly workCenter: string; readonly sessionId: string },
-  ): Promise<boolean> {
+  ): Promise<number | undefined> {
     return lockCrew(trx, who);
   }
 

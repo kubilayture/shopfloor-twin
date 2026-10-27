@@ -110,7 +110,7 @@ ISA-101 restraint: grey for the states a plant spends its normal time in, colour
 
 **Stale** is not a machine state but a qualifier: the shown state may be out of date. The state badge keeps its own look and word; beside it a `warn` soft tag (soft fill, solid border, the `StaleTag`) shows the **full reason as visible text**, exactly today's `STALE_TEXT` ("Stale: live connection lost", "Stale: from an earlier run"), with its test id `stale-<equipment id>` (`overview.test.tsx` lines 102 and 113 assert that text). The reason is never only in a tooltip (4.12: a tooltip is never the only place a fact lives, and touch has no hover). The tag's solid `warn` border keeps it apart from the dashed neutral borders of Setup and No data, so a stale Running never reads as a fresh one.
 
-The light solid fills (Starved, Blocked, and the medium alarm priority) carry a 1 px border in their tone's border colour (5.02 and 5.18:1 on white), so their edge shows on white and on the canvas, where the fills alone are under 1.6:1. Glyphs are inline SVG icons from `src/components/ui/icons.tsx`, `aria-hidden`, 12 px in a badge. A machine card in an abnormal state also gets a 4 px left border in the state's border colour, so the overview shows the problem from across the room (G-13, O-01).
+The light solid fills (Starved, Blocked, and the medium alarm priority) carry a 1 px border in their tone's border colour (5.02 and 5.18:1 on white), so their edge shows on white and on the canvas, where the fills alone are under 1.6:1. Glyphs are inline SVG icons from `src/components/ui/icons.tsx`, `aria-hidden`, 12 px in a badge. A machine card in an abnormal state also gets a 4 px left border in the state's own border colour (`stateStyle(state).bar`, in both themes), so the overview shows the problem from across the room (G-13, O-01).
 
 ### 2.5 Alarm priority
 
@@ -120,7 +120,7 @@ The light solid fills (Starved, Blocked, and the medium alarm priority) carry a 
 | Medium   | solid `#fbbf24`, text `#451a03`, border `#b45309` | ▲     | 8.97     |
 | Low      | white, border `#2563eb`, text `#1e40af`           | ●     | 8.72     |
 
-The glyphs are today's (`PriorityBadge`). An unacknowledged alarm's row has a 4 px left bar in its priority's border colour and bold text; acknowledged rows are plain (A-03).
+The glyphs are today's (`PriorityBadge`). An unacknowledged alarm's row has a 3 px left bar in its priority's border colour (the `DataTable` tone bar: `alarm`, `warn`, `info` for high, medium, low) and bold text, also while its detail is open; acknowledged rows are plain (A-03).
 
 ### 2.6 Finality and other statuses
 
@@ -316,7 +316,7 @@ One-line description, max 90 characters.            (optional)
 
 - **Sections:** `Section` = `h2` (`text-lg`) + optional description + optional actions + content; 32 px apart. Nested sections take `level={3}` (`h3`, `text-base`, 24 px apart) or `level={4}` (`h4`, `text-sm`, 16 px). A section with a finality has its badge beside the title.
 - **Cards** for groups of facts and charts; **tables** (in a `DataTable`, which brings its own card frame) for lists. A page never mixes a bare table with carded ones (G-07, M-03).
-- **List and detail** (downtime coding, alarms): at `wide` (≥ 1440 px) the detail is a sticky side panel of 400 px (`top: 64px`, max height the viewport, scrolls itself), rendered only while an item is selected, which leaves the table about 740 px; with nothing selected the table takes the full width (G-26). Below `wide`, including 1280 (the Playwright and demo width, where a panel would leave the table about 520 px), the detail opens as a full-height side sheet (a `Dialog` with `variant="sheet"`, 440 px, full width below `md`) over the list. Decision: the sheet below 1440, not a narrower panel with an icon-rail nav, because an icon rail would hide the nav's words at the width the demo is recorded at. The URL parameter (`?record=`, `?alarm=`) and the panel's test ids (`coding-panel`, `alarm-panel`) are unchanged.
+- **List and detail** (downtime coding, alarms): at `wide` (≥ 1440 px) the detail is a sticky side panel of 400 px (`top: 64px`, max height the viewport, scrolls itself), rendered only while an item is selected, which leaves the table about 740 px; with nothing selected the table takes the full width (G-26). Below `wide`, including 1280 (the Playwright and demo width, where a panel would leave the table about 520 px), the detail opens as a full-height side sheet (a `Dialog` with `variant="sheet"`, 440 px, full width below `md`) over the list. Decision: the sheet below 1440, not a narrower panel with an icon-rail nav, because an icon rail would hide the nav's words at the width the demo is recorded at. The URL parameter (`?record=`, `?alarm=`) and the panel's test ids (`coding-panel`, `alarm-panel`) are unchanged. Both are one component, `DetailPanel` (`components/ui/detail-panel.tsx`, UX-4a): named by its `h2`, which takes the focus when it opens (the sheet's `Dialog` with `focusTitle`, so a phone's keyboard does not open on the first field), closed by Escape or its close button with the focus back on the opener (else the list's heading), and carrying the same `data-*` and test ids at every width.
 - **Long detail pages** (order, shift report, serial, lot, SPC chart): an in-page section index (`SectionNav`) under the header, sticky at `xl` as a row of anchor links; each section keeps its id and test id (Q-01, R-01).
 - **Key facts** (order, serial, carton, hold headers): a `DescriptionList` in a fixed number of columns per breakpoint (1 / 2 / 4) that flows by column, so the reading order never changes with the width; fields with no value are left out unless their absence is the information (Q-02).
 
@@ -395,7 +395,7 @@ Shape: `radius-sm`, `text-xs` 600 (`md`: 13 px), 2 px × 6 px padding, a 1 px bo
 ```ts
 interface CardProps {
   title?: React.ReactNode; // h2 or h3 by `headingLevel`
-  headingLevel?: 2 | 3;
+  headingLevel?: 2 | 3 | 4; // 4: an item card under a level-3 section (a machine card), text-base
   description?: string;
   actions?: React.ReactNode; // top-right
   status?: React.ReactNode; // a badge beside the title (finality)
@@ -478,7 +478,7 @@ interface DataTableProps<Row> {
 ```
 
 - Header row: `surface-sunken`, `text-xs` 600 uppercase-free (sentence case), `ink-secondary`, a 1 px `line` bottom border; `th scope="col"`; right-aligned headers over right-aligned columns.
-- Rows: 1 px `line-subtle` dividers, no zebra (the dividers carry the rows; zebra fights the tone bars), hover `neutral-50`, the active row `accent-subtle` with a 3 px `accent` left bar (D-03).
+- Rows: 1 px `line-subtle` dividers, no zebra (the dividers carry the rows; zebra fights the tone bars), hover `neutral-50`, the active row `accent-subtle` with a 3 px `accent` left bar, or its tone bar when it has one (an open unacknowledged alarm stays marked; D-03).
 - Numbers right-aligned in tabular figures. Units: durations keep their unit in every cell ("30.0 min", as the demo walkthrough asserts on the Pareto table, and because durations mix scales); a column of measured values or counts with one unit puts it in the header ("Leak rate (Pa/min)") and the cells hold numbers only.
 - **Sticky header** (G-14): `position: sticky` works only when no ancestor between the header and the scrolling viewport clips overflow. So the frame has two modes, chosen by measuring (a `ResizeObserver` on the table against its frame):
   - the table fits its frame: the frame uses `overflow: clip` (not `auto` or `hidden`: clip makes no scroll box, and it keeps the header's fill inside the rounded corners), the header sticks to the page under the top bar (`top: 48px`);
@@ -603,7 +603,8 @@ interface EmptyStateProps {
 interface SkeletonProps {
   shape: 'text' | 'stat' | 'table' | 'chart' | 'card';
   rows?: number;
-  label: string; /* "Loading OEE" */
+  label?: string; /* "Loading OEE"; absent: a decorative block of a loading state another skeleton names */
+  count?: number; /* the shape repeated, laid out by gridClassName (a row of cards) */
 }
 interface ErrorStateProps {
   what: string;
@@ -864,3 +865,36 @@ The bar for every issue. The harness of UX-1g reports it with axe on every route
 4. Every state of the screen designed: loading (skeleton), empty, error, not found where an id is in the URL, data, read-only role.
 5. Checked at 1440, 1280, 1024, 768 and 390, keyboard only once, and with the visual and accessibility harness (UX-1g, report-only until UX-F1) on the touched routes.
 6. Structural selectors and asserted texts survive too, not only test ids: element types and id prefixes a spec counts (`article[data-testid^="machine-"]`), element ids (`#line-title`), cell positions (`td.nth(1)`), child elements (`plant-clock`'s `<time>`), literal texts a spec asserts, and test ids that must stay **absent** (`operator-name`, `coded-by`, `note-author`). Each issue in [`ux-plan.md`](ux-plan.md) lists the ones it touches.
+
+## 10. Screen migration pattern
+
+How a screen moves onto the system, as UX-2 (#322) did for the overview and the machine detail (`screens/overview.tsx`, `screens/machine-detail.tsx`). Every later screen issue (UX-3 … UX-11) follows it; where a screen needs something else, its pull request says why.
+
+**Page structure.**
+
+1. `PageHeader` first, always (3.3): `title` is the thing's name ("Horizontal machining centre 1"), never its code; `back` names the parent ("Plant overview"); `status` holds the badges that qualify the whole page (the state badge with its Stale tag); `description` one line; `meta` the key facts as an inline `dl` of "label value" pairs (names before codes, the code last in `Code`); `filters` the view switches (`SegmentedLinks` for one that changes the URL) and the result summary. A dashboard passes `size="dashboard"`; a page whose `h1` labels a wrapping `section` passes `id`.
+2. Then `Section`s: `h2` per part of the page, `level={3}` inside one. A section's `id` is its heading's id, so an id a spec reads (`#line-title`, `#machines-title` on the OEE dashboard) is passed as `id` and survives. The section's `description` says what the part shows or its scope ("Last 8 h: Mon 12 Oct, 17:26 – Tue 13 Oct, 01:26").
+3. Inside a section: a `Card` for a group of facts, a chart or an empty state, a `DataTable` for a list (it brings its own frame), never a bare table beside carded content (M-03). A self-contained item (a machine) is `Card as="article"` with the heading level that continues the outline (`headingLevel={4}` under an `h3`).
+4. A summary of the page's items (the overview's "Machines by state") goes first, as its own section, abnormal first; its test ids never share a prefix a spec counts (`overview-summary`, `summary-state-<state>`, not `machine-…`).
+5. **Colour only for abnormal** (section 1, ISA-101). A qualifier (a value's age, Provisional, "(open)", a count) is always neutral: secondary text or a `neutral` badge, never `warn`. A latest telemetry value says how long it has been unchanged ("unchanged for 43 min"): telemetry is sent on change, so a steady signal goes quiet on a machine that runs normally too, and its age is no sign of trouble. Whether the shown values are out of date is said by the Stale tag (the live connection) and by an empty trend's "the last sample was at …", not by the age. A card's or row's bar only when the item is abnormal: `stateStyle(state).bar` (the state's own border colour, in both themes) or the domain's equivalent (`rowTone` for an unacknowledged alarm).
+
+**Every state.**
+
+| State                        | Pattern                                                                                                                                                                                                                                                                                                                              |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Loading                      | `Skeleton` in the page's own shape (the overview: the summary's tiles, then a row of three cards; `count` repeats a shape), one `role="status"` with today's loading text ("Loading equipment…"), the other blocks decorative (no `label`); on a detail page the back link, no `h1` yet (the heading takes the focus when it mounts) |
+| Error (the page's main read) | `QueryError` (retry only when it can help); on a detail page under a `PageHeader` that names what was asked ("Machine <code>cnc-01</code>"), so the page still has its `h1`                                                                                                                                                          |
+| Partial error                | One section's read fails: its `QueryError` inside that `Section`, under its heading; the header and every other section stay as they are (the machine detail's intervals, metrics and trends each fail on their own)                                                                                                                 |
+| Not found (id in URL)        | `NotFound` for a 404 (`kind`, `id`, `back`): heading, "No machine cnc-01", the way back; no alert                                                                                                                                                                                                                                    |
+| Empty                        | `EmptyState` with a title and one sentence inside a `Card` (the overview's "No machines yet", the timeline's "No state intervals in this range"), or as a `DataTable`'s `empty`; never a lone "none"; an empty chart is an empty state at the chart's height that says when the last value was                                       |
+| Stale (live connection lost) | Each item keeps its own state badge and gets the `StaleTag` beside it with the full reason as visible text ("Stale: live connection lost", "Stale: from an earlier run"); an aggregate built from them (a summary, KPIs) carries the same tag beside its heading; no other colour changes                                            |
+| Data                         | the content; values through the formatters (`Duration`, `PlantTime` with the plant clock, `Missing`), codes through `codeWords` / `causeWords` / `metricName` with the `Code` beside them (`CauseText` leaves the code out where it adds nothing: "Break")                                                                           |
+| Read-only role               | the same page; actions the role cannot take are absent or a one-line `Callout`                                                                                                                                                                                                                                                       |
+
+**Responsive.** Card grids are `grid-cols-1 md:grid-cols-2 lg:grid-cols-3`; facts are label-above-value pairs or wrapping inline pairs, never a fixed label column (O-05); identifiers never break inside (`whitespace-nowrap` on a `Code` in a narrow cell); `DataTable` columns that can go get `priority` 2 or 3; an axis gets a smaller tick budget below `sm` (the timeline renders a 4-tick axis there, and no two dates closer than a fifth of its width). Each screen is looked at in 1440, 1280, 1024, 768 and 390 with no horizontal page scroll.
+
+**Test contracts.** Before changing a screen, grep `e2e/browser` and the screen's unit tests for its test ids, `data-*`, roles, names, ids, element types and asserted texts (the issue lists them; grep again). Keep each on the same element type (a machine card stays an `article`); a new test id never starts with a prefix a spec counts. When the design system changes a role or a name on purpose (the range switch went from `navigation` to `group`; an unknown machine is a `NotFound`, not an alert), the unit test changes in the same pull request and the description lists it. The screen joins `FILES` in `components/ui/classes.test.ts`, so every class it draws must be one Tailwind generates from the tokens. A primitive that lacks something the screen needs is extended in the primitive, with its own unit test (UX-2: `Card` `headingLevel={4}`, `DataTable` `rowHeader`, `TrendChart` `empty`, `Skeleton` `count` and decorative blocks), never worked around in the screen.
+
+**Screenshots.** Before at 1440 and 390 (and 1280 for list-and-detail screens); after at 1440, 1280, 1024, 768 and 390 (section 9, item 5); plus one after screenshot per state the screen has (loading, empty, error, partial error, not found, stale, an abnormal item, a read-only role where it differs). Dark-theme screenshots start with UX-12, which ships the theme switch; UX-2 … UX-11 are exempt until it exists. All on a disposable Compose stack with a generated env file and its own project name and image tag (the "before" built from `main`, the "after" by rebuilding only the web image), never on the owner's `shopfloor-demo`. A state the live plant does not reach on demand is produced on that stack and the pull request says how (the console's injections, stopping the MES for a lost connection, or a response rewritten in the browser with Playwright's `page.route`). Saved to the audit folder under the issue number as `<before|after>-<screen>[-<state>]-<width>.png`; the stack, its volumes, images and generated secrets removed afterwards.
+
+**Harness.** The pull request runs the reconciliation with `RECONCILE_A11Y=1 RECONCILE_PASSES=quality A11Y_ROUTES=<its routes> A11Y_RESULTS=<a folder outside e2e/results>` (or the gate with `RECONCILE_A11Y=1` and the same filter) and attaches `pnpm a11y:diff` of the "before" report (the baseline `ux-audit-shopfloor/321/report.json`, or a run on `main`) against its own, and the after `summary.md` (runbook, "Visual and accessibility harness"): no new serious or critical finding.

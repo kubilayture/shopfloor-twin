@@ -1857,6 +1857,7 @@ Operator activity on an order operation: intervals of work (from a start or resu
 | `to_at` | `timestamp with time zone` | null |  |
 | `to_plant_at` | `timestamp with time zone` | null |  |
 | `end_reason` | `text` | null |  |
+| `crew_id` | `bigint` | null |  |
 
 | Kind | Name | Definition |
 | --- | --- | --- |

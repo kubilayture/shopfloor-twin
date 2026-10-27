@@ -354,7 +354,8 @@ describe('alarm list', () => {
     expect(message.textContent).toBe('Acknowledged 1 (1 already acknowledged).');
     const post = server.calls.find((call) => call.method === 'POST');
     expect(post?.path).toBe('/api/v1/alarms/ack');
-    expect(post?.body).toEqual({ ids: [c.id, a.id] });
+    // In the rows' order: the active one before the cleared one of the same priority (#371).
+    expect(post?.body).toEqual({ ids: [a.id, c.id] });
     // The selection is cleared, and select all picks every alarm that can be acknowledged.
     expect(screen.getByTestId<HTMLInputElement>(`select-${a.id}`).checked).toBe(false);
     fireEvent.click(screen.getByTestId('select-all'));
@@ -1299,7 +1300,9 @@ describe('the alarm list order and salience (#371, ISA-18.2)', () => {
     const app = await renderApp(`/alarms?alarm=${encodeURIComponent(medium.id)}`);
     await screen.findByTestId(`alarm-row-${low.id}`);
     expect(rowIds()).toEqual([high.id, medium.id, low.id]);
-    expect(caption()).toBe('Active alarms, highest priority first, then newest raise');
+    expect(caption()).toBe(
+      'Active alarms, highest priority first, active before cleared, then newest raise',
+    );
     const group = screen.getByRole('group', { name: 'Sort by' });
     expect(group.dataset.testid).toBe('alarm-sort');
     const byPriority = within(group).getByRole('link', { name: 'Priority' });
@@ -1341,6 +1344,57 @@ describe('the alarm list order and salience (#371, ISA-18.2)', () => {
       expect(screen.getByTestId('alarm-list').dataset.view).toBe('history');
     });
     expect(app.history.location.search).toContain('sort=raised');
+  });
+
+  it('lists the history by raise time unless priority is chosen', async () => {
+    const closed = (seq: number, priority: 'high' | 'low') =>
+      occurrence(seq, {
+        priority,
+        state: 'closed',
+        endedAt: '2026-10-15T05:30:00.000Z',
+        endReason: 'cleared',
+        active: false,
+        acknowledged: ACK,
+      });
+    const oldHigh = closed(1, 'high');
+    const newLow = closed(2, 'low');
+    vi.stubGlobal('fetch', mes({ ...empty(), history: [oldHigh, newLow] }).fetch);
+    const app = await renderApp('/alarms?view=history');
+    await screen.findByTestId(`alarm-row-${newLow.id}`);
+    expect(rowIds()).toEqual([newLow.id, oldHigh.id]);
+    expect(caption()).toBe('History alarms, newest raise first, the last 24 hours');
+    const group = screen.getByRole('group', { name: 'Sort by' });
+    const byRaise = within(group).getByRole('link', { name: 'Newest raise' });
+    const byPriority = within(group).getByRole('link', { name: 'Priority' });
+    expect(byRaise.getAttribute('aria-current')).toBe('page');
+    expect(byPriority.getAttribute('aria-current')).toBeNull();
+    // History's default leaves `sort` out; priority is the explicit choice here.
+    expect(byRaise.getAttribute('href')).not.toContain('sort=');
+    expect(byPriority.getAttribute('href')).toContain('sort=priority');
+    fireEvent.click(byPriority);
+    await waitFor(() => {
+      expect(rowIds()).toEqual([oldHigh.id, newLow.id]);
+    });
+    expect(app.history.location.search).toContain('sort=priority');
+    expect(
+      within(screen.getByRole('group', { name: 'Sort by' }))
+        .getByRole('link', { name: 'Priority' })
+        .getAttribute('aria-current'),
+    ).toBe('page');
+  });
+
+  it('puts the active alarms of a priority before its cleared ones', async () => {
+    const newerCleared = occurrence(9, {
+      priority: 'high',
+      state: 'unacked-cleared',
+      endedAt: '2026-10-15T05:10:00.000Z',
+      endReason: 'cleared',
+      active: false,
+    });
+    vi.stubGlobal('fetch', mes({ ...empty(), active: [newerCleared, low, high] }).fetch);
+    await renderApp('/alarms');
+    await screen.findByTestId(`alarm-row-${newerCleared.id}`);
+    expect(rowIds()).toEqual([high.id, newerCleared.id, low.id]);
   });
 
   it('opens a shared link in its order', async () => {

@@ -57,6 +57,7 @@ import {
   pointKey,
   shelfFailure,
   shelvePresets,
+  defaultSort,
   sortAlarms,
   stateText,
   type AlarmSort,
@@ -75,7 +76,8 @@ import {
 
 /**
  * The alarm list (#145; UX-4a, #324): the four operator views as `Tabs`, each a `DataTable` with
- * priority, sorted by priority then newest raise or by raise alone (`?sort=`, #371); the
+ * priority, sorted by priority (active before cleared, then newest raise) or by raise alone
+ * (`?sort=`, #371; History by raise unless chosen); the
  * unacknowledged rows marked by a bar in their priority's colour, the active ones also by bold text
  * and a solid state badge (ISA-18.2, A-03, #371), the row actions side by side (A-02), selection
  * and the bulk acknowledgement;
@@ -169,7 +171,10 @@ const CONDITION_VARIANT: Readonly<Record<AlarmOccurrenceDto['state'], BadgeVaria
 
 /** The sort switch's items: the visible label and the caption's words. */
 const SORT_TEXT: Readonly<Record<AlarmSort, { label: string; caption: string }>> = {
-  priority: { label: 'Priority', caption: 'highest priority first, then newest raise' },
+  priority: {
+    label: 'Priority',
+    caption: 'highest priority first, active before cleared, then newest raise',
+  },
   raised: { label: 'Newest raise', caption: 'newest raise first' },
 };
 
@@ -962,7 +967,8 @@ export function AlarmList() {
   const navigate = useNavigate({ from: '/alarms' });
   const queryClient = useQueryClient();
   const view: AlarmView = search.view ?? 'active';
-  const sort: AlarmSort = search.sort ?? 'priority';
+  // Each view has its default (History by raise time); a chosen order is kept across the tabs.
+  const sort: AlarmSort = search.sort ?? defaultSort(view);
   const mayAck = useCan('alarm:ack');
   const wide = useWide();
   // Row actions are 44 px touch targets on the stacked cards (design system 7, 2.5.8).
@@ -1184,15 +1190,22 @@ export function AlarmList() {
                   key: 'priority',
                   label: SORT_TEXT.priority.label,
                   to: '/alarms',
-                  // The default leaves the URL without `sort`, as a link from elsewhere has it.
-                  search: { ...search, sort: undefined },
+                  // The view's default leaves the URL without `sort`, as a link from elsewhere
+                  // has it.
+                  search: {
+                    ...search,
+                    sort: defaultSort(view) === 'priority' ? undefined : 'priority',
+                  },
                   testId: 'alarm-sort-priority',
                 },
                 {
                   key: 'raised',
                   label: SORT_TEXT.raised.label,
                   to: '/alarms',
-                  search: { ...search, sort: 'raised' },
+                  search: {
+                    ...search,
+                    sort: defaultSort(view) === 'raised' ? undefined : 'raised',
+                  },
                   testId: 'alarm-sort-raised',
                 },
               ]}

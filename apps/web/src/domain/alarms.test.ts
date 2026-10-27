@@ -32,6 +32,7 @@ import {
   shelvePresets,
   scopeKey,
   shelfFailure,
+  defaultSort,
   sortAlarms,
   stateText,
   viewOf,
@@ -104,6 +105,30 @@ describe('alarm list order (#371)', () => {
 
   it('sorts by raise time alone, newest first, whatever the priority', () => {
     expect(seqs(sortAlarms(list, 'raised'))).toEqual([4, 3, 2, 1]);
+  });
+
+  it('puts the still-active alarms of a priority before its cleared ones, then by time', () => {
+    const cleared = (seq: number, state: 'unacked-cleared' | 'closed') =>
+      occurrence(seq, {
+        priority: 'high',
+        state,
+        active: false,
+        endedAt: '2026-10-15T06:00:00.000Z',
+      });
+    const newCleared = cleared(9, 'unacked-cleared');
+    const newClosed = cleared(8, 'closed');
+    const acked = occurrence(5, { priority: 'high', state: 'acked-active', acknowledged: ACK });
+    const sorted = sortAlarms([newCleared, newClosed, high, acked, medium], 'priority');
+    expect(seqs(sorted)).toEqual([5, 1, 9, 8, 3]);
+    // By raise time the cleared ones keep their place.
+    expect(seqs(sortAlarms([high, newCleared, acked], 'raised'))).toEqual([9, 5, 1]);
+  });
+
+  it('defaults the history to raise time and the live views to priority', () => {
+    expect(defaultSort('history')).toBe('raised');
+    expect(defaultSort('active')).toBe('priority');
+    expect(defaultSort('acknowledged')).toBe('priority');
+    expect(defaultSort('shelved')).toBe('priority');
   });
 
   it('breaks a tie of priority and raise time by id, and leaves the given list alone', () => {

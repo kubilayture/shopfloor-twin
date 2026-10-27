@@ -32,6 +32,7 @@ import {
   shelvePresets,
   scopeKey,
   shelfFailure,
+  sortAlarms,
   stateText,
   viewOf,
 } from './alarms.ts';
@@ -86,6 +87,31 @@ describe('alarm partition', () => {
   it('lists newest raise first in each view', () => {
     const set = mergeAlarms([[occurrence(1), occurrence(3)], [occurrence(2)]], [], undefined);
     expect(partition(set).active.map((item) => item.seq)).toEqual([3, 2, 1]);
+  });
+});
+
+describe('alarm list order (#371)', () => {
+  const low = occurrence(4, { priority: 'low' });
+  const high = occurrence(1, { priority: 'high' });
+  const medium = occurrence(3);
+  const newerHigh = occurrence(2, { priority: 'high' });
+  const list = [low, high, medium, newerHigh];
+  const seqs = (items: readonly { seq: number }[]) => items.map((item) => item.seq);
+
+  it('sorts by priority, highest first, then newest raise first within one', () => {
+    expect(seqs(sortAlarms(list, 'priority'))).toEqual([2, 1, 3, 4]);
+  });
+
+  it('sorts by raise time alone, newest first, whatever the priority', () => {
+    expect(seqs(sortAlarms(list, 'raised'))).toEqual([4, 3, 2, 1]);
+  });
+
+  it('breaks a tie of priority and raise time by id, and leaves the given list alone', () => {
+    const twin = occurrence(1, { priority: 'high', equipment: 'cnc-02', raisedAt: high.raisedAt });
+    const given = [high, twin];
+    expect(ids(sortAlarms(given, 'priority'))).toEqual([twin.id, high.id]);
+    expect(ids(sortAlarms([twin, high], 'priority'))).toEqual([twin.id, high.id]);
+    expect(given).toEqual([high, twin]);
   });
 });
 

@@ -25,7 +25,7 @@ import {
 import { queryKeys, useAlarmConfig, usePlantClock } from '../api/queries.ts';
 import { PriorityBadge } from '../components/priority-badge.tsx';
 import { QueryError } from '../components/query-error.tsx';
-import { Badge } from '../components/ui/badge.tsx';
+import { Badge, type BadgeVariant } from '../components/ui/badge.tsx';
 import { Button } from '../components/ui/button.tsx';
 import { Callout } from '../components/ui/callout.tsx';
 import { Code } from '../components/ui/code.tsx';
@@ -39,6 +39,7 @@ import { Icon } from '../components/ui/icons.tsx';
 import { Duration, PlantTime, WallTime } from '../components/ui/format.tsx';
 import { PageHeader } from '../components/ui/page-header.tsx';
 import { Section } from '../components/ui/section.tsx';
+import { SegmentedLinks } from '../components/ui/segmented-links.tsx';
 import { TabPanel, Tabs } from '../components/ui/tabs.tsx';
 import type { Tone } from '../components/ui/tokens.ts';
 import {
@@ -56,7 +57,9 @@ import {
   pointKey,
   shelfFailure,
   shelvePresets,
+  sortAlarms,
   stateText,
+  type AlarmSort,
   type AlarmView,
   type Priority,
 } from '../domain/alarms.ts';
@@ -72,8 +75,10 @@ import {
 
 /**
  * The alarm list (#145; UX-4a, #324): the four operator views as `Tabs`, each a `DataTable` with
- * priority, the unacknowledged rows marked by a bar in their priority's colour and bold text
- * (ISA-18.2, A-03), the row actions side by side (A-02), selection and the bulk acknowledgement;
+ * priority, sorted by priority then newest raise or by raise alone (`?sort=`, #371); the
+ * unacknowledged rows marked by a bar in their priority's colour, the active ones also by bold text
+ * and a solid state badge (ISA-18.2, A-03, #371), the row actions side by side (A-02), selection
+ * and the bulk acknowledgement;
  * one card per row below `md` (G-27). The chosen alarm's detail (`?alarm=`) is a sticky side panel
  * from 1440 px and a side sheet below (design system 3.4, G-26, A-05), with its facts, the
  * acknowledgement, the shelf, comments and history on `Field`s; names before codes (A-04, A-06).
@@ -139,9 +144,34 @@ const PRIORITY_TONE: Readonly<Record<Priority, Tone>> = {
   low: 'info',
 };
 
-/** Not acknowledged yet (active or cleared): it must stand out (ISA-18.2, A-03). */
+/** Not acknowledged yet (active or cleared): it keeps its priority bar (ISA-18.2, A-03). */
 const unacknowledged = (occurrence: AlarmOccurrenceDto): boolean =>
   occurrence.state === 'unacked-active' || occurrence.state === 'unacked-cleared';
+
+/**
+ * Active and not acknowledged: the alarm that needs the operator now, so it is the most salient
+ * row, bold beside its bar (#371). A cleared one awaiting its acknowledgement keeps the bar only.
+ */
+const needsAction = (occurrence: AlarmOccurrenceDto): boolean =>
+  occurrence.state === 'unacked-active';
+
+/**
+ * The condition badge's look, in the neutral tone only (ISA-101: the priority badge and the bar
+ * carry the colour): solid for active and unacknowledged, outline for active and acknowledged,
+ * soft for cleared and closed (#371).
+ */
+const CONDITION_VARIANT: Readonly<Record<AlarmOccurrenceDto['state'], BadgeVariant>> = {
+  'unacked-active': 'solid',
+  'acked-active': 'outline',
+  'unacked-cleared': 'soft',
+  closed: 'soft',
+};
+
+/** The sort switch's items: the visible label and the caption's words. */
+const SORT_TEXT: Readonly<Record<AlarmSort, { label: string; caption: string }>> = {
+  priority: { label: 'Priority', caption: 'highest priority first, then newest raise' },
+  raised: { label: 'Newest raise', caption: 'newest raise first' },
+};
 
 const plural = (count: number, word: string): string =>
   `${String(count)} ${word}${count === 1 ? '' : 's'}`;
@@ -164,6 +194,46 @@ function conditionText(occurrence: AlarmOccurrenceDto): string {
     case 'closed':
       return 'Closed';
   }
+}
+
+/**
+ * The State cell: the condition as a neutral badge ("Active", "Cleared", "Closed"), then whether
+ * it is acknowledged, in words. Beside the detail panel only the badge shows and the
+ * acknowledgement is said to a screen reader (the bar and bold text show it). The cell reads
+ * "Active, unacknowledged" as one phrase either way.
+ */
+function AlarmState({
+  occurrence,
+  beside,
+}: {
+  readonly occurrence: AlarmOccurrenceDto;
+  readonly beside: boolean;
+}) {
+  const ack =
+    occurrence.state === 'closed'
+      ? undefined
+      : occurrence.acknowledged === null
+        ? 'unacknowledged'
+        : 'acknowledged';
+  return (
+    <span className="inline-flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+      <Badge
+        tone="neutral"
+        variant={CONDITION_VARIANT[occurrence.state]}
+        data-condition={conditionText(occurrence).toLowerCase()}
+      >
+        {conditionText(occurrence)}
+      </Badge>
+      {ack === undefined ? null : beside ? (
+        <span className="sr-only">, {ack}</span>
+      ) : (
+        <span className={ack === 'acknowledged' ? 'font-normal text-ink-secondary' : undefined}>
+          <span className="sr-only">, </span>
+          {ack}
+        </span>
+      )}
+    </span>
+  );
 }
 
 /** The alarm's name, then its code: "Coolant pressure low", `COOLANT-PRESSURE` below. */
@@ -848,20 +918,8 @@ function alarmColumns(
       header: 'State',
       cell: (occurrence) => (
         <>
-          {beside ? (
-            // Beside the panel the column keeps to the condition, so the alarm's name has room;
-            // the acknowledgement is the row's bar and bold text, and said to a screen reader.
-            <>
-              {conditionText(occurrence)}
-              <span className="sr-only">
-                {occurrence.acknowledged === null && occurrence.state !== 'closed'
-                  ? ', unacknowledged'
-                  : ', acknowledged'}
-              </span>
-            </>
-          ) : (
-            stateText(occurrence)
-          )}
+          {/* Beside the panel the column keeps to the condition, so the alarm's name has room. */}
+          <AlarmState occurrence={occurrence} beside={beside} />
           {occurrence.comments > 0 ? (
             <span className="block text-xs font-normal text-ink-secondary">
               {plural(occurrence.comments, 'comment')}
@@ -904,6 +962,7 @@ export function AlarmList() {
   const navigate = useNavigate({ from: '/alarms' });
   const queryClient = useQueryClient();
   const view: AlarmView = search.view ?? 'active';
+  const sort: AlarmSort = search.sort ?? 'priority';
   const mayAck = useCan('alarm:ack');
   const wide = useWide();
   // Row actions are 44 px touch targets on the stacked cards (design system 7, 2.5.8).
@@ -966,7 +1025,7 @@ export function AlarmList() {
     live,
   );
   const views = partition(set);
-  const shown = views[view];
+  const shown = sortAlarms(views[view], sort);
   const reads = { active, acknowledged, shelved, history };
   const loaded = reads[view];
   const noClock = view === 'history' && historyTo === undefined;
@@ -1110,7 +1169,36 @@ export function AlarmList() {
       <PageHeader
         id={TITLE_ID}
         title="Alarms"
-        description="Every alarm of the plant, newest raise first; acknowledge, shelve and comment."
+        description="Every alarm of the plant; acknowledge, shelve and comment."
+        filters={
+          <>
+            <span aria-hidden="true" className="text-sm font-medium text-ink">
+              Sort by
+            </span>
+            <SegmentedLinks
+              label="Sort by"
+              testId="alarm-sort"
+              current={sort}
+              items={[
+                {
+                  key: 'priority',
+                  label: SORT_TEXT.priority.label,
+                  to: '/alarms',
+                  // The default leaves the URL without `sort`, as a link from elsewhere has it.
+                  search: { ...search, sort: undefined },
+                  testId: 'alarm-sort-priority',
+                },
+                {
+                  key: 'raised',
+                  label: SORT_TEXT.raised.label,
+                  to: '/alarms',
+                  search: { ...search, sort: 'raised' },
+                  testId: 'alarm-sort-raised',
+                },
+              ]}
+            />
+          </>
+        }
       />
       {positions.length > 0 ? (
         <div className="mb-4 flex flex-col gap-2 empty:hidden">
@@ -1216,7 +1304,7 @@ export function AlarmList() {
               />
             ) : (
               <DataTable
-                caption={`${ALARM_VIEW_LABELS[view]} alarms, newest raise first${view === 'history' ? ', the last 24 hours' : ''}`}
+                caption={`${ALARM_VIEW_LABELS[view]} alarms, ${SORT_TEXT[sort].caption}${view === 'history' ? ', the last 24 hours' : ''}`}
                 testId="alarm-table"
                 columns={alarmColumns(machineName, clock?.watermark, panelOpen && wide)}
                 rows={noClock ? [] : shown}
@@ -1232,7 +1320,7 @@ export function AlarmList() {
                 rowTone={(occurrence) =>
                   unacknowledged(occurrence) ? PRIORITY_TONE[occurrence.priority] : undefined
                 }
-                rowEmphasis={unacknowledged}
+                rowEmphasis={needsAction}
                 activeRowKey={search.alarm}
                 {...(bulk
                   ? {

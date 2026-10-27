@@ -120,7 +120,7 @@ The light solid fills (Starved, Blocked, and the medium alarm priority) carry a 
 | Medium   | solid `#fbbf24`, text `#451a03`, border `#b45309` | ▲     | 8.97     |
 | Low      | white, border `#2563eb`, text `#1e40af`           | ●     | 8.72     |
 
-The glyphs are today's (`PriorityBadge`). An unacknowledged alarm's row has a 3 px left bar in its priority's border colour (the `DataTable` tone bar: `alarm`, `warn`, `info` for high, medium, low) and bold text, also while its detail is open; acknowledged rows are plain (A-03).
+The glyphs are today's (`PriorityBadge`). An unacknowledged alarm's row has a 3 px left bar in its priority's border colour (the `DataTable` tone bar: `alarm`, `warn`, `info` for high, medium, low), also while its detail is open; acknowledged rows are plain (A-03). The most salient row is the active unacknowledged alarm (ISA-18.2, #371): bold text beside its bar; a cleared one awaiting its acknowledgement keeps the bar in normal weight. The State column shows the condition as a `neutral` badge, so colour stays with the priority (ISA-101): Active solid while unacknowledged, outline once acknowledged; Cleared and Closed soft; then "unacknowledged" or "acknowledged" in words (secondary text when acknowledged). The list is sorted by priority, highest first, then newest raise (the default), or by raise time alone, from a "Sort by" `SegmentedLinks` in the page header that keeps the choice in the URL (`?sort=raised`).
 
 ### 2.6 Finality and other statuses
 

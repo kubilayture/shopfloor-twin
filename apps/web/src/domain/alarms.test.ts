@@ -1,10 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { ApiError } from '../api/client.ts';
-import { ACK, alarmConfig, kpiBucket, occurrence, point, shelf } from '../test/alarm-fixtures.ts';
+import {
+  ACK,
+  alarmConfig,
+  hourKpi,
+  kpiBucket,
+  occurrence,
+  point,
+  shelf,
+} from '../test/alarm-fixtures.ts';
 import {
   acknowledgeable,
   alarmBucketFlags,
+  alarmShiftHours,
   endReasonText,
   isBehind,
   meanTimeToAck,
@@ -268,5 +277,60 @@ describe('alarm KPIs', () => {
     expect(parseScopeKey('plant')).toEqual({ scope: 'plant', id: 'plant' });
     expect(parseScopeKey('work-center:x')).toBeUndefined();
     expect(parseScopeKey(undefined)).toBeUndefined();
+  });
+});
+
+describe('alarmShiftHours (UX-4b, #325)', () => {
+  const at = (iso: string) => Date.parse(iso);
+  const shift = { from: at('2026-10-15T03:00:00.000Z'), to: at('2026-10-15T11:00:00.000Z') };
+  const keys = (rows: ReturnType<typeof alarmShiftHours>) =>
+    rows.map((row) => `${row.key.slice(11, 16)}${row.bucket ? '' : ' quiet'}`);
+
+  it('lists every hour begun by the plant clock, the MES buckets in their place', () => {
+    const rows = alarmShiftHours(
+      [hourKpi('2026-10-15T04:00:00.000Z'), hourKpi('2026-10-15T06:00:00.000Z')],
+      shift,
+      at('2026-10-15T06:10:00.000Z'),
+    );
+    expect(keys(rows)).toEqual(['03:00 quiet', '04:00', '05:00 quiet', '06:00']);
+    expect(rows[0]).toEqual({
+      key: '2026-10-15T03:00:00.000Z',
+      from: '2026-10-15T03:00:00.000Z',
+      to: '2026-10-15T04:00:00.000Z',
+      bucket: undefined,
+    });
+    // The hour the clock is in has begun, even exactly on its start; the next has not.
+    expect(keys(alarmShiftHours([], shift, at('2026-10-15T05:00:00.000Z')))).toEqual([
+      '03:00 quiet',
+      '04:00 quiet',
+      '05:00 quiet',
+    ]);
+  });
+
+  it('stops at the shift end, keeps a bucket outside the hours and fills nothing without a clock', () => {
+    expect(alarmShiftHours([], shift, at('2026-10-16T00:00:00.000Z'))).toHaveLength(8);
+    expect(keys(alarmShiftHours([], shift, at('2026-10-16T00:00:00.000Z'))).at(-1)).toBe(
+      '10:00 quiet',
+    );
+    // A bucket the MES listed is never dropped, even past the clock's hour.
+    expect(
+      keys(
+        alarmShiftHours(
+          [hourKpi('2026-10-15T09:00:00.000Z')],
+          shift,
+          at('2026-10-15T03:30:00.000Z'),
+        ),
+      ),
+    ).toEqual(['03:00 quiet', '09:00']);
+    expect(keys(alarmShiftHours([hourKpi('2026-10-15T04:00:00.000Z')], shift, undefined))).toEqual([
+      '04:00',
+    ]);
+    // A shift that starts off the hour: the hours are the MES's, aligned on the hour.
+    const half = { from: at('2026-10-15T03:30:00.000Z'), to: at('2026-10-15T05:30:00.000Z') };
+    expect(keys(alarmShiftHours([], half, at('2026-10-15T09:00:00.000Z')))).toEqual([
+      '03:00 quiet',
+      '04:00 quiet',
+      '05:00 quiet',
+    ]);
   });
 });

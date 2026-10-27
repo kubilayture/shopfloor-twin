@@ -382,6 +382,14 @@ export function useLiveAlarmKpi(scope: string): LiveAlarmKpi | undefined {
   return useQuery<LiveAlarmKpi>({ queryKey: liveKeys.alarmKpi(scope), queryFn: skipToken }).data;
 }
 
+/** `useLiveAlarmKpi` for several scopes at once, in the order of `scopes` (UX-4b: one section's cards). */
+export function useLiveAlarmKpis(scopes: readonly string[]): readonly (LiveAlarmKpi | undefined)[] {
+  return useQueries({
+    queries: scopes.map((scope) => ({ queryKey: liveKeys.alarmKpi(scope), queryFn: skipToken })),
+    combine: (results) => results.map((result) => result.data as LiveAlarmKpi | undefined),
+  });
+}
+
 export function useLiveTelemetry(equipment: string): LiveTelemetry | undefined {
   return useQuery<LiveTelemetry>({ queryKey: liveKeys.telemetry(equipment), queryFn: skipToken })
     .data;

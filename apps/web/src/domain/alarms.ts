@@ -369,3 +369,47 @@ export function meanTimeToAck(timeToAck: OperatorBucketDto['timeToAck']): string
   if (timeToAck.count === 0) return NOT_APPLICABLE;
   return minutesText(fraction(BigInt(timeToAck.sumMs), BigInt(timeToAck.count)));
 }
+
+/**
+ * One hour of a shift on the alarm KPI screen (UX-4b, #325): the MES's hour bucket, or none when
+ * the MES did not list the hour. It lists only the hours where something happened and the hour in
+ * progress (ADR-0024); any other hour is the empty bucket, so it is shown as "No alarm activity",
+ * without an invented finality.
+ */
+export interface AlarmHourRow {
+  /** The hour start (ISO 8601 UTC), the MES's hour bucket key. */
+  readonly key: string;
+  readonly from: string;
+  readonly to: string;
+  readonly bucket: AlarmKpiBucketDto | undefined;
+}
+
+/**
+ * Every hour of `range` that has begun by `until` (the plant clock: the hour it is in counts, as
+ * the MES lists the hour in progress), aligned on the hour as the MES's buckets are, each with the
+ * bucket of the same start from `buckets` (REST with the pushed one over it). A bucket outside
+ * those hours is kept in its place: the MES's list is never shortened.
+ */
+export function alarmShiftHours(
+  buckets: readonly AlarmKpiBucketDto[],
+  range: { readonly from: number; readonly to: number },
+  until: number | undefined,
+): AlarmHourRow[] {
+  const byFrom = new Map<number, AlarmKpiBucketDto | undefined>(
+    buckets.map((bucket) => [Date.parse(bucket.from), bucket]),
+  );
+  const end = until === undefined ? range.from : Math.min(range.to, hourStart(until) + HOUR);
+  for (let hour = hourStart(range.from); hour < end; hour += HOUR) {
+    if (!byFrom.has(hour)) byFrom.set(hour, undefined);
+  }
+  return [...byFrom.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([from, bucket]): AlarmHourRow => {
+      const start = new Date(from).toISOString();
+      return bucket
+        ? { key: bucket.key, from: bucket.from, to: bucket.to, bucket }
+        : { key: start, from: start, to: new Date(from + HOUR).toISOString(), bucket: undefined };
+    });
+}
+
+const hourStart = (ms: number): number => Math.floor(ms / HOUR) * HOUR;

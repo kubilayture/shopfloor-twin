@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import type { DataAttributes } from './badge.tsx';
 
 /**
  * Key facts (UX-1c, #315; design system 3.4): a `dl` in a fixed number of columns per breakpoint
@@ -13,6 +14,8 @@ export interface Fact {
   /** A stable key; the term when it is a string. */
   readonly id?: string;
   readonly testId?: string;
+  /** `data-*` on the `dd`, the raw markers a test reads beside the figure (#295). */
+  readonly detailData?: DataAttributes;
 }
 
 const COLUMNS = {
@@ -21,6 +24,8 @@ const COLUMNS = {
   4: 'columns-1 sm:columns-2 xl:columns-4',
   /** Short facts (a page header's): two columns from the narrowest screen, four from `xl`. */
   compact: 'columns-2 xl:columns-4',
+  /** A KPI tile's measures (UX-4b): two columns at every width, as the tile is narrow anyway. */
+  tile: 'columns-2',
 } as const;
 
 export function DescriptionList({
@@ -45,7 +50,9 @@ export function DescriptionList({
           className="mb-3 break-inside-avoid"
         >
           <dt className="text-xs font-medium text-ink-secondary">{fact.term}</dt>
-          <dd className="mt-0.5 text-ink">{fact.detail}</dd>
+          <dd {...fact.detailData} className="mt-0.5 text-ink">
+            {fact.detail}
+          </dd>
         </div>
       ))}
     </dl>

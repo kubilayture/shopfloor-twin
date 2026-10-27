@@ -118,7 +118,7 @@ const measure = (card: HTMLElement, name: string) =>
   card.querySelector<HTMLElement>(`[data-measure="${name}"]`)?.textContent;
 
 describe('alarm KPI page', () => {
-  it('shows each scope of the shift exactly, with its status, and n/a without data', async () => {
+  it('shows each scope of the shift exactly, with its status, and a dash without data', async () => {
     const server = mes({
       shift: {
         plant: [kpiBucket({ final: true, provisional: false, revision: 1 })],
@@ -133,7 +133,11 @@ describe('alarm KPI page', () => {
     });
     expect(plant.dataset.final).toBe('true');
     expect(plant.dataset.revision).toBe('1');
-    expect(measure(plant, 'raises')).toBe('14 (2 / 11 / 1)');
+    // The raises with their priorities under them (K-01: no wrapping "(high / medium / low)").
+    expect(measure(plant, 'raises')).toBe('14');
+    expect(plant.querySelector('[data-measure="raises"]')?.nextElementSibling?.textContent).toBe(
+      '2 high · 11 medium · 1 low',
+    );
     expect(measure(plant, 'average-rate')).toContain('0.2917');
     await waitFor(() => {
       expect(measure(plant, 'average-rate')).toContain('Acceptable (≤ 1 per 10 min)');
@@ -154,18 +158,27 @@ describe('alarm KPI page', () => {
     await waitFor(() => {
       expect(within(cell).getByText('Provisional')).toBeTruthy();
     });
-    // Line A1 has no bucket for the shift: every measure is n/a, never 0.
+    // Line A1 has no bucket for the shift: no measure, never 0; the headline is a dash with its
+    // reason (E-01, UX-4b), the raw marker stays `n/a`.
     const line = screen.getByTestId('kpi-card-position-line-a1');
     await waitFor(() => {
       expect(line.dataset.raises).toBe('n/a');
     });
-    expect(measure(line, 'peak10')).toBe('n/a');
-    expect(screen.getByTestId('kpi-empty-position-line-a1')).toBeTruthy();
+    expect(measure(line, 'peak10')).toBeUndefined();
+    const empty = await screen.findByTestId('kpi-empty-position-line-a1');
+    expect(empty.textContent).toContain('No alarm KPIs for this shift yet');
+    expect(within(line).queryByText(/n\/a/)).toBeNull();
+    // The section says the finality once (E-03): a mix here, so each card says its own.
+    expect(screen.getByTestId('kpi-finality').dataset.finality).toBe('mixed');
+    expect(screen.getByTestId('kpi-finality').textContent).toBe('1 of 2 final');
     // Equipment scopes have no card.
     expect(screen.queryByTestId('kpi-card-equipment-cnc-01')).toBeNull();
-    const read = server.paths.find((path) => path.startsWith('/api/v1/alarms/kpi?scope=plant'));
-    expect(read).toContain('bucket=shift');
+    // The card reads the plant's shift bucket over the shift (the hours are the details' read).
+    const read = server.paths.find(
+      (path) => path.startsWith('/api/v1/alarms/kpi?scope=plant') && path.includes('bucket=shift'),
+    );
     expect(read).toContain(`from=${encodeURIComponent(SHIFT_START)}`);
+    expect(read).toContain(`to=${encodeURIComponent(SHIFT_END)}`);
   });
 
   it('shows the details of the focus: hours, floods, bad actors and operator measures', async () => {
@@ -222,6 +235,101 @@ describe('alarm KPI page', () => {
     expect(screen.queryByTestId('kpi-hourly')).toBeNull();
   });
 
+  /** The hour rows of the bucket table, in order, by test id. */
+  const hourRows = (table: HTMLElement) =>
+    [...table.querySelectorAll<HTMLElement>('tbody tr')].map((row) => row.dataset.testid);
+  const hour = (h: number) => `2026-10-15T0${String(h)}:00:00.000Z`;
+  interface Bars {
+    readonly xAxis: { readonly data: readonly string[] };
+    readonly series: readonly { readonly data: readonly unknown[] }[];
+  }
+
+  it('fills the hours the MES leaves out as no alarm activity, up to the plant clock (K-02)', async () => {
+    // The shift is 03:00–11:00 UTC, the plant clock at 06:10. The MES lists 04:00 (alarms) and
+    // the hour in progress, 06:00 (ADR-0024); 03:00 and 05:00 were quiet.
+    const server = mes({
+      hours: [
+        hourKpi(hour(4), { raises: 2, peak10: 1, final: true }),
+        hourKpi(hour(6), { raises: 1, peak10: 1 }),
+      ],
+    });
+    vi.stubGlobal('fetch', server.fetch);
+    await renderApp('/alarms/kpi?focus=plant');
+    const table = await screen.findByTestId('kpi-buckets');
+    await waitFor(() => {
+      expect(hourRows(table)).toEqual([
+        `kpi-quiet-${hour(3)}`,
+        `kpi-row-${hour(4)}`,
+        `kpi-quiet-${hour(5)}`,
+        `kpi-row-${hour(6)}`,
+      ]);
+    });
+    // A filled hour: "No alarm activity", the empty bucket's zeros, no invented finality.
+    const quiet = screen.getByTestId(`kpi-quiet-${hour(3)}`);
+    expect(quiet.textContent).toContain('06:00–07:00');
+    expect(quiet.textContent).toContain('No alarm activity');
+    expect(quiet.dataset.quiet).toBe('true');
+    expect(quiet.dataset.final).toBeUndefined();
+    expect(quiet.dataset.revision).toBeUndefined();
+    expect(within(quiet).queryByText(/Final|Provisional/)).toBeNull();
+    // The rows differ in finality, so the table has a status column: the dash for a filled hour.
+    expect(quiet.querySelector('[data-missing]')?.getAttribute('title')).toContain('no finality');
+    // The hour in progress is the MES's own bucket, provisional.
+    expect(screen.getByTestId(`kpi-row-${hour(6)}`).dataset.final).toBe('false');
+    // No hour after the plant clock's.
+    expect(screen.queryByTestId(`kpi-quiet-${hour(7)}`)).toBeNull();
+    expect(screen.getByTestId('kpi-quiet-note').textContent).toContain('No alarm activity');
+    // The section's finality counts the MES's buckets only.
+    expect(screen.getByTestId('kpi-buckets-finality').textContent).toBe('1 of 2 final');
+    // The chart covers the shift so far, with a zero bar for each quiet hour.
+    await waitFor(() => {
+      const option = charts.options.at(-1) as Bars | undefined;
+      expect(option?.xAxis.data).toEqual(['06:00', '07:00', '08:00', '09:00']);
+      expect(option?.series[0]?.data).toEqual([0, 2, 0, 1]);
+    });
+  });
+
+  it('fills a past shift to its end and lets a pushed hour replace a filled one', async () => {
+    // The plant clock is past the shift's end (12:30): every hour of the shift, 03:00 to 10:00,
+    // and none after it. The MES's list lacks 10:00 (quiet when read); a push then brings it.
+    const server = mes({ hours: [hourKpi(hour(4), { raises: 2, peak10: 1 })] });
+    vi.stubGlobal('fetch', (input: RequestInfo | URL) =>
+      new URL(requestUrl(input), 'http://localhost').pathname === '/api/v1/plant'
+        ? Promise.resolve(
+            json({
+              ...PLANT,
+              clock: { ...PLANT.clock, watermark: '2026-10-15T12:30:00.000Z' },
+              epochs: [{ ...PLANT.clock, watermark: '2026-10-15T12:30:00.000Z' }],
+            }),
+          )
+        : server.fetch(input),
+    );
+    const app = await renderApp('/alarms/kpi?focus=plant');
+    await app.open();
+    const table = await screen.findByTestId('kpi-buckets');
+    const ten = '2026-10-15T10:00:00.000Z';
+    await waitFor(() => {
+      expect(hourRows(table)).toHaveLength(8);
+    });
+    expect(hourRows(table).at(-1)).toBe(`kpi-quiet-${ten}`);
+    await waitFor(() => {
+      expect(app.factory.last.sent.map((message) => message.topic)).toContain('alarm-kpi:plant');
+    });
+    await app.push({
+      type: 'alarm-kpi',
+      topic: 'alarm-kpi:plant',
+      hour: hourKpi(ten, { raises: 5, peak10: 4 }),
+      shift: kpiBucket(),
+      floods: [],
+    });
+    await waitFor(() => {
+      expect(hourRows(table).at(-1)).toBe(`kpi-row-${ten}`);
+    });
+    expect(hourRows(table)).toHaveLength(8);
+    expect(screen.queryByTestId(`kpi-quiet-${ten}`)).toBeNull();
+    expect(screen.getByTestId(`kpi-row-${ten}`).textContent).toContain('5');
+  });
+
   it('bands the rate and draws the threshold with the configuration the MES serves (#160)', async () => {
     // A 1-minute window: 7/24 raises per window are 70/24 per 10 minutes, over 2; with a
     // manageable benchmark of 3 they are manageable. Threshold 6 instead of 10.
@@ -241,6 +349,8 @@ describe('alarm KPI page', () => {
       expect(measure(plant, 'average-rate')).toContain('Manageable (≤ 3 per 10 min)');
     });
     expect(plant.querySelector('[data-band]')?.getAttribute('data-band')).toBe('manageable');
+    // Colour only for abnormal: manageable is a warning; acceptable stays neutral (UX-4b).
+    expect(within(plant).getByText(/^Manageable/).className).toContain('warn');
     await waitFor(() => {
       expect(charts.options.length).toBeGreaterThan(0);
       expect(thresholdLine(charts.options.at(-1))).toEqual([6]);
@@ -293,7 +403,7 @@ describe('alarm KPI page', () => {
     for (const option of charts.options.slice(renders)) expect(option).toBe(drawn);
   });
 
-  it('shows n/a for a mean time to acknowledge without acknowledgements', async () => {
+  it('shows a dash for a mean time to acknowledge without acknowledgements', async () => {
     const server = mes({
       operator: json({
         scope: 'plant',
@@ -313,8 +423,14 @@ describe('alarm KPI page', () => {
     await waitFor(() => {
       expect(measure(operator, 'acknowledged')).toBe('0');
     });
-    expect(measure(operator, 'mean-time-to-ack')).toBe('n/a');
-    expect(measure(operator, 'max-time-to-ack')).toBe('n/a');
+    // Not applicable (design system 6.3): the dash with its reason, never "n/a".
+    for (const name of ['mean-time-to-ack', 'max-time-to-ack']) {
+      const value = operator.querySelector(`[data-measure="${name}"]`);
+      expect(value?.querySelector('[data-missing]')?.getAttribute('title')).toBe(
+        'No acknowledgement in this shift',
+      );
+      expect(value?.textContent).not.toContain('n/a');
+    }
   });
 
   it('updates the cards live from alarm-kpi pushes and keeps a final REST bucket', async () => {

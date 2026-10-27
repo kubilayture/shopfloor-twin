@@ -2390,7 +2390,7 @@ describe('login throttling over HTTP (#242, S5)', () => {
     }
   });
 
-  it('keeps a login answered within 8 hash times (at least 1 s) while open-loop attacks from 4 and 8 addresses run, never more hashes in flight than slots, every refusal a 429, the event loop never held up for 3 hash times (#264 re-review, N1)', async ({
+  it('keeps a login answered within 8 hash times (at least 1 s) while open-loop attacks from 4 and 8 addresses run, never more hashes in flight than slots, every refusal a 429, the event loop never held up for a hash time (#264 re-review, N1)', async ({
     task,
   }) => {
     const password = await user('h-lea', ['operator']);
@@ -2502,14 +2502,14 @@ describe('login throttling over HTTP (#242, S5)', () => {
         // The hash times above include the wait for their callbacks, so a login path that blocked
         // the event loop would raise the budget with the latency (#365 review, 4). The loop's own
         // delay is bounded apart, in hashes measured on an idle loop (so it follows the machine's
-        // load as the budget does, but not the loop's own delay). What it catches: work on the
-        // loop that, at the attack's rate (20 to 40 logins a second), costs a sizeable part of a
-        // hash per login: a synchronous hash (`scryptSync`, a whole hash each, about 4 to 8 s of
-        // loop time per second: the loop falls behind without bound), or any blocking step that
-        // holds the loop for 3 hash times (about 0.6 s on a quiet machine) at once. What it
-        // doesn't: a short block per login (a few ms) that only adds to the latency budget's
-        // headroom; the budget above still bounds the victim's latency.
-        expect(loopP99Ms, summary).toBeLessThanOrEqual(3 * quietMs);
+        // load as the budget does, but not the loop's own delay): at most one hash time. Measured
+        // (#382, a run of this file at a load of about 3.5): p99 11.4 ms, mean 10.7 ms (the monitor's 10 ms resolution)
+        // against a quiet hash of 150 ms, 13 times below the bound. What it catches: anything that
+        // holds the loop for a whole hash at once, a synchronous hash (`scryptSync`) first of all,
+        // and work on the loop that at the attack's rate (20 to 40 logins a second) keeps it
+        // behind. What it doesn't: a short block per login (a few ms), which only spends the
+        // latency budget's headroom; the budget above still bounds the victim's latency.
+        expect(loopP99Ms, summary).toBeLessThanOrEqual(quietMs);
         expect(inFlight, summary).toBeLessThanOrEqual(LOGIN_HASH_SLOTS.total);
         // Every refusal of the victim is a 429 (a bucket, the ceiling or no hash slot).
         expect(

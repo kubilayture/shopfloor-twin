@@ -14,7 +14,7 @@ interface Call {
   readonly body: unknown;
 }
 
-function fakeMes() {
+function fakeMes(options: { hold?: Promise<void>; refuse?: boolean } = {}) {
   const calls: Call[] = [];
   const at = '2026-10-20T08:00:00.000Z';
   const users = [
@@ -39,6 +39,13 @@ function fakeMes() {
     if (url.pathname === '/api/v1/session') return json(ADMIN);
     if (url.pathname === '/api/v1/plant') return json({ site: null, clock: null, epochs: [] });
     if (url.pathname === '/api/v1/users') return json({ users });
+    if (method !== 'GET' && options.hold) await options.hold;
+    if (method !== 'GET' && options.refuse) {
+      return json(
+        { type: 'about:blank', title: 'Forbidden', status: 403, detail: 'not allowed' },
+        403,
+      );
+    }
     const match = /^\/api\/v1\/users\/([^/]+)(\/password)?$/.exec(url.pathname);
     const user = users.find((u) => u.username === match?.[1]);
     if (match && user) {
@@ -55,8 +62,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function open() {
-  const mes = fakeMes();
+async function open(options: Parameters<typeof fakeMes>[0] = {}) {
+  const mes = fakeMes(options);
   vi.stubGlobal('fetch', mes.fetch);
   await renderApp('/admin/users', { session: ADMIN });
   await screen.findByTestId('user-ana');
@@ -179,4 +186,34 @@ it('marks a user name the MES would refuse on its field, and sends nothing', asy
     screen.getByRole('group', { name: 'Roles' }).getAttribute('aria-describedby'),
   ).toBeTruthy();
   expect(mes.writes()).toEqual([]);
+});
+
+it('keeps the dialog busy until the write settles, and shows a refusal inside it', async () => {
+  let release: () => void = () => undefined;
+  const hold = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await open({ hold, refuse: true });
+  fireEvent.click(screen.getByTestId('toggle-enabled-ana'));
+  const dialog = screen.getByTestId<HTMLDialogElement>('confirm-disable');
+  const confirm = within(dialog).getByRole('button', { name: 'Disable user' });
+  fireEvent.click(confirm);
+  await waitFor(() => {
+    expect(confirm.getAttribute('aria-busy')).toBe('true');
+  });
+  expect(dialog.open).toBe(true);
+  release();
+  const refusal = await within(dialog).findByTestId('confirm-disable-refusal');
+  expect(refusal.getAttribute('role')).toBe('alert');
+  expect(refusal.textContent).toMatch(/Not saved/);
+  expect(dialog.open).toBe(true);
+  expect(confirm.getAttribute('aria-busy')).toBeNull();
+  // One announcement: the line behind the dialog stays quiet while the dialog says it.
+  expect(screen.getByTestId('user-message-ana').getAttribute('role')).toBeNull();
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+  await waitFor(() => {
+    expect(dialog.open).toBe(false);
+  });
+  expect(screen.getByTestId('user-message-ana').getAttribute('role')).toBe('alert');
+  expect(screen.getByTestId('toggle-enabled-ana').textContent).toBe('Disable');
 });

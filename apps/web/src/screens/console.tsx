@@ -108,11 +108,20 @@ interface Outcome {
  * What an action did: an `ok` callout (polite) when the simulator took it, an `alarm` one
  * (announced) with the simulator's own words when it refused. `data-kind` is read by the specs.
  */
-function OutcomeLine({ outcome, testId }: { readonly outcome: Outcome; readonly testId: string }) {
+function OutcomeLine({
+  outcome,
+  testId,
+  quiet = false,
+}: {
+  readonly outcome: Outcome;
+  readonly testId: string;
+  /** Not announced: a confirmation dialog in front of it says the same (its own alert). */
+  readonly quiet?: boolean;
+}) {
   return (
     <Callout
       tone={outcome.kind === 'done' ? 'ok' : 'alarm'}
-      role={outcome.kind === 'done' ? 'status' : 'alert'}
+      {...(quiet ? {} : { role: outcome.kind === 'done' ? 'status' : 'alert' })}
       data-testid={testId}
       data-kind={outcome.kind}
       className="mt-3"
@@ -135,16 +144,17 @@ function useAction<A extends unknown[], R>(
   const [own, setOwn] = useState<Outcome | undefined>(undefined);
   const setOutcome = shared ?? setOwn;
   const outcome = shared ? undefined : own;
+  const failed = (error: unknown): Outcome => ({
+    kind: 'failed',
+    text: error instanceof SimError ? error.message : 'The action failed',
+  });
   const mutation = useMutation({
     mutationFn: (args: A) => run(...args),
     onSuccess: (result, args) => {
       setOutcome({ kind: 'done', text: done(result, ...args) });
     },
     onError: (error) => {
-      setOutcome({
-        kind: 'failed',
-        text: error instanceof SimError ? error.message : 'The action failed',
-      });
+      setOutcome(failed(error));
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: simKeys.all });
@@ -154,6 +164,15 @@ function useAction<A extends unknown[], R>(
     act: (...args: A) => {
       setOutcome(undefined);
       mutation.mutate(args);
+    },
+    /** As `act`, settled: what happened, for a confirmation that waits for the write. */
+    settle: async (...args: A): Promise<Outcome> => {
+      setOutcome(undefined);
+      try {
+        return { kind: 'done', text: done(await mutation.mutateAsync(args), ...args) };
+      } catch (error) {
+        return failed(error);
+      }
     },
     pending: mutation.isPending,
     outcome,
@@ -374,42 +393,84 @@ interface Pending {
   readonly title: string;
   readonly body: string;
   readonly confirmLabel: string;
-  readonly run: () => void;
+  /** The write; the dialog stays busy until it settles. */
+  readonly run: () => Promise<Outcome>;
 }
 
 /** One `ConfirmDialog` for a lever that cannot be taken back (design system 4.9). */
 function useConfirm(testId: string) {
   const [pending, setPending] = useState<Pending | undefined>(undefined);
+  // The simulator's refusal, shown in the dialog: it stays open, so the person reads why and
+  // cancels (or tries again) where they confirmed.
+  const [refusal, setRefusal] = useState<string | undefined>(undefined);
   const dialog = (
     <ConfirmDialog
       open={pending !== undefined}
       title={pending?.title ?? 'Inject'}
-      body={pending?.body ?? ''}
+      body={
+        <>
+          {pending?.body ?? ''}
+          {refusal === undefined ? null : (
+            <Callout tone="alarm" role="alert" className="mt-3" data-testid={`${testId}-refusal`}>
+              {refusal}
+            </Callout>
+          )}
+        </>
+      }
       confirmLabel={pending?.confirmLabel ?? 'Inject'}
       tone="danger"
       testId={testId}
       onCancel={() => {
         setPending(undefined);
+        setRefusal(undefined);
       }}
-      onConfirm={() => {
-        pending?.run();
-        setPending(undefined);
+      onConfirm={async () => {
+        if (pending === undefined) return;
+        setRefusal(undefined);
+        // Busy (and not to be closed) until the write settles (design system 4.9).
+        const outcome = await pending.run();
+        if (outcome.kind === 'done') setPending(undefined);
+        else setRefusal(outcome.text);
       }}
     />
   );
-  return { ask: setPending, dialog };
+  return {
+    ask: (next: Pending) => {
+      setRefusal(undefined);
+      setPending(next);
+    },
+    dialog,
+    /** The dialog shows a refusal: the outcome line behind it stays quiet (one announcement). */
+    refusing: refusal !== undefined,
+  };
 }
 
-/** Whether a time field's box holds text that names no time (an optional field must not drop it). */
-function unreadTime(form: HTMLFormElement, name: string, value: string | null): boolean {
-  const box = form.elements.namedItem(`${name}-time`);
-  return value === null && box instanceof HTMLInputElement && box.value.trim() !== '';
+const boxText = (form: HTMLFormElement, name: string): string => {
+  const box = form.elements.namedItem(name);
+  return box instanceof HTMLInputElement ? box.value.trim() : '';
+};
+
+/**
+ * What is wrong with an optional time field that names no time although something was typed: a
+ * time box that cannot be read, or a date with an empty time box (the input reads an empty time
+ * as no value, so the write would silently go "now"). Undefined when it is fine.
+ */
+function timeProblem(
+  form: HTMLFormElement,
+  name: string,
+  value: string | null,
+): string | undefined {
+  if (value !== null) return undefined;
+  if (boxText(form, `${name}-time`) !== '') return TIME_UNREAD;
+  if (boxText(form, `${name}-date`) !== '') return TIME_MISSING;
+  return undefined;
 }
 
 /** A form's field errors by field; a field without one is `undefined` or absent. */
 type FieldErrors<K extends string> = Partial<Record<K, string | undefined>>;
 
 const TIME_UNREAD = 'Enter a time this box can read, or leave it empty.';
+const TIME_MISSING = 'Enter a time for this date, or clear the date.';
 
 function FailureCard({
   machines,
@@ -436,7 +497,9 @@ function FailureCard({
     const minutes = decimal(repair);
     const found = {
       ...(name === '' ? { code: 'Enter a failure code.' } : {}),
-      ...(unreadTime(event.currentTarget, 'failure-at', at) ? { at: TIME_UNREAD } : {}),
+      ...(timeProblem(event.currentTarget, 'failure-at', at) === undefined
+        ? {}
+        : { at: timeProblem(event.currentTarget, 'failure-at', at) }),
       ...(repair.trim() !== '' && (minutes === undefined || minutes <= 0)
         ? { repair: 'Enter the repair time in minutes, for example 12.' }
         : {}),
@@ -452,9 +515,7 @@ function FailureCard({
       title: `Inject ${name} on ${machineText(machines, chosen)}?`,
       body: `The machine breaks down ${at === null ? 'at the current simulation time' : `at ${timeText(at)}`}${minutes === undefined ? '' : ` and is repaired after ${String(minutes)} min`}. An injected failure cannot be withdrawn.`,
       confirmLabel: 'Inject failure',
-      run: () => {
-        inject.act(chosen, body);
-      },
+      run: () => inject.settle(chosen, body),
     });
   };
   return (
@@ -539,7 +600,9 @@ function FailureCard({
           </Button>
         </div>
       </form>
-      {inject.outcome ? <OutcomeLine outcome={inject.outcome} testId="failure-outcome" /> : null}
+      {inject.outcome ? (
+        <OutcomeLine outcome={inject.outcome} testId="failure-outcome" quiet={confirm.refusing} />
+      ) : null}
       {confirm.dialog}
     </Card>
   );
@@ -564,12 +627,13 @@ function DriftCard({ testers }: { readonly testers: readonly EquipmentDto[] }) {
     const form = event.currentTarget;
     const found = {
       ...(by === undefined ? { shift: 'Enter the shift in Pa/min, for example 0.6.' } : {}),
-      ...(unreadTime(form, 'drift-at', at) ? { at: TIME_UNREAD } : {}),
+      ...(timeProblem(form, 'drift-at', at) === undefined
+        ? {}
+        : { at: timeProblem(form, 'drift-at', at) }),
       ...(until === null
         ? {
-            until: unreadTime(form, 'drift-until', until)
-              ? TIME_UNREAD
-              : 'Enter when the drift ends.',
+            until:
+              boxText(form, 'drift-until-time') === '' ? 'Enter when the drift ends.' : TIME_UNREAD,
           }
         : {}),
     };
@@ -579,9 +643,7 @@ function DriftCard({ testers }: { readonly testers: readonly EquipmentDto[] }) {
       title: `Inject a drift of ${String(by)} Pa/min on ${machineText(testers, machine)}?`,
       body: `The leak tester reads ${String(by)} Pa/min high from ${at === null ? 'the current simulation time' : timeText(at)} until ${timeText(until)}, so good parts can fail the test. An injected drift cannot be withdrawn.`,
       confirmLabel: 'Inject drift',
-      run: () => {
-        drift.act({ shift: by, until, ...(at === null ? {} : { at }) });
-      },
+      run: () => drift.settle({ shift: by, until, ...(at === null ? {} : { at }) }),
     });
   };
   return (
@@ -650,7 +712,9 @@ function DriftCard({ testers }: { readonly testers: readonly EquipmentDto[] }) {
           </Button>
         </div>
       </form>
-      {drift.outcome ? <OutcomeLine outcome={drift.outcome} testId="drift-outcome" /> : null}
+      {drift.outcome ? (
+        <OutcomeLine outcome={drift.outcome} testId="drift-outcome" quiet={confirm.refusing} />
+      ) : null}
       {confirm.dialog}
     </Card>
   );
@@ -809,9 +873,7 @@ function ToolCard({ cncs }: { readonly cncs: readonly EquipmentDto[] }) {
                   title: `Break the tool on ${m.name} (${m.id})?`,
                   body: 'The machine stops with a broken tool at its next cycle and stays down until the tool is changed. A tool breakage cannot be withdrawn.',
                   confirmLabel: 'Break tool',
-                  run: () => {
-                    tool.act(m.id);
-                  },
+                  run: () => tool.settle(m.id),
                 });
               }}
             >
@@ -820,7 +882,9 @@ function ToolCard({ cncs }: { readonly cncs: readonly EquipmentDto[] }) {
           </li>
         ))}
       </ul>
-      {tool.outcome ? <OutcomeLine outcome={tool.outcome} testId="tool-outcome" /> : null}
+      {tool.outcome ? (
+        <OutcomeLine outcome={tool.outcome} testId="tool-outcome" quiet={confirm.refusing} />
+      ) : null}
       {confirm.dialog}
     </Card>
   );
@@ -1085,9 +1149,10 @@ function OperatorsSection() {
                 title: `Mark ${ids.join(', ')} absent in shift ${shift}?`,
                 body: 'They do not come to work for that whole shift, and the stations they would staff stand idle. An absence cannot be withdrawn.',
                 confirmLabel: 'Mark absent',
-                run: () => {
-                  absent.act(shift, ids);
-                  setChosen(new Set());
+                run: async () => {
+                  const outcome = await absent.settle(shift, ids);
+                  if (outcome.kind === 'done') setChosen(new Set());
+                  return outcome;
                 },
               });
             }}
@@ -1161,7 +1226,13 @@ function OperatorsSection() {
               ) : null}
             </div>
           </form>
-          {absent.outcome ? <OutcomeLine outcome={absent.outcome} testId="absent-outcome" /> : null}
+          {absent.outcome ? (
+            <OutcomeLine
+              outcome={absent.outcome}
+              testId="absent-outcome"
+              quiet={confirm.refusing}
+            />
+          ) : null}
           {confirm.dialog}
           <div className="mt-6">
             <Section level={3} title="Planned absences">

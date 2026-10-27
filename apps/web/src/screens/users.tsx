@@ -36,11 +36,20 @@ const usersKey = ['users'] as const;
 type Message = WriteFailure | { readonly kind: 'saved'; readonly text: string };
 
 /** A write's result: an `ok` callout (polite) when saved, an `alarm` one (announced) when not. */
-function MessageLine({ message, testId }: { readonly message: Message; readonly testId: string }) {
+function MessageLine({
+  message,
+  testId,
+  quiet = false,
+}: {
+  readonly message: Message;
+  readonly testId: string;
+  /** Not announced: a confirmation dialog in front of it says the same (its own alert). */
+  readonly quiet?: boolean;
+}) {
   return (
     <Callout
       tone={message.kind === 'saved' ? 'ok' : 'alarm'}
-      role={message.kind === 'saved' ? 'status' : 'alert'}
+      {...(quiet ? {} : { role: message.kind === 'saved' ? 'status' : 'alert' })}
       data-testid={testId}
       data-kind={message.kind}
     >
@@ -294,6 +303,28 @@ function UserTable({
     undefined,
   );
   const [asked, setAsked] = useState<Asked | undefined>(undefined);
+  // The MES's refusal of a confirmed write, shown in its dialog, which stays open.
+  const [refusal, setRefusal] = useState<string | undefined>(undefined);
+  const ask = (next: Asked | undefined) => {
+    setRefusal(undefined);
+    setAsked(next);
+  };
+  /** The dialog stays busy until the write settles; it closes when the write is done. */
+  const confirmWith = async (write: () => Promise<unknown>) => {
+    setRefusal(undefined);
+    try {
+      await write();
+      setAsked(undefined);
+    } catch (error) {
+      setRefusal(userWriteFailure(error).text);
+    }
+  };
+  const refusalLine = (testId: string) =>
+    refusal === undefined ? null : (
+      <Callout tone="alarm" role="alert" className="mt-3" data-testid={`${testId}-refusal`}>
+        {refusal}
+      </Callout>
+    );
   const [handover, setHandover] = useHandover();
   const rolesOf = (user: UserDto): Role[] => drafts[user.username] ?? [...user.roles];
   const changed = (user: UserDto) => !sameRoles(rolesOf(user), user.roles);
@@ -419,7 +450,11 @@ function UserTable({
     <>
       {message ? (
         <div className="mb-3">
-          <MessageLine message={message.message} testId={`user-message-${message.username}`} />
+          <MessageLine
+            message={message.message}
+            testId={`user-message-${message.username}`}
+            quiet={refusal !== undefined}
+          />
         </div>
       ) : null}
       {handover ? (
@@ -453,7 +488,7 @@ function UserTable({
               onClick={() => {
                 setMessage(undefined);
                 // Enabling gives a login back and can be undone: no question.
-                if (user.enabled) setAsked({ kind: 'disable', username: user.username });
+                if (user.enabled) ask({ kind: 'disable', username: user.username });
                 else update.mutate({ username: user.username, body: { enabled: true } });
               }}
             >
@@ -467,7 +502,7 @@ function UserTable({
               disabled={busy(user.username)}
               onClick={() => {
                 setMessage(undefined);
-                setAsked({ kind: 'reset', username: user.username });
+                ask({ kind: 'reset', username: user.username });
               }}
             >
               Reset password
@@ -480,14 +515,20 @@ function UserTable({
         testId="confirm-disable"
         tone="danger"
         title={`Disable user ${asked?.username ?? ''}?`}
-        body={`${asked?.username ?? 'The user'} can no longer log in, and their open sessions end at once. You can enable the user again later.`}
+        body={
+          <>
+            {`${asked?.username ?? 'The user'} can no longer log in, and their open sessions end at once. You can enable the user again later.`}
+            {refusalLine('confirm-disable')}
+          </>
+        }
         confirmLabel="Disable user"
         onCancel={() => {
-          setAsked(undefined);
+          ask(undefined);
         }}
-        onConfirm={() => {
-          if (asked) update.mutate({ username: asked.username, body: { enabled: false } });
-          setAsked(undefined);
+        onConfirm={async () => {
+          if (asked === undefined) return;
+          const { username } = asked;
+          await confirmWith(() => update.mutateAsync({ username, body: { enabled: false } }));
         }}
       />
       <ConfirmDialog
@@ -495,17 +536,21 @@ function UserTable({
         testId="confirm-reset"
         tone="danger"
         title={`Reset the password of ${asked?.username ?? ''}?`}
-        body={`A new temporary password is made and shown here once; the old one stops working and ${asked?.username ?? 'the user'}'s sessions end at once.`}
+        body={
+          <>
+            {`A new temporary password is made and shown here once; the old one stops working and ${asked?.username ?? 'the user'}'s sessions end at once.`}
+            {refusalLine('confirm-reset')}
+          </>
+        }
         confirmLabel="Reset password"
         onCancel={() => {
-          setAsked(undefined);
+          ask(undefined);
         }}
-        onConfirm={() => {
-          if (asked) {
-            setHandover(undefined);
-            reset.mutate({ username: asked.username, password: temporaryPassword() });
-          }
-          setAsked(undefined);
+        onConfirm={async () => {
+          if (asked === undefined) return;
+          const { username } = asked;
+          setHandover(undefined);
+          await confirmWith(() => reset.mutateAsync({ username, password: temporaryPassword() }));
         }}
       />
     </>

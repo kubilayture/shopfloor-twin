@@ -546,3 +546,78 @@ it('emphasises the lot action that matches its state, and every column has a hea
   expect(screen.getByText('No plant event yet')).toBeTruthy();
   expect(screen.queryByTestId('event-list')).toBeNull();
 });
+
+it('keeps a confirmation busy until the write settles; a refusal shows inside the dialog', async () => {
+  const sim = fakeSim();
+  let release: () => void = () => undefined;
+  const hold = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : String(input), 'http://localhost');
+    if (url.pathname === '/sim/api/v1/faults/tool/cnc-01') await hold;
+    return sim.fetch(input, init);
+  });
+  await renderApp('/console', { session: ADMIN });
+
+  // Busy until the simulator answers; then it closes.
+  fireEvent.click(await screen.findByTestId('tool-break-cnc-01'));
+  const tool = screen.getByTestId<HTMLDialogElement>('confirm-tool');
+  const breakTool = within(tool).getByRole('button', { name: 'Break tool' });
+  fireEvent.click(breakTool);
+  await waitFor(() => {
+    expect(breakTool.getAttribute('aria-busy')).toBe('true');
+  });
+  expect(tool.open).toBe(true);
+  release();
+  await waitFor(() => {
+    expect(tool.open).toBe(false);
+  });
+  expect(screen.getByTestId('tool-outcome').dataset.kind).toBe('done');
+
+  // A refusal stays in the dialog, announced there; the line behind it says it quietly.
+  fireEvent.change(screen.getByTestId('failure-machine'), { target: { value: 'cnc-01' } });
+  fireEvent.change(screen.getByTestId('failure-code'), { target: { value: 'NOPE' } });
+  fireEvent.click(screen.getByTestId('failure-inject'));
+  confirm('confirm-failure', 'Inject failure');
+  const dialog = screen.getByTestId<HTMLDialogElement>('confirm-failure');
+  const refusal = await within(dialog).findByTestId('confirm-failure-refusal');
+  expect(refusal.textContent).toBe('cnc-01 has no failure mode NOPE');
+  expect(refusal.getAttribute('role')).toBe('alert');
+  expect(dialog.open).toBe(true);
+  const line = screen.getByTestId('failure-outcome');
+  expect(line.dataset.kind).toBe('failed');
+  expect(line.getAttribute('role')).toBeNull();
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+  await waitFor(() => {
+    expect(dialog.open).toBe(false);
+  });
+  expect(screen.getByTestId('failure-outcome').getAttribute('role')).toBe('alert');
+});
+
+it('flags a date without a time on the optional At and From, instead of sending "now"', async () => {
+  const sim = fakeSim();
+  vi.stubGlobal('fetch', sim.fetch);
+  await renderApp('/console', { session: ADMIN });
+  fireEvent.change(await screen.findByTestId('failure-code'), {
+    target: { value: 'SPINDLE-OVERLOAD' },
+  });
+  fireEvent.change(screen.getByTestId('failure-at-date'), { target: { value: '12/10/2026' } });
+  fireEvent.click(screen.getByTestId('failure-inject'));
+  expect(screen.getByText('Enter a time for this date, or clear the date.')).toBeTruthy();
+  expect(screen.getByTestId<HTMLDialogElement>('confirm-failure').open).toBe(false);
+
+  fireEvent.change(screen.getByTestId('drift-at-date'), { target: { value: '12/10/2026' } });
+  fireEvent.change(screen.getByTestId('drift-until'), {
+    target: { value: '2026-10-12T05:00:00Z' },
+  });
+  fireEvent.click(screen.getByTestId('drift-inject'));
+  expect(screen.getAllByText('Enter a time for this date, or clear the date.')).toHaveLength(2);
+  expect(screen.getByTestId<HTMLDialogElement>('confirm-drift').open).toBe(false);
+
+  // Cleared, the date is no longer a problem: the failure goes to its confirmation.
+  fireEvent.change(screen.getByTestId('failure-at-date'), { target: { value: '' } });
+  fireEvent.click(screen.getByTestId('failure-inject'));
+  expect(screen.getByTestId<HTMLDialogElement>('confirm-failure').open).toBe(true);
+  expect(sim.calls.filter((c) => c.method !== 'GET')).toEqual([]);
+});

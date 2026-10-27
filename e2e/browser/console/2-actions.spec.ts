@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { account, logIn } from '../login.ts';
-import { confirm } from './effects.ts';
+import { confirm, confirmRefused } from './effects.ts';
 
 /**
  * Every console action through `/console` as admin (#237), each one seen where it lands: the
@@ -109,7 +109,7 @@ test('admin drives every console action, each reaching the simulator', async ({ 
   // A refused one is shown as the simulator said it (an unknown code: 404).
   await page.getByTestId('failure-code').fill('NO-SUCH-CODE');
   await page.getByTestId('failure-inject').click();
-  await confirm(page, 'confirm-failure', 'Inject failure');
+  await confirmRefused(page, 'confirm-failure', 'Inject failure');
   await expect(page.getByTestId('failure-outcome')).toHaveAttribute('data-kind', 'failed');
 
   // 4. A leak-test drift from now for 37 simulated minutes (off any calendar boundary).

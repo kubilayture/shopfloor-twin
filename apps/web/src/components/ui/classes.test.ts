@@ -56,6 +56,8 @@ const FILES = [
   'screens/oee-dashboard.tsx',
   'screens/line-oee.tsx',
   'components/oee-ui.tsx',
+  // SPC (UX-9a, #332).
+  'screens/spc.tsx',
   // The alarm list (UX-4a, #324).
   'screens/alarm-list.tsx',
 ];

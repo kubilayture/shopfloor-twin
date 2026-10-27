@@ -36,7 +36,8 @@ import type { Tone } from './tokens.ts';
  *   "Actions" header. When a row the focus was in disappears (acknowledged out of the list), the
  *   focus moves to the same control in the next row, else the previous row, else the heading of
  *   the section around the table; `announceRemoval` says so politely.
- * - "Skip to the details" before a table of row actions with a detail after it (G-33).
+ * - "Skip to the details" before a table of row actions with a detail after it (G-33), or a skip
+ *   link of its own words past a long table to the next section (`skipLabel`).
  * - Empty, loading and error through `EmptyState`, `Skeleton` and `ErrorState`.
  * - `pageSize` pages long lists ("1–50 of 180", Previous, Next).
  * - Below `md`: `scroll` keeps the table (lower-priority columns drop, a right-edge fade and a
@@ -125,6 +126,11 @@ export interface DataTableProps<Row> {
   readonly pageSize?: number;
   /** The id of the detail after the table: a "Skip to the details" link goes before it. */
   readonly skipToDetails?: string | undefined;
+  /**
+   * The skip link's text when what follows the table is not a detail: "Skip past the units" to
+   * the next section of a long page (G-33). "Skip to the details" by default.
+   */
+  readonly skipLabel?: string | undefined;
   /** The polite status after a row with the focus disappeared: "Alarm acknowledged; 2 left". */
   readonly announceRemoval?: (left: number) => string;
   readonly testId: string;
@@ -172,9 +178,11 @@ const FRAME_FIT = 'overflow-clip';
  * The frame when the table is wider (or `bounded`): a bounded scroll box the header sticks in. Its
  * scroll padding keeps a focused row control clear of that header (WCAG 2.4.11): the page's own
  * `scroll-padding-top` does not reach inside the box. 48 px (a header row of two lines) until
- * `useOverflow` sets it to the measured header height.
+ * `useOverflow` sets it to the measured header height. It is the containing block of what is
+ * absolutely positioned in its cells (the `sr-only` reason of a `Missing`), which would otherwise
+ * escape the box and widen the page (UX-8: the serial page scrolled sideways at 768 px).
  */
-const FRAME_SCROLL = 'overflow-auto scroll-pt-12';
+const FRAME_SCROLL = 'relative overflow-auto scroll-pt-12';
 const FRAME_SCROLL_HEIGHT = 'max-h-[min(70vh,720px)]';
 
 /** The header row's cells: sunken, small, secondary ink, a 1 px `line` under them. */
@@ -592,6 +600,7 @@ export function DataTable<Row>({
   narrow = 'scroll',
   pageSize,
   skipToDetails,
+  skipLabel = 'Skip to the details',
   announceRemoval,
   testId,
   count,
@@ -688,7 +697,7 @@ export function DataTable<Row>({
         }}
         className="sr-only focus:not-sr-only focus:mb-2 focus:inline-block focus:rounded-md focus:bg-surface focus:px-3 focus:py-2 focus:text-link focus:underline"
       >
-        Skip to the details
+        {skipLabel}
       </a>
     );
 

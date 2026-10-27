@@ -746,10 +746,25 @@ function AlarmDetail({
 
 // ---- The list ----
 
+/**
+ * The list's columns. `beside`: the detail panel is open beside the list (from 1440 px), which
+ * leaves the table about 720 px, so the machine joins the alarm's cell under its code instead of
+ * a column of its own, and the row actions stay in view without a sideways scroll.
+ */
 function alarmColumns(
   machineName: (id: string) => string,
   clock: string | undefined,
+  beside: boolean,
 ): readonly Column<AlarmOccurrenceDto>[] {
+  const machine: Column<AlarmOccurrenceDto>[] = beside
+    ? []
+    : [
+        {
+          key: 'machine',
+          header: 'Machine',
+          cell: (occurrence) => machineName(occurrence.equipment),
+        },
+      ];
   return [
     {
       key: 'priority',
@@ -759,15 +774,20 @@ function alarmColumns(
     },
     {
       key: 'alarm',
-      header: 'Alarm',
+      header: beside ? 'Alarm and machine' : 'Alarm',
       rowHeader: true,
-      cell: (occurrence) => <AlarmName occurrence={occurrence} />,
+      cell: (occurrence) => (
+        <>
+          <AlarmName occurrence={occurrence} />
+          {beside ? (
+            <span className="block text-xs font-normal text-ink-secondary">
+              {machineName(occurrence.equipment)}
+            </span>
+          ) : null}
+        </>
+      ),
     },
-    {
-      key: 'machine',
-      header: 'Machine',
-      cell: (occurrence) => machineName(occurrence.equipment),
-    },
+    ...machine,
     {
       key: 'raised',
       header: 'Raised',
@@ -1130,7 +1150,7 @@ export function AlarmList() {
               <DataTable
                 caption={`${ALARM_VIEW_LABELS[view]} alarms, newest raise first${view === 'history' ? ', the last 24 hours' : ''}`}
                 testId="alarm-table"
-                columns={alarmColumns(machineName, clock?.watermark)}
+                columns={alarmColumns(machineName, clock?.watermark, panelOpen && wide)}
                 rows={noClock ? [] : shown}
                 rowKey={(occurrence) => occurrence.id}
                 rowTestId={(occurrence) => `alarm-row-${occurrence.id}`}

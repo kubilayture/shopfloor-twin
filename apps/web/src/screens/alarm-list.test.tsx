@@ -1080,6 +1080,7 @@ describe('the alarm list on the design system (UX-4a, #324)', () => {
     // With nothing chosen the list has the width to itself, and there is nothing to skip to.
     expect(screen.queryByTestId('alarm-panel')).toBeNull();
     expect(screen.queryByRole('link', { name: 'Skip to the details' })).toBeNull();
+    expect(screen.getByRole('columnheader', { name: 'Machine' })).toBeTruthy();
     details.focus();
     fireEvent.click(details);
     const panel = await screen.findByTestId('alarm-panel');
@@ -1094,6 +1095,18 @@ describe('the alarm list on the design system (UX-4a, #324)', () => {
       `#${title.id}`,
     );
     expect(screen.getByTestId(`alarm-row-${a.id}`).getAttribute('aria-current')).toBe('true');
+    // Beside the panel the machine joins the alarm's cell, so the actions stay in view.
+    expect(screen.getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
+      '',
+      'Priority',
+      'Alarm and machine',
+      'Raised',
+      'State',
+      'Actions',
+    ]);
+    expect(
+      screen.getByTestId(`alarm-row-${a.id}`).querySelector('[data-cell="c-alarm"]')?.textContent,
+    ).toBe('Coolant pressure lowCOOLANT-PRESSUREMachine cnc-01');
     fireEvent.click(within(panel).getByTestId('close-alarm'));
     await waitFor(() => {
       expect(screen.queryByTestId('alarm-panel')).toBeNull();

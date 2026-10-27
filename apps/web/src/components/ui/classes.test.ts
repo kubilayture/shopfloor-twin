@@ -54,6 +54,8 @@ const FILES = [
   'screens/holds.tsx',
   // The alarm list (UX-4a, #324).
   'screens/alarm-list.tsx',
+  // Downtime coding (UX-5a, #326).
+  'screens/downtime-coding.tsx',
 ];
 
 /** Utility prefixes: a literal with one of these is a class list. */

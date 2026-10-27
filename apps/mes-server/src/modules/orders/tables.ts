@@ -86,6 +86,8 @@ export interface OperationActivityTable {
   to_at: NullableTimestamp;
   to_plant_at: NullableTimestamp;
   end_reason: ActivityEndReason | null;
+  /** The crew row (`shifts.crew_assignment.id`, by value) it was started under (#366). */
+  crew_id: number | null;
 }
 
 export interface DispatchCommandTable {
@@ -344,5 +346,6 @@ export const ORDERS_COLUMNS = {
     'to_at',
     'to_plant_at',
     'end_reason',
+    'crew_id',
   ],
 } as const;

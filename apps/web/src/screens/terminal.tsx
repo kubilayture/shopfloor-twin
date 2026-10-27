@@ -47,7 +47,7 @@ import { usePageTitle } from '../components/ui/use-page-title.ts';
 import { loginFailure } from '../domain/identity.ts';
 import { ORDER_STATUS_TEXT, ORDER_STATUS_TONE } from '../domain/orders.ts';
 import { groupEquipment } from '../domain/plant.ts';
-import { abnormalTone, newest, worstTone } from '../domain/states.ts';
+import { abnormalTone, newest, stateStyle, worstTone } from '../domain/states.ts';
 import {
   PAUSE_REASON_LABELS,
   codableReasons,
@@ -946,7 +946,11 @@ function Machines({ view }: { readonly view: TerminalViewDto }) {
       <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
         {view.machines.map((m) => (
           <li key={m.id} data-testid={`terminal-machine-${m.id}`}>
-            <Card padding="compact" tone={abnormalTone(m.state?.state)} className="h-full">
+            <Card
+              padding="compact"
+              // The state's own 4 px bar when it costs output, as on the overview (2.4, UX-2).
+              className={`h-full ${m.state ? (stateStyle(m.state.state).bar ?? '') : ''}`}
+            >
               <p className="text-lg font-semibold">{m.name}</p>
               <p className="text-sm text-ink-secondary">
                 <Code>{m.id}</Code> · {m.operation}

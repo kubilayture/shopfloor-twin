@@ -515,6 +515,8 @@ try {
         userId: change.crew.userId,
         workCenter: change.crew.workCenter,
         until: change.crew.to ?? new Date(),
+        // The intervals started under this row (#366), whatever the clocks say.
+        crewId: change.crew.id,
       })
       .catch((error: unknown) => {
         terminalLog.error({ err: error }, 'closing the activities of an ended crew row failed');

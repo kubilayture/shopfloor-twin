@@ -23,6 +23,7 @@ import {
   Holds,
   InvalidId,
   LotList,
+  CartonStateBadge,
   OrderLink,
   SerialLink,
   TRACE_BACK,
@@ -43,15 +44,7 @@ function CartonStatus({ carton }: { readonly carton: CartonTraceDto['carton'] })
       data-status={carton.status}
       className="flex flex-wrap items-center gap-2"
     >
-      {carton.status === 'closed' ? (
-        <Badge tone="neutral" icon="check">
-          Closed
-        </Badge>
-      ) : (
-        <Badge tone="neutral" variant="outline" title="Still filling">
-          Open
-        </Badge>
-      )}
+      <CartonStateBadge status={carton.status} />
       {carton.held ? (
         <Badge tone="alarm" icon="ban">
           Held

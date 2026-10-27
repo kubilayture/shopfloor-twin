@@ -55,10 +55,10 @@ import {
   isOverdue,
   mergeCommands,
   newestOrder,
-  orderCodeWords,
   type ActionDraft,
   type OrderLevelAction,
 } from '../domain/orders.ts';
+import { codeWords } from '../domain/plant.ts';
 import { formatPlantTime, formatPlantTimeMinutes, wallTimeText } from '../domain/time.ts';
 import { mergeHolds } from '../domain/quality.ts';
 import {
@@ -259,7 +259,7 @@ function CommandRow({
     { term: 'Not before', detail: <PlantTime at={command.notBefore} /> },
     { term: 'Device run', detail: <span className="tabular-nums">{command.deviceEpoch}</span> },
     { term: 'Settled', detail: command.settled ? 'Yes' : 'No' },
-    { term: 'Job', detail: command.job === null ? null : orderCodeWords(command.job) },
+    { term: 'Job', detail: command.job === null ? null : codeWords(command.job) },
     {
       term: 'Accepted',
       detail:
@@ -599,7 +599,7 @@ function Incidents({
                 className={`rounded-md border border-line bg-surface px-4 py-3 ${open ? CARD_TONE_BAR.alarm : ''}`}
               >
                 <p className="flex flex-wrap items-center gap-2">
-                  <span className="font-semibold">{orderCodeWords(incident.type)}</span>
+                  <span className="font-semibold">{codeWords(incident.type)}</span>
                   <Badge tone={open ? 'alarm' : 'neutral'} variant={open ? 'soft' : 'outline'}>
                     {open ? 'Open' : 'Closed'}
                   </Badge>
@@ -671,7 +671,7 @@ const CONFIRMATION_COLUMNS: readonly Column<ConfirmationDto>[] = [
     key: 'message',
     header: 'Message',
     cell: (row) => (
-      <Badge tone={erpStatusTone(row.messageStatus)}>{orderCodeWords(row.messageStatus)}</Badge>
+      <Badge tone={erpStatusTone(row.messageStatus)}>{codeWords(row.messageStatus)}</Badge>
     ),
   },
 ];
@@ -798,7 +798,7 @@ const ERP_COLUMNS: readonly Column<ErpMessageDto>[] = [
     nowrap: true,
     cell: (message) => (message.direction === 'in' ? 'From the ERP' : 'To the ERP'),
   },
-  { key: 'kind', header: 'Kind', nowrap: true, cell: (message) => orderCodeWords(message.kind) },
+  { key: 'kind', header: 'Kind', nowrap: true, cell: (message) => codeWords(message.kind) },
   {
     key: 'revision',
     header: 'Revision',
@@ -811,7 +811,7 @@ const ERP_COLUMNS: readonly Column<ErpMessageDto>[] = [
     header: 'Status',
     cell: (message) => (
       <div className="flex flex-col items-start gap-0.5">
-        <Badge tone={erpStatusTone(message.status)}>{orderCodeWords(message.status)}</Badge>
+        <Badge tone={erpStatusTone(message.status)}>{codeWords(message.status)}</Badge>
         {message.detail ? (
           <span className="text-xs text-ink-secondary">{message.detail}</span>
         ) : null}

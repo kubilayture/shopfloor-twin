@@ -66,6 +66,18 @@ describe('Card', () => {
     );
   });
 
+  it('takes an h4 at text-base for an item card under a level-3 section', () => {
+    render(
+      <Card title="Leak tester" headingLevel={4} as="article" padding="compact">
+        x
+      </Card>,
+    );
+    const heading = screen.getByRole('heading', { level: 4, name: 'Leak tester' });
+    expect(classesOf(heading)).toEqual(expect.arrayContaining(['text-base', 'font-semibold']));
+    expect(classesOf(heading)).not.toContain('text-lg');
+    expect(screen.getByRole('article', { name: 'Leak tester' })).toBeTruthy();
+  });
+
   it('is a region landmark only when asked to be a section', () => {
     render(
       <Card title="Shift A" as="section" testId="c">

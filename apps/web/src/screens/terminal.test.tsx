@@ -335,6 +335,22 @@ describe('the operator terminal (#177)', () => {
       ],
     });
     await app.push({ type: 'terminal', topic: 'terminal:line-a1', view: pushed });
+    // A machine that costs output carries its state's 4 px bar, as on the overview (2.4).
+    const bar = () => screen.getByTestId('terminal-machine-asm-01').firstElementChild?.className;
+    expect(bar()).not.toContain('border-l-4');
+    await app.push({
+      type: 'terminal',
+      topic: 'terminal:line-a1',
+      view: {
+        ...pushed,
+        machines: pushed.machines.map((m) => ({
+          ...m,
+          state: { state: 'Down', cause: null, since: '2026-10-15T04:00:00.000Z' },
+        })),
+      },
+    });
+    expect(bar()).toContain('border-l-state-down-border');
+    await app.push({ type: 'terminal', topic: 'terminal:line-a1', view: pushed });
     expect(screen.getByTestId('terminal-counts-O-1-OP30').textContent).toBe(
       'in 5 · good 4 · scrap 1 · rework 0',
     );

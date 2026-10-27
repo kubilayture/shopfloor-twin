@@ -68,7 +68,13 @@ import {
 } from '../domain/quality.ts';
 import { useLiveQuality, useQualityTopic } from '../live/live-context.tsx';
 import { upsertHold } from '../live/live-quality.ts';
-import { SubjectLink as TraceSubjectLink } from './trace-common.tsx';
+import {
+  CartonLink,
+  IdText,
+  OrderLink,
+  SerialLink,
+  SubjectLink as TraceSubjectLink,
+} from './trace-common.tsx';
 
 // `/quality/holds`, `/quality/holds/new` and `/quality/holds/$id` (#203, plan "Web", ADR-0035):
 // the holds with filters, opening a hold on a lot, serial, carton or order (from a trace page, an
@@ -875,13 +881,13 @@ const ACTION_TEXT: Readonly<Record<HoldAction, { label: string; effect: string; 
   release: {
     label: 'Release',
     effect:
-      'Releases the hold: the goods are used as is; it no longer blocks a close or its cartons. The ERP is told.',
+      'Releases the hold: the goods are used as is; it no longer blocks a close or its cartons. The ERP is told. This cannot be undone.',
     done: 'Hold released',
   },
   reject: {
     label: 'Reject',
     effect:
-      'Rejects the goods: quality wants the units scrapped or reworked outside the MES. Quantities and confirmations don’t change; the cartons stay held; a close is no longer blocked by it. The ERP is told.',
+      'Rejects the goods: quality wants the units scrapped or reworked outside the MES. Quantities and confirmations don’t change; the cartons stay held; a close is no longer blocked by it. The ERP is told. This cannot be undone.',
     done: 'Hold rejected',
   },
 };
@@ -898,7 +904,8 @@ const ACTION_VARIANT: Readonly<Record<HoldAction, ButtonVariant>> = {
 };
 const SUBMIT_VARIANT: Readonly<Record<HoldAction, ButtonVariant>> = {
   comment: 'primary',
-  reject: 'danger',
+  // A decision cannot be taken back: the destructive one's send is the solid danger (4.1, 4.9).
+  reject: 'dangerSolid',
   release: 'primary',
 };
 
@@ -931,6 +938,8 @@ function HoldForm({
   const form = useRef<HTMLFormElement>(null);
   const submit = useRef<HTMLButtonElement>(null);
   const commentId = useId();
+  // "Start again" clears the stale state; the send button is enabled only after that render.
+  const focusSubmit = useRef(false);
   useUnsavedDraft(draft.comment.trim() !== '');
   // The form takes the focus when it opens (and the browser brings it into view).
   useEffect(() => {
@@ -939,6 +948,11 @@ function HoldForm({
   // The first listed reason until one is chosen.
   const reason = draft.reason === '' ? (reasons[0]?.id ?? '') : draft.reason;
   const stale = isStale(draft.version, hold.version);
+  useEffect(() => {
+    if (!focusSubmit.current || stale) return;
+    focusSubmit.current = false;
+    submit.current?.focus();
+  }, [stale]);
   const applies = draft.action === 'comment' || hold.state === 'open';
   const text = ACTION_TEXT[draft.action];
   const write = useMutation({
@@ -1001,7 +1015,7 @@ function HoldForm({
         <p className="text-sm">{text.effect}</p>
         <p className="text-xs text-ink-secondary">
           Prepared on version {draft.version} of the hold; the MES refuses it if the hold has
-          changed since (409).
+          changed since.
         </p>
       </div>
       {failure ? <FailureMessage failure={failure} testId="hold-message" /> : null}
@@ -1033,7 +1047,7 @@ function HoldForm({
               onClick={() => {
                 setDraft((d) => ({ ...d, version: hold.version }));
                 setFailure(undefined);
-                submit.current?.focus();
+                focusSubmit.current = true;
               }}
             >
               Start again on version {hold.version}
@@ -1176,11 +1190,7 @@ function Scope({ detail, hold }: { readonly detail: HoldDetailDto; readonly hold
           <IdLinks
             ids={detail.orders}
             none="No order in the scope yet"
-            link={(id) => (
-              <Link to="/orders/$id" params={{ id }} className={idLinkClass}>
-                {id}
-              </Link>
-            )}
+            link={(id) => <OrderLink order={id} />}
           />
         </span>
       ),
@@ -1192,11 +1202,7 @@ function Scope({ detail, hold }: { readonly detail: HoldDetailDto; readonly hold
           <IdLinks
             ids={detail.cartons}
             none="No carton in the scope yet"
-            link={(id) => (
-              <Link to="/trace/cartons/$carton" params={{ carton: id }} className={idLinkClass}>
-                {id}
-              </Link>
-            )}
+            link={(id) => <CartonLink carton={id} />}
           />
         </span>
       ),
@@ -1221,9 +1227,13 @@ type HoldUnit = HoldDetailDto['units'][number];
 
 const unitKey = (u: HoldUnit): string => `${String(u.epoch)}-${String(u.partId)}`;
 
+/** Units on a page of their own size, as the lot's units on its trace page (#331). */
+const UNITS_PAGE_SIZE = 50;
+
 /**
  * One link per row, the serial: the orders and cartons are linked once each in the scope above,
- * so a keyboard user does not tab through the same order on every row (G-33).
+ * so a keyboard user does not tab through the same order on every row (G-33), as on the lot's
+ * trace page; the ids and the absences in the trace pages' words.
  */
 const UNIT_COLUMNS: readonly Column<HoldUnit>[] = [
   {
@@ -1231,19 +1241,7 @@ const UNIT_COLUMNS: readonly Column<HoldUnit>[] = [
     header: 'Serial',
     rowHeader: true,
     nowrap: true,
-    cell: (u) =>
-      u.serial ? (
-        <Link
-          to="/trace/serials/$serial"
-          params={{ serial: u.serial }}
-          search={{ unit: unitKey(u) }}
-          className={idLinkClass}
-        >
-          <Code>{u.serial}</Code>
-        </Link>
-      ) : (
-        <Missing reason="No serial yet" />
-      ),
+    cell: (u) => <SerialLink unit={u} />,
   },
   {
     key: 'unit',
@@ -1260,14 +1258,14 @@ const UNIT_COLUMNS: readonly Column<HoldUnit>[] = [
     key: 'order',
     header: 'Order',
     nowrap: true,
-    cell: (u) => (u.orderId ? <Code>{u.orderId}</Code> : <Missing reason="No order" />),
+    cell: (u) => <IdText id={u.orderId} kind="order" />,
   },
   {
     key: 'carton',
     header: 'Carton',
     nowrap: true,
     priority: 3,
-    cell: (u) => (u.carton ? <Code>{u.carton}</Code> : <Missing reason="Not packed" />),
+    cell: (u) => <IdText id={u.carton} kind="carton" />,
   },
   {
     key: 'joined',
@@ -1297,13 +1295,17 @@ function Units({ detail }: { readonly detail: HoldDetailDto }) {
         </Callout>
       ) : null}
       <DataTable
-        bounded
         caption="Units in the hold's scope"
         testId="hold-units"
         columns={UNIT_COLUMNS}
         rows={detail.units}
         rowKey={unitKey}
         rowTestId={(u) => `hold-unit-${unitKey(u)}`}
+        // At most 50 tab stops, and a way past them to the history (G-33), as the lot's units.
+        pageSize={UNITS_PAGE_SIZE}
+        skipToDetails="hold-history-title"
+        skipLabel="Skip past the units"
+        density="compact"
         empty={
           <EmptyState
             size="inline"
@@ -1419,6 +1421,8 @@ function Transitions({ detail }: { readonly detail: HoldDetailDto }) {
         rows={detail.transitions}
         rowKey={(t) => String(t.n)}
         rowTestId={(t) => `hold-transition-${String(t.n)}`}
+        // On a phone one card per transition, so its comment and its author stay readable.
+        narrow="stack"
         rowProps={(t) => ({
           'data-kind': t.kind,
           'data-notification': t.notification?.status ?? '',
@@ -1487,12 +1491,12 @@ function Incidents({ detail }: { readonly detail: HoldDetailDto }) {
   );
 }
 
-/** The page's sections in reading order (design system 3.4); the units, the longest, last. */
+/** The page's sections in reading order (design system 3.4). */
 const SECTIONS: readonly SectionNavItem[] = [
   { id: 'hold-scope-title', label: 'Scope' },
+  { id: 'hold-units-title', label: 'Units in the scope' },
   { id: 'hold-history-title', label: 'Transitions and comments' },
   { id: 'hold-incidents-title', label: 'Held material consumed' },
-  { id: 'hold-units-title', label: 'Units in the scope' },
 ];
 
 /** The header's title for a hold: "Hold on Lot `K1`", the id in monospace. */
@@ -1669,9 +1673,9 @@ function HoldDetail({ id }: { readonly id: string }) {
       <SectionNav items={SECTIONS} testId="hold-section-nav" />
       <div className="mt-6">
         <Scope detail={detail} hold={hold} />
+        <Units detail={detail} />
         <Transitions detail={detail} />
         <Incidents detail={detail} />
-        <Units detail={detail} />
       </div>
     </section>
   );

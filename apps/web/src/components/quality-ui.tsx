@@ -134,7 +134,7 @@ export function SignalStatusBadge({ signal }: { readonly signal: SpcSignalDto })
 }
 
 /** A quality hold (design system 2.6): open is `alarm`, released `ok`, rejected neutral solid. */
-const HOLD_LOOK: Readonly<
+export const HOLD_LOOK: Readonly<
   Record<HoldState, { readonly tone: Tone; readonly variant: BadgeVariant }>
 > = {
   open: { tone: 'alarm', variant: 'soft' },

@@ -357,6 +357,8 @@ describe('a hold’s detail', () => {
     await app.open();
     fireEvent.click(await screen.findByTestId('hold-action-release'));
     const form = screen.getByTestId('hold-form-release');
+    expect(form.textContent).toContain('This cannot be undone.');
+    expect(screen.getByTestId('hold-submit').className).toContain('bg-accent');
     expect(form.dataset.version).toBe('1');
     await waitFor(() => {
       expect(screen.getByTestId<HTMLSelectElement>('hold-reason').value).toBe('CONFORMS');
@@ -370,6 +372,10 @@ describe('a hold’s detail', () => {
     expect(screen.getByTestId('hold-stale').dataset.version).toBe('2');
     expect(screen.getByTestId<HTMLButtonElement>('hold-submit').disabled).toBe(true);
     fireEvent.click(screen.getByTestId('hold-restart'));
+    // The focus goes to the send button once it is enabled again, not to the page.
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByTestId('hold-submit'));
+    });
     fireEvent.change(screen.getByTestId('hold-comment'), { target: { value: 'retested fine' } });
     fireEvent.click(screen.getByTestId('hold-submit'));
     expect((await screen.findByTestId('hold-done')).textContent).toContain('released');
@@ -563,18 +569,18 @@ describe('the holds screens on the design system (UX-9b, #333)', () => {
         .map((a) => a.getAttribute('href')),
     ).toEqual([
       '#hold-scope-title',
+      '#hold-units-title',
       '#hold-history-title',
       '#hold-incidents-title',
-      '#hold-units-title',
     ]);
     const headings = within(detail)
       .getAllByRole('heading', { level: 2 })
       .map((h) => h.textContent);
     expect(headings).toEqual([
       'Scope',
+      'Units in the scope',
       'Transitions and comments',
       'Held material consumed',
-      'Units in the scope',
     ]);
   });
 
@@ -611,7 +617,9 @@ describe('the holds screens on the design system (UX-9b, #333)', () => {
     ).toEqual(['VB-100-000007']);
     expect(row.textContent).toContain('PO-1001-C01');
     // A unit with no serial yet says why, not a bare dash.
-    expect(within(screen.getByTestId('hold-unit-1-8')).getByText('No serial yet')).toBeTruthy();
+    expect(screen.getByTestId('hold-unit-1-8').textContent).toContain('Part 8, no serial yet');
+    // The ids in monospace, as on the trace pages.
+    expect(within(screen.getByTestId('hold-orders')).getByText('PO-1001').tagName).toBe('CODE');
   });
 
   it('closes an action form with Escape or Cancel, the focus back on its button', async () => {
@@ -622,9 +630,12 @@ describe('the holds screens on the design system (UX-9b, #333)', () => {
     const form = screen.getByTestId('hold-form-reject');
     expect(document.activeElement).toBe(form);
     expect(within(form).getByRole('heading', { level: 2, name: 'Reject' })).toBeTruthy();
-    expect(screen.getByTestId('hold-submit').className).toContain('alarm');
+    // A decision is final: said in the form, and the reject's send is the solid danger button.
+    expect(form.textContent).toContain('This cannot be undone.');
+    expect(screen.getByTestId('hold-submit').className).toContain('bg-alarm-solid');
     // The buttons give way to the form while it is open.
     expect(screen.queryByTestId('hold-action-release')).toBeNull();
+    expect(form.textContent).not.toContain('(409)');
     fireEvent.keyDown(form, { key: 'Escape' });
     await waitFor(() => {
       expect(document.activeElement).toBe(screen.getByTestId('hold-action-reject'));
@@ -653,5 +664,33 @@ describe('the holds screens on the design system (UX-9b, #333)', () => {
     expect(screen.getByTestId('hold-missing')).toBeTruthy();
     // An id that cannot be a hold is never asked for.
     expect(server.reads('/api/v1/quality/holds/not-a-hold')).toEqual([]);
+  });
+
+  it('pages the units by 50 with a way past them to the history (G-33)', async () => {
+    const base = holdDetail();
+    const units = Array.from({ length: 60 }, (_, i) => ({
+      epoch: 1,
+      partId: i + 1,
+      serial: `VB-100-${String(i + 1).padStart(6, '0')}`,
+      orderId: 'PO-1001',
+      carton: null,
+      joinedAt: at(110),
+    }));
+    const state = qualityState({ details: { [HOLD_ID]: { ...base, units } } });
+    vi.stubGlobal('fetch', qualityMes(state).fetch);
+    await renderApp(`/quality/holds/${HOLD_ID}`);
+    const table = await screen.findByTestId('hold-units');
+    expect(table.dataset.count).toBe('60');
+    expect(table.querySelectorAll('tbody tr')).toHaveLength(50);
+    expect(screen.queryByTestId('hold-unit-1-51')).toBeNull();
+    const skip = screen.getByRole('link', { name: 'Skip past the units' });
+    expect(skip.getAttribute('href')).toBe('#hold-history-title');
+    fireEvent.click(skip);
+    expect(document.activeElement).toBe(
+      screen.getByRole('heading', { level: 2, name: 'Transitions and comments' }),
+    );
+    const pages = screen.getByRole('navigation', { name: "Units in the hold's scope: pages" });
+    fireEvent.click(within(pages).getByRole('button', { name: 'Next' }));
+    expect(screen.getByTestId('hold-unit-1-51')).toBeTruthy();
   });
 });

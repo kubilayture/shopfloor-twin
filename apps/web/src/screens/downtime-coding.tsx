@@ -99,6 +99,34 @@ function UncodedBadge() {
   );
 }
 
+/** A top-level reason and the reasons under it, in the reason codes' order. */
+interface ReasonGroup {
+  readonly head: ReasonOption;
+  readonly members: readonly ReasonOption[];
+}
+
+/** The reasons by their top-level parent (`SETUP` holds `SETUP/TOOL-CHANGE`). */
+function reasonGroups(options: readonly ReasonOption[]): ReasonGroup[] {
+  const groups: { head: ReasonOption; members: ReasonOption[] }[] = [];
+  for (const option of options) {
+    const root = option.id.split('/')[0];
+    const group = groups.find((candidate) => candidate.head.id === root);
+    if (option.depth === 0 || !group) groups.push({ head: option, members: [] });
+    else group.members.push(option);
+  }
+  return groups;
+}
+
+function ReasonOptionItem({ option }: { readonly option: ReasonOption }) {
+  return (
+    <option value={option.id} disabled={!option.codable}>
+      {/* Below the group's own level, non-breaking spaces (a select collapses ordinary ones). */}
+      {`${'\u00a0\u00a0'.repeat(Math.max(0, option.depth - 1))}${option.name}`}
+      {option.codable ? '' : ' (not codable)'}
+    </option>
+  );
+}
+
 function ReasonSelect({
   value,
   options,
@@ -124,13 +152,19 @@ function ReasonSelect({
       }}
     >
       <option value="">Keep the automatic reason</option>
-      {options.map((option) => (
-        <option key={option.id} value={option.id} disabled={!option.codable}>
-          {/* Non-breaking spaces: a select collapses ordinary ones, so the tree would not show. */}
-          {`${'\u00a0\u00a0'.repeat(option.depth)}${option.name}`}
-          {option.codable ? '' : ' (not codable)'}
-        </option>
-      ))}
+      {reasonGroups(options).map(({ head, members }) =>
+        members.length === 0 ? (
+          <ReasonOptionItem key={head.id} option={head} />
+        ) : (
+          // The tree as the platform knows it: a screen reader says the group with each option.
+          <optgroup key={head.id} label={head.name}>
+            <ReasonOptionItem option={head} />
+            {members.map((option) => (
+              <ReasonOptionItem key={option.id} option={option} />
+            ))}
+          </optgroup>
+        ),
+      )}
     </Select>
   );
 }
@@ -249,8 +283,10 @@ function SplitControl({
         name="split-at"
         testId="split-at"
         withSeconds
-        min={record.start}
-        max={new Date(end).toISOString()}
+        // Strictly inside the record, as the split itself: a time at its start or end is no
+        // split, and on a record longer than a day the time lands on the day where it is inside.
+        min={new Date(start + 1).toISOString()}
+        max={new Date(end - 1).toISOString()}
         value={value}
         error={error}
         hint="Split the record in two at this time, then give each part its reason."
@@ -512,16 +548,13 @@ function RecordDetail({
     { term: 'Loss', detail: <LossBadge kind={record.loss} /> },
     {
       term: 'Automatic reason',
-      detail: (
-        <>
-          {reasonName(reasons, record.autoReason)}
-          {record.uncoded ? (
-            <span className="ml-2">
-              <UncodedBadge />
-            </span>
-          ) : null}
-        </>
-      ),
+      detail:
+        record.autoReason === UNCODED ? (
+          // No rule gave a reason: the badge says it once, not "Not coded, Uncoded".
+          <UncodedBadge />
+        ) : (
+          reasonName(reasons, record.autoReason)
+        ),
     },
     {
       term: 'In effect',
@@ -570,7 +603,7 @@ function RecordDetail({
 /**
  * The record table's columns. `beside`: the detail panel is open beside the table (from 1440 px),
  * which leaves it about 720 px, so the loss and the cause code leave the table (the panel shows
- * them) and the machine, times and lengths keep to one line.
+ * them); times and lengths keep to one line, long machine names wrap to two.
  */
 function recordColumns(
   machineName: (id: string) => string,
@@ -838,8 +871,10 @@ export function DowntimeCoding() {
       {missingRecord ? (
         <Callout tone="neutral" role="status" className="mb-4" data-testid="record-not-found">
           <p>
-            Record <Code>{search.record}</Code> is not in this list: it belongs to another shift or
-            is no longer uncoded.
+            Record <Code>{search.record}</Code>{' '}
+            {uncodedOnly
+              ? 'is not among the uncoded records of this shift: it is coded, or belongs to another shift.'
+              : 'is not among the records of this shift: it belongs to another shift.'}
           </p>
           <Button
             size="sm"

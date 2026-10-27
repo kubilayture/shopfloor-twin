@@ -155,7 +155,7 @@ describe('downtime coding', () => {
     const optionTexts = first
       .getAllByRole('option')
       .map((option) => [option.textContent, (option as HTMLOptionElement).disabled]);
-    expect(optionTexts).toContainEqual(['  Spindle overload', false]);
+    expect(optionTexts).toContainEqual(['Spindle overload', false]);
     expect(optionTexts).toContainEqual(['Not coded (not codable)', true]);
     fireEvent.change(first.getByTestId('reason-picker'), {
       target: { value: 'BREAKDOWN/SPINDLE-OVERLOAD' },
@@ -672,7 +672,7 @@ describe('downtime coding on the design system (UX-5a, #326)', () => {
     expect(server.calls.some((call) => call.method === 'PUT')).toBe(false);
   });
 
-  it('indents child reasons with non-breaking spaces, so the select shows the tree', async () => {
+  it('groups child reasons under their parent, so a screen reader hears the tree; values stay the ids', async () => {
     vi.stubGlobal(
       'fetch',
       mes(
@@ -682,11 +682,79 @@ describe('downtime coding on the design system (UX-5a, #326)', () => {
     );
     await renderApp('/downtime');
     const panel = await openRecord();
-    const texts = within(within(panel).getByTestId('reason-picker'))
-      .getAllByRole('option')
-      .map((option) => option.textContent);
-    expect(texts).toContain('  Tool change');
-    expect(texts).toContain('Setup');
+    const picker = within(panel).getByTestId<HTMLSelectElement>('reason-picker');
+    const groups = [...picker.querySelectorAll('optgroup')].map((group) => [
+      group.label,
+      [...group.querySelectorAll('option')].map((option) => [option.value, option.textContent]),
+    ]);
+    expect(groups).toEqual([
+      [
+        'Breakdown',
+        [
+          ['BREAKDOWN', 'Breakdown'],
+          ['BREAKDOWN/SPINDLE-OVERLOAD', 'Spindle overload'],
+          ['BREAKDOWN/UNSPECIFIED', 'Breakdown, cause not reported'],
+        ],
+      ],
+      [
+        'Setup',
+        [
+          ['SETUP', 'Setup'],
+          ['SETUP/TOOL-CHANGE', 'Tool change'],
+        ],
+      ],
+    ]);
+    // Reasons without children stand alone; the automatic reason comes first.
+    const loose = [...picker.children]
+      .filter((child) => child.tagName === 'OPTION')
+      .map((option) => (option as HTMLOptionElement).value);
+    expect(loose).toEqual(['', 'OLD', 'UNCODED']);
+    fireEvent.change(picker, { target: { value: 'SETUP/TOOL-CHANGE' } });
+    expect(picker.value).toBe('SETUP/TOOL-CHANGE');
+  });
+
+  it('splits a record longer than a day on the day where the time is inside it', async () => {
+    const long = record({
+      id: 'cnc-01~1790000000~77',
+      start: '2026-10-14T04:00:00.000Z',
+      end: '2026-10-15T05:00:00.000Z',
+    });
+    vi.stubGlobal(
+      'fetch',
+      mes(
+        () => json({}),
+        () => [long],
+      ).fetch,
+    );
+    await renderApp('/downtime');
+    fireEvent.click(await screen.findByTestId(`code-${long.id}`));
+    const panel = await screen.findByTestId('coding-panel');
+    // 07:00:00 plant time is the record's start on the 14th (no split) and inside it on the 15th.
+    fireEvent.change(within(panel).getByTestId('split-at'), { target: { value: '07:00:00' } });
+    expect(within(panel).getByTestId('split-at-utc').textContent).toBe('= 2026-10-15 04:00:00 UTC');
+    fireEvent.click(within(panel).getByTestId('split'));
+    expect(within(panel).queryByText(/inside the record/)).toBeNull();
+    const segments = within(panel).getAllByTestId(/^segment-\d$/);
+    expect(segments).toHaveLength(2);
+    expect(segments[1]?.querySelector('time')?.getAttribute('dateTime')).toBe(
+      '2026-10-15T04:00:00.000Z',
+    );
+  });
+
+  it('shows the Uncoded badge alone as the automatic reason when no rule gave one', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mes(
+        () => json({}),
+        () => [UNCODED, CODED],
+      ).fetch,
+    );
+    await renderApp('/downtime');
+    const panel = await openRecord();
+    const facts = within(panel).getByRole('definition', {
+      name: (_name, element) => element.previousElementSibling?.textContent === 'Automatic reason',
+    });
+    expect(facts.textContent).toBe('Uncoded');
   });
 
   it('sends one write for two quick saves, and keeps both buttons busy meanwhile', async () => {
@@ -797,6 +865,7 @@ describe('downtime coding on the design system (UX-5a, #326)', () => {
     await renderApp('/downtime?record=cnc-01~1~1');
     const note = await screen.findByTestId('record-not-found');
     expect(note.textContent).toContain('cnc-01~1~1');
+    expect(note.textContent).toContain('not among the records of this shift');
     expect(screen.queryByTestId('coding-panel')).toBeNull();
     fireEvent.click(within(note).getByRole('button', { name: 'Close the note' }));
     await waitFor(() => {

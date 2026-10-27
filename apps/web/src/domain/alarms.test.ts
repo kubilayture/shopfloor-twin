@@ -26,6 +26,7 @@ import {
   partition,
   durationLabel,
   floodText,
+  RATE_VERDICT,
   rateBand,
   rateBandText,
   shelvePresets,
@@ -360,5 +361,15 @@ describe('alarmShiftHours (UX-4b, #325)', () => {
     expect(rows[5]?.to).toBe('2026-10-22T01:00:00.000Z');
     // Once over, every one of its eight hours.
     expect(alarmShiftHours([], night, at('2026-10-22T05:00:00.000Z'))).toHaveLength(8);
+  });
+});
+
+describe('RATE_VERDICT (UX-4b, #325)', () => {
+  it('gives each EEMUA 191 band one tone and word: colour only for abnormal', () => {
+    expect(RATE_VERDICT).toEqual({
+      acceptable: { tone: 'neutral', label: 'Acceptable' },
+      manageable: { tone: 'warn', label: 'Manageable' },
+      over: { tone: 'alarm', label: 'Over the benchmark' },
+    });
   });
 });

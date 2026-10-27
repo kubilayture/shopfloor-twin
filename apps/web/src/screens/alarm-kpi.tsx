@@ -33,7 +33,12 @@ import {
   type GroupFinality,
 } from '../components/oee-ui.tsx';
 import { QueryError } from '../components/query-error.tsx';
-import { ShiftPicker, shiftKeyLabel, useShiftSelection } from '../components/shift-picker.tsx';
+import {
+  ShiftPicker,
+  ShiftSpan,
+  shiftKeyLabel,
+  useShiftSelection,
+} from '../components/shift-picker.tsx';
 import { Badge } from '../components/ui/badge.tsx';
 import { Card } from '../components/ui/card.tsx';
 import { Code } from '../components/ui/code.tsx';
@@ -46,7 +51,6 @@ import { PageHeader } from '../components/ui/page-header.tsx';
 import { Section } from '../components/ui/section.tsx';
 import { Skeleton } from '../components/ui/skeleton.tsx';
 import { KpiTile } from '../components/ui/stat.tsx';
-import type { Tone } from '../components/ui/tokens.ts';
 import {
   alarmBucketFlags,
   alarmShiftHours,
@@ -55,10 +59,10 @@ import {
   parseScopeKey,
   rateBand,
   rateBandText,
+  RATE_VERDICT,
   scopeKey,
   windowLabel,
   type AlarmHourRow,
-  type RateBand,
 } from '../domain/alarms.ts';
 import { NOT_APPLICABLE, pickBucket } from '../domain/oee.ts';
 import { formatClockTime } from '../domain/time.ts';
@@ -68,7 +72,6 @@ import {
   useLiveAlarms,
   useLiveSubscriptions,
 } from '../live/live-context.tsx';
-import { ShiftSpan } from './oee-dashboard.tsx';
 
 const HOUR = 3_600_000;
 /** How far back the shift buckets of the bucket table reach. */
@@ -109,16 +112,6 @@ function useThrottledReread(trigger: unknown, queryKey: readonly unknown[], enab
     [],
   );
 }
-
-/**
- * The EEMUA 191 verdict's tone (design system section 1: colour only for abnormal): acceptable
- * is neutral, manageable a warning, over the benchmark an alarm.
- */
-const BAND_TONE: Readonly<Record<RateBand, Tone>> = {
-  acceptable: 'neutral',
-  manageable: 'warn',
-  over: 'alarm',
-};
 
 /** A measure as a fact whose `dd` carries `data-measure` (the specs read it, #295). */
 const measure = (name: string, term: string, detail: ReactNode): Fact => ({
@@ -208,7 +201,7 @@ function ScopeTile({
               value: <Ratio ratio={bucket.averageRate} na="No raise rate" />,
               verdict:
                 band && config
-                  ? { tone: BAND_TONE[band], text: rateBandText(band, config) }
+                  ? { tone: RATE_VERDICT[band].tone, text: rateBandText(band, config) }
                   : undefined,
               tone: band === 'over' ? 'alarm' : undefined,
               hint: live

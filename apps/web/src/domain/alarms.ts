@@ -313,16 +313,30 @@ export function rateBand(
   return 'over';
 }
 
+/**
+ * The EEMUA 191 verdict of a rate band (UX-4b, #325; design system 2.3): its tone and its word.
+ * Colour only for abnormal: a benchmark met is normal, so Acceptable is `neutral`; Manageable is a
+ * `warn`, Over the benchmark an `alarm`. One mapping for every screen that shows the verdict (the
+ * alarm KPIs, the shift report).
+ */
+export const RATE_VERDICT: Readonly<
+  Record<RateBand, { readonly tone: 'neutral' | 'warn' | 'alarm'; readonly label: string }>
+> = {
+  acceptable: { tone: 'neutral', label: 'Acceptable' },
+  manageable: { tone: 'warn', label: 'Manageable' },
+  over: { tone: 'alarm', label: 'Over the benchmark' },
+};
+
 /** A rate band as text, with the served benchmarks (#160). */
 export function rateBandText(band: RateBand, config: Pick<AlarmConfig, 'benchmarks'>): string {
   const { acceptablePer10Min: acceptable, manageablePer10Min: manageable } = config.benchmarks;
   switch (band) {
     case 'acceptable':
-      return `Acceptable (≤ ${String(acceptable)} per 10 min)`;
+      return `${RATE_VERDICT.acceptable.label} (≤ ${String(acceptable)} per 10 min)`;
     case 'manageable':
-      return `Manageable (≤ ${String(manageable)} per 10 min)`;
+      return `${RATE_VERDICT.manageable.label} (≤ ${String(manageable)} per 10 min)`;
     case 'over':
-      return `Over the benchmark (> ${String(manageable)} per 10 min)`;
+      return `${RATE_VERDICT.over.label} (> ${String(manageable)} per 10 min)`;
   }
 }
 

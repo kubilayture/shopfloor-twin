@@ -154,6 +154,8 @@ describe('PageHeader (design system 3.3)', () => {
     expect(back.getAttribute('href')).toBe('/orders');
     // Navigation, not printed (UX-5b).
     expect(back.parentElement?.className).toContain('print:hidden');
+    // The parent of the page is never the page, whatever the router's fuzzy match says (#332).
+    expect(back.hasAttribute('aria-current')).toBe(false);
     expect(
       back.compareDocumentPosition(screen.getByRole('heading', { level: 1 })) &
         Node.DOCUMENT_POSITION_FOLLOWING,

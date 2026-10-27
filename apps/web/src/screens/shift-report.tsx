@@ -54,16 +54,15 @@ import { Section } from '../components/ui/section.tsx';
 import { SectionNav, type SectionNavItem } from '../components/ui/section-nav.tsx';
 import { Skeleton } from '../components/ui/skeleton.tsx';
 import { KpiTile, Stat } from '../components/ui/stat.tsx';
-import type { Tone } from '../components/ui/tokens.ts';
 import {
   alarmBucketFlags,
   meanTimeToAck,
   msText,
   rateBand,
+  RATE_VERDICT,
   rateBandText,
   scopeKey,
   windowLabel,
-  type RateBand,
 } from '../domain/alarms.ts';
 import { reasonName } from '../domain/downtime.ts';
 import { NOT_APPLICABLE, bucketFlags, minutesText, ratioText } from '../domain/oee.ts';
@@ -893,16 +892,6 @@ const measure = (name: string, term: string, detail: ReactNode): Fact => ({
   detailData: { 'data-measure': name },
 });
 
-/**
- * The EEMUA 191 verdict's tone, as on Alarm KPIs (design system section 1: colour only for
- * abnormal): acceptable is neutral, manageable a warning, over the benchmark an alarm.
- */
-const BAND_TONE: Readonly<Record<RateBand, Tone>> = {
-  acceptable: 'neutral',
-  manageable: 'warn',
-  over: 'alarm',
-};
-
 type AlarmScope = ShiftReportDto['alarms']['scopes'][number];
 
 /** The measures under the headline, the raises and the peak (K-01), as on Alarm KPIs. */
@@ -1023,7 +1012,7 @@ function AlarmScopeTile({
                 value: <Ratio ratio={bucket.averageRate} na="No raise rate" />,
                 verdict:
                   band && config
-                    ? { tone: BAND_TONE[band], text: rateBandText(band, config) }
+                    ? { tone: RATE_VERDICT[band].tone, text: rateBandText(band, config) }
                     : undefined,
                 tone: band === 'over' ? 'alarm' : undefined,
                 hint: running

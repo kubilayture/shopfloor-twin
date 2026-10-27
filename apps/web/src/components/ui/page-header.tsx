@@ -51,6 +51,12 @@ export interface PageHeaderProps {
   readonly testId?: string;
 }
 
+/**
+ * Only the exact URL, search included, is "active": a back link points at a parent, so it never is.
+ * Shared with the other back links (`NotFound`'s, a detail page's while it loads).
+ */
+export const BACK_LINK_ACTIVE = { exact: true, includeSearch: true } as const;
+
 const TITLE_SIZE = { default: 'text-xl', dashboard: 'text-2xl' } as const;
 
 export function PageHeader({
@@ -77,7 +83,13 @@ export function PageHeader({
         {back ? (
           // The way back is navigation: not printed (UX-5b, the shift report's A4).
           <p className="mb-1 text-sm print:hidden">
-            <Link {...back.link} className="text-link underline-offset-4 hover:underline">
+            <Link
+              {...back.link}
+              // A back link is never the page: the router's fuzzy match would mark the parent
+              // ("‹ SPC charts" on a chart) `aria-current="page"` on every detail page.
+              activeOptions={BACK_LINK_ACTIVE}
+              className="text-link underline-offset-4 hover:underline"
+            >
               ‹ {back.label}
             </Link>
           </p>

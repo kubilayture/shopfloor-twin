@@ -5,11 +5,22 @@ import {
   type ShiftReportDto,
 } from '@shopfloor/contracts/mes-api';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useId, useRef, useState, type Ref } from 'react';
+import { useEffect, useRef, useState, type Ref } from 'react';
 import { createNote, editNote, getNoteAudit, getShiftNotes, type ShiftRef } from '../api/client.ts';
 import { queryKeys } from '../api/queries.ts';
-import { QueryError } from '../components/query-error.tsx';
 import { useCan, useUnsavedDraft } from '../auth/auth.tsx';
+import { QueryError } from '../components/query-error.tsx';
+import { Badge } from '../components/ui/badge.tsx';
+import { Button } from '../components/ui/button.tsx';
+import { Callout } from '../components/ui/callout.tsx';
+import { Card } from '../components/ui/card.tsx';
+import { Code } from '../components/ui/code.tsx';
+import { Checkbox, Select, Textarea } from '../components/ui/controls.tsx';
+import { EmptyState } from '../components/ui/empty-state.tsx';
+import { PlantTime } from '../components/ui/format.tsx';
+import { Icon } from '../components/ui/icons.tsx';
+import { Section } from '../components/ui/section.tsx';
+import { Skeleton } from '../components/ui/skeleton.tsx';
 import {
   CATEGORY_LABELS,
   NOTE_LIMIT,
@@ -21,32 +32,26 @@ import {
   type NoteDraft,
   type NoteFailure,
 } from '../domain/shifts.ts';
-import { formatPlantTime } from '../domain/time.ts';
 import { upsertNote, upsertShift } from '../live/live-cache.ts';
 import { useLiveShifts } from '../live/live-context.tsx';
 
-const inputClass = 'rounded border border-slate-500 bg-white px-2 py-1 text-sm';
-const buttonClass =
-  'rounded border border-slate-500 bg-white px-3 py-1 text-sm font-medium hover:bg-slate-100 disabled:opacity-50';
-const primaryClass =
-  'rounded bg-sky-800 px-3 py-1 text-sm font-semibold text-white hover:bg-sky-900 disabled:opacity-50';
-
 type Message = NoteFailure | { readonly kind: 'saved'; readonly text: string };
 
+/**
+ * A write's result, inline where the test reads it (design system 4.10: `new-note-message` stays
+ * inline): saved is a polite `ok` callout, a refusal an `alarm` alert.
+ */
 function MessageText({ message, testId }: { readonly message: Message; readonly testId: string }) {
+  const saved = message.kind === 'saved';
   return (
-    <p
-      role={message.kind === 'saved' ? 'status' : 'alert'}
+    <Callout
+      tone={saved ? 'ok' : 'alarm'}
+      role={saved ? 'status' : 'alert'}
       data-testid={testId}
       data-kind={message.kind}
-      className={`rounded border p-2 text-sm ${
-        message.kind === 'saved'
-          ? 'border-emerald-800 bg-emerald-50 text-emerald-950'
-          : 'border-red-800 bg-red-50 text-red-950'
-      }`}
     >
       {message.text}
-    </p>
+    </Callout>
   );
 }
 
@@ -57,65 +62,53 @@ function CategorySelect({
   readonly value: NoteCategory;
   readonly onChange: (value: NoteCategory) => void;
 }) {
-  const id = useId();
   return (
-    <div className="flex flex-col gap-1">
-      <label htmlFor={id} className="text-sm font-medium">
-        Category
-      </label>
-      <select
-        id={id}
-        data-testid="note-category"
-        value={value}
-        onChange={(event) => {
-          const next = NOTE_CATEGORIES.find((category) => category === event.target.value);
-          if (next) onChange(next);
-        }}
-        className={`${inputClass} max-w-xs`}
-      >
-        {NOTE_CATEGORIES.map((category) => (
-          <option key={category} value={category}>
-            {CATEGORY_LABELS[category]}
-          </option>
-        ))}
-      </select>
-    </div>
+    <Select
+      label="Category"
+      name="category"
+      data-testid="note-category"
+      value={value}
+      fieldClassName="max-w-xs"
+      onChange={(event) => {
+        const next = NOTE_CATEGORIES.find((category) => category === event.target.value);
+        if (next) onChange(next);
+      }}
+    >
+      {NOTE_CATEGORIES.map((category) => (
+        <option key={category} value={category}>
+          {CATEGORY_LABELS[category]}
+        </option>
+      ))}
+    </Select>
   );
 }
 
-function TextInput({
+function NoteText({
   value,
   onChange,
+  error,
   inputRef,
 }: {
   readonly value: string;
   readonly onChange: (value: string) => void;
+  readonly error?: string | undefined;
   readonly inputRef?: Ref<HTMLTextAreaElement>;
 }) {
-  const id = useId();
-  const countId = useId();
   return (
-    <div className="flex flex-col gap-1">
-      <label htmlFor={id} className="text-sm font-medium">
-        Note
-      </label>
-      <textarea
-        id={id}
-        ref={inputRef}
-        data-testid="note-text-input"
-        value={value}
-        rows={4}
-        maxLength={MES_API_LIMITS.noteText}
-        aria-describedby={countId}
-        onChange={(event) => {
-          onChange(event.target.value);
-        }}
-        className={`${inputClass} w-full`}
-      />
-      <p id={countId} className="text-xs text-slate-700">
-        {value.length} of {MES_API_LIMITS.noteText} characters. Shown as plain text.
-      </p>
-    </div>
+    <Textarea
+      ref={inputRef}
+      label="Note"
+      name="text"
+      data-testid="note-text-input"
+      value={value}
+      rows={4}
+      max={MES_API_LIMITS.noteText}
+      hint="Shown as plain text."
+      error={error}
+      onChange={(event) => {
+        onChange(event.target.value);
+      }}
+    />
   );
 }
 
@@ -156,43 +149,53 @@ function NewNoteForm({
       if (failure.kind === 'limit') onSaved();
     },
   });
+  const invalid = message?.kind === 'invalid';
   return (
-    <form
-      noValidate
-      aria-label="New handover note"
-      data-testid="new-note"
-      className="flex flex-col gap-2 rounded-lg border border-slate-300 bg-white p-3 print:hidden"
-      onSubmit={(event) => {
-        event.preventDefault();
-        const found = problems(text);
-        if (found.length > 0) {
-          setMessage({ kind: 'invalid', text: found.join(' ') });
-          return;
-        }
-        setMessage(undefined);
-        create.mutate();
-      }}
-    >
-      <h3 className="font-semibold">New note</h3>
-      <CategorySelect value={category} onChange={setCategory} />
-      <TextInput value={text} onChange={setText} />
-      {full ? (
-        <p role="status" data-testid="note-limit" className="text-sm text-amber-950">
-          This shift has {NOTE_LIMIT} notes, the most allowed: edit an existing note instead.
-        </p>
-      ) : null}
-      {message ? <MessageText message={message} testId="new-note-message" /> : null}
-      <div>
-        <button
-          type="submit"
-          data-testid="add-note"
-          disabled={create.isPending || full}
-          className={primaryClass}
-        >
-          {create.isPending ? 'Saving…' : 'Add note'}
-        </button>
-      </div>
-    </form>
+    <Card padding="compact" className="print:hidden">
+      <form
+        noValidate
+        aria-labelledby="new-note-title"
+        data-testid="new-note"
+        className="flex flex-col gap-3 print:hidden"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const found = problems(text);
+          if (found.length > 0) {
+            setMessage({ kind: 'invalid', text: found.join(' ') });
+            return;
+          }
+          setMessage(undefined);
+          create.mutate();
+        }}
+      >
+        <h3 id="new-note-title" className="text-base font-semibold text-ink">
+          New note
+        </h3>
+        <CategorySelect value={category} onChange={setCategory} />
+        <NoteText
+          value={text}
+          onChange={setText}
+          error={invalid ? 'The note is empty.' : undefined}
+        />
+        {full ? (
+          <Callout tone="neutral" role="status" data-testid="note-limit">
+            This shift has {NOTE_LIMIT} notes, the most allowed: edit an existing note instead.
+          </Callout>
+        ) : null}
+        {message ? <MessageText message={message} testId="new-note-message" /> : null}
+        <div>
+          <Button
+            type="submit"
+            variant="primary"
+            data-testid="add-note"
+            loading={create.isPending}
+            disabled={full}
+          >
+            Add note
+          </Button>
+        </div>
+      </form>
+    </Card>
   );
 }
 
@@ -219,7 +222,6 @@ function NoteEditor({
   );
   const [message, setMessage] = useState<Message | undefined>(undefined);
   const text = useRef<HTMLTextAreaElement>(null);
-  const retractedId = useId();
   const stale = isStaleDraft(draft, note);
   useEffect(() => {
     const area = text.current;
@@ -255,7 +257,7 @@ function NoteEditor({
       aria-label={`Edit note ${String(note.id)}`}
       data-testid={`note-editor-${String(note.id)}`}
       data-version={String(draft.version)}
-      className="mt-2 flex flex-col gap-2 border-t border-slate-200 pt-2 print:hidden"
+      className="mt-3 flex flex-col gap-3 border-t border-line-subtle pt-3 print:hidden"
       onSubmit={(event) => {
         event.preventDefault();
         if (stale) return;
@@ -277,45 +279,47 @@ function NoteEditor({
           setDraft((current) => ({ ...current, category }));
         }}
       />
-      <TextInput
+      <NoteText
         inputRef={text}
         value={draft.text}
+        error={message?.kind === 'invalid' ? 'The note is empty.' : undefined}
         onChange={(value) => {
           setDraft((current) => ({ ...current, text: value }));
         }}
       />
-      <div className="flex items-center gap-2">
-        <input
-          id={retractedId}
-          type="checkbox"
-          data-testid="note-retracted"
-          checked={draft.retracted}
-          onChange={(event) => {
-            const retracted = event.target.checked;
-            setDraft((current) => ({ ...current, retracted }));
-          }}
-        />
-        <label htmlFor={retractedId} className="text-sm">
-          Retracted (a wrong note stays in the history; untick to restore it)
-        </label>
-      </div>
+      {/*
+       * Not a confirmation: a retraction is undone by unticking it (design system 4.9 keeps
+       * confirmations for what cannot be undone).
+       */}
+      <Checkbox
+        name="retracted"
+        label="Retracted"
+        hint="A retracted note stays, struck through, with every version in its history; untick to restore it."
+        data-testid="note-retracted"
+        checked={draft.retracted}
+        onChange={(event) => {
+          const retracted = event.target.checked;
+          setDraft((current) => ({ ...current, retracted }));
+        }}
+      />
       {stale ? (
-        <div
+        <Callout
+          tone="warn"
           role="alert"
           data-testid="note-stale"
           data-kind="stale"
           data-version={String(note.version)}
-          className="rounded border border-red-800 bg-red-50 p-2 text-sm text-red-950"
+          title="This note changed while you were editing it"
         >
           <p>
             {note.author} saved version {note.version} of this note while you were editing version{' '}
             {draft.version}. Your draft is not sent, so their edit is not overwritten. Copy what you
             need, then reload the note and edit again.
           </p>
-          <button
-            type="button"
+          <Button
+            size="sm"
             data-testid="reload-note"
-            className={`${buttonClass} mt-2`}
+            className="mt-2"
             onClick={() => {
               setDraft(draftOf(note));
               setOrigin(draftOf(note));
@@ -324,29 +328,28 @@ function NoteEditor({
             }}
           >
             Reload the note
-          </button>
-        </div>
+          </Button>
+        </Callout>
       ) : null}
       {message ? <MessageText message={message} testId="note-message" /> : null}
       <div className="flex flex-wrap gap-2">
-        <button
+        <Button
           type="submit"
+          variant="primary"
           data-testid="save-note"
-          disabled={save.isPending || stale}
-          className={primaryClass}
+          loading={save.isPending}
+          disabled={stale}
         >
-          {save.isPending ? 'Saving…' : 'Save note'}
-        </button>
-        <button
-          type="button"
+          Save note
+        </Button>
+        <Button
           data-testid="cancel-note"
-          className={buttonClass}
           onClick={() => {
             onClose();
           }}
         >
           Cancel
-        </button>
+        </Button>
       </div>
     </form>
   );
@@ -364,8 +367,8 @@ function NoteHistory({
     queryFn: ({ signal }) => getNoteAudit(shift, note.id, signal),
   });
   return (
-    <div data-testid={`note-history-${String(note.id)}`} className="mt-2 print:hidden">
-      {audit.isPending ? <p className="text-sm">Loading the history…</p> : null}
+    <div data-testid={`note-history-${String(note.id)}`} className="mt-3 print:hidden">
+      {audit.isPending ? <Skeleton shape="text" rows={2} label="Loading the history…" /> : null}
       {audit.isError ? (
         <QueryError
           what="the note's history"
@@ -373,27 +376,32 @@ function NoteHistory({
           onRetry={() => void audit.refetch()}
         />
       ) : null}
-      <ol className="flex flex-col gap-1 text-sm">
+      <ol className="flex flex-col gap-2 text-sm" aria-label={`History of note ${String(note.id)}`}>
         {audit.data?.entries.map((entry) => (
           <li
             key={entry.id}
             data-testid="note-history-entry"
             data-version={String(entry.version)}
             data-action={entry.action}
-            className="rounded border border-slate-200 p-2"
+            className="rounded-md border border-line-subtle bg-surface-sunken p-3"
           >
-            <p>
-              Version {entry.version}, {entry.action === 'created' ? 'created' : 'edited'} by{' '}
-              {entry.actor}
+            <p className="text-ink-secondary">
+              <span className="font-medium text-ink">Version {entry.version}</span>,{' '}
+              {entry.action === 'created' ? 'created' : 'edited'} by {entry.actor}
               {entry.authenticated ? '' : ' (not authenticated)'} at{' '}
-              <time dateTime={entry.plantAt}>{formatPlantTime(entry.plantAt)}</time> plant time
-              {entry.requestId ? `, request ${entry.requestId}` : ''}
+              <PlantTime at={entry.plantAt} />
+              {entry.requestId ? (
+                <>
+                  {' '}
+                  · request <Code>{entry.requestId}</Code>
+                </>
+              ) : null}
             </p>
-            <p className="text-slate-700">
+            <p className="text-ink-secondary">
               {CATEGORY_LABELS[entry.after.category]}
               {entry.after.retracted ? ', retracted' : ''}
             </p>
-            <p className="whitespace-pre-wrap break-words">{entry.after.text}</p>
+            <p className="mt-1 break-words whitespace-pre-wrap text-ink">{entry.after.text}</p>
           </li>
         ))}
       </ol>
@@ -422,65 +430,67 @@ function NoteItem({
       data-version={String(note.version)}
       data-retracted={String(note.retracted)}
       data-category={note.category}
-      className="report-section rounded-lg border border-slate-300 bg-white p-3"
+      className="report-section rounded-lg border border-line bg-surface p-4"
     >
-      <p className="flex flex-wrap items-center gap-2 text-sm">
-        <span className="rounded border border-slate-500 px-1.5 text-xs font-semibold">
+      <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+        <Badge tone="neutral" variant="outline">
           {CATEGORY_LABELS[note.category]}
-        </span>
+        </Badge>
         {note.retracted ? (
-          <span
-            data-testid={`note-retracted-${id}`}
-            className="rounded border border-red-800 px-1.5 text-xs font-semibold text-red-900"
-          >
+          <Badge tone="neutral" variant="outline" data-testid={`note-retracted-${id}`}>
             Retracted
-          </span>
+          </Badge>
         ) : null}
-        <span className="text-slate-700">
+        {/* Who and when (design system 6.2: plant time needs no label); never a typed name (#170). */}
+        <span className="text-ink-secondary">
           By {note.author}
-          {note.author === note.createdBy ? '' : ` (written by ${note.createdBy})`}, version{' '}
-          {note.version},{' '}
-          <time dateTime={note.updatedPlantAt}>{formatPlantTime(note.updatedPlantAt)}</time> plant
-          time
+          {note.author === note.createdBy ? '' : ` (written by ${note.createdBy})`} · version{' '}
+          {note.version} · <PlantTime at={note.updatedPlantAt} />
         </span>
       </p>
       <p
         data-testid={`note-text-${id}`}
-        className={`mt-1 whitespace-pre-wrap break-words ${note.retracted ? 'text-slate-600 line-through' : ''}`}
+        className={`mt-2 break-words whitespace-pre-wrap ${note.retracted ? 'text-ink-secondary line-through' : 'text-ink'}`}
       >
         {note.text}
       </p>
       {saved && !editing ? (
-        <p role="status" data-testid={`note-saved-${id}`} className="mt-1 text-sm text-emerald-900">
+        <p
+          role="status"
+          data-testid={`note-saved-${id}`}
+          className="mt-2 flex items-center gap-1 text-sm text-ok-ink"
+        >
+          <Icon name="check" size={16} />
           {saved}
         </p>
       ) : null}
-      <div className="mt-2 flex flex-wrap gap-2 print:hidden">
+      <div className="mt-3 flex flex-wrap gap-2 print:hidden">
         {canWrite && !editing ? (
-          <button
+          <Button
             ref={editButton}
-            type="button"
+            size="sm"
             data-testid={`edit-note-${id}`}
-            className={buttonClass}
+            aria-label={`Edit note ${id}`}
             onClick={() => {
               setSaved(undefined);
               setEditing(true);
             }}
           >
             Edit
-          </button>
+          </Button>
         ) : null}
-        <button
-          type="button"
+        <Button
+          size="sm"
+          variant="ghost"
           data-testid={`note-history-toggle-${id}`}
           aria-expanded={history}
-          className={buttonClass}
+          aria-label={`${history ? 'Hide history' : 'History'} of note ${id}`}
           onClick={() => {
             setHistory((open) => !open);
           }}
         >
           {history ? 'Hide history' : 'History'}
-        </button>
+        </Button>
       </div>
       {canWrite && editing ? (
         <NoteEditor
@@ -499,7 +509,7 @@ function NoteItem({
   );
 }
 
-/** The handover notes of the report's instance, with the editor (#146). */
+/** The handover notes of the report's instance, with the editor (#146; UX-5b, #327). */
 export function HandoverNotes({
   report,
   shift,
@@ -525,33 +535,38 @@ export function HandoverNotes({
     await queryClient.refetchQueries({ queryKey: notesKey });
   };
   return (
-    <section
-      aria-labelledby="handover-title"
-      data-testid="handover-notes"
+    <Section
+      id="handover-title"
+      title="Handover notes"
+      testId="handover-notes"
       data-count={String(notes.length)}
-      className="report-section"
+      description={
+        <span className="print:hidden">
+          Written from the shift’s start until the end of the following shift. A wrong note is
+          retracted, never deleted; every version stays in its history.
+        </span>
+      }
     >
-      <h2 id="handover-title" className="text-xl font-semibold">
-        Handover notes
-      </h2>
-      <p className="text-sm text-slate-700 print:hidden">
-        Notes can be written from the shift&apos;s start until the end of the following shift (plant
-        time). A wrong note is retracted, never deleted; every version stays in its history.
-      </p>
-      {read.isError ? (
-        <QueryError what="the notes" error={read.error} onRetry={() => void read.refetch()} />
-      ) : null}
-      <ol className="mt-2 flex flex-col gap-2" aria-label="Notes">
-        {notes.map((note) => (
-          <NoteItem key={note.id} note={note} shift={shift} onSaved={onSaved} />
-        ))}
-      </ol>
-      {notes.length === 0 ? (
-        <p className="mt-2 text-sm" data-testid="notes-empty">
-          No handover note for this shift.
-        </p>
-      ) : null}
-      <div className="mt-3 flex flex-col gap-3 print:hidden">
+      <div className="flex flex-col gap-3">
+        {read.isError ? (
+          <QueryError what="the notes" error={read.error} onRetry={() => void read.refetch()} />
+        ) : null}
+        {notes.length > 0 ? (
+          <ol className="flex flex-col gap-3" aria-label="Notes">
+            {notes.map((note) => (
+              <NoteItem key={note.id} note={note} shift={shift} onSaved={onSaved} />
+            ))}
+          </ol>
+        ) : (
+          <Card padding="compact">
+            <EmptyState
+              size="inline"
+              icon="info"
+              title="No handover note for this shift"
+              testId="notes-empty"
+            />
+          </Card>
+        )}
         {canWrite ? (
           <NewNoteForm
             shift={shift}
@@ -559,11 +574,11 @@ export function HandoverNotes({
             onSaved={() => void onSaved()}
           />
         ) : (
-          <p data-testid="notes-read-only" className="text-sm text-slate-800">
+          <Callout tone="info" data-testid="notes-read-only" className="print:hidden">
             Your role cannot write handover notes: they are shown read-only.
-          </p>
+          </Callout>
         )}
       </div>
-    </section>
+    </Section>
   );
 }

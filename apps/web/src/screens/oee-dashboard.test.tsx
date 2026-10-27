@@ -21,8 +21,7 @@ import {
 import { renderApp, settle } from '../test/render-app.tsx';
 import { expectDecimals } from '../test/decimals.ts';
 import { NA_REASON } from '../components/oee-ui.tsx';
-import { shiftKeyLabel } from '../components/shift-picker.tsx';
-import { ShiftSpan } from './oee-dashboard.tsx';
+import { ShiftSpan, shiftKeyLabel } from '../components/shift-picker.tsx';
 
 // jsdom has no canvas: the chart is a stub, the tables beside it carry the values. It records
 // every option it is given (UX-1f: an unrelated re-render must hand it the same option).

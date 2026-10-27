@@ -56,6 +56,11 @@ const FILES = [
   'screens/oee-dashboard.tsx',
   'screens/line-oee.tsx',
   'components/oee-ui.tsx',
+  // Shift reports and handover notes (UX-5b, #327).
+  'components/shift-picker.tsx',
+  'screens/shift-list.tsx',
+  'screens/shift-report.tsx',
+  'screens/handover-notes.tsx',
 ];
 
 /** Utility prefixes: a literal with one of these is a class list. */
@@ -183,6 +188,11 @@ for (const id of [
 ]) {
   NOT_CLASSES.add(id);
 }
+/**
+ * UX-5b (#327): the print stylesheet's own section class (`report-section`, index.css), a
+ * `data-measure` value and the word of "1 break", which read like classes.
+ */
+for (const word of ['report-section', 'max-time-to-ack', 'break']) NOT_CLASSES.add(word);
 
 const CLASSES = [...new Set([...FILES.flatMap(harvest), ...PASSED_IN])]
   .filter((c) => !NOT_CLASSES.has(c))

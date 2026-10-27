@@ -75,7 +75,8 @@ export function PageHeader({
     <div data-testid={testId} className="mb-6">
       <div className="border-b border-line-subtle pb-4">
         {back ? (
-          <p className="mb-1 text-sm">
+          // The way back is navigation: not printed (UX-5b, the shift report's A4).
+          <p className="mb-1 text-sm print:hidden">
             <Link {...back.link} className="text-link underline-offset-4 hover:underline">
               ‹ {back.label}
             </Link>

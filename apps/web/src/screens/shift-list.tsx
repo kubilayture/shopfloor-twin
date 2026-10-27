@@ -3,17 +3,16 @@ import { useQueries } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import { ApiError, getShiftInstance } from '../api/client.ts';
 import { queryKeys } from '../api/queries.ts';
-import { useHeadingFocus } from '../components/heading-focus.ts';
+import { FinalityBadge } from '../components/finality-badge.tsx';
 import { QueryError } from '../components/query-error.tsx';
-import { shiftLabel, useShiftSelection } from '../components/shift-picker.tsx';
-import {
-  STATUS_TEXT,
-  finalityText,
-  instanceKey,
-  isNewerShift,
-  revisionText,
-  shiftTestKey,
-} from '../domain/shifts.ts';
+import { ShiftSpan, shiftKeyLabel, useShiftSelection } from '../components/shift-picker.tsx';
+import { Badge } from '../components/ui/badge.tsx';
+import { DataTable, type Column } from '../components/ui/data-table.tsx';
+import { EmptyState } from '../components/ui/empty-state.tsx';
+import { Missing } from '../components/ui/format.tsx';
+import { PageHeader } from '../components/ui/page-header.tsx';
+import { Skeleton } from '../components/ui/skeleton.tsx';
+import { instanceKey, isNewerShift, revisionText, shiftTestKey } from '../domain/shifts.ts';
 import { useLiveShifts, useShiftsTopic } from '../live/live-context.tsx';
 
 /**
@@ -36,76 +35,133 @@ function shownInstance(
   return live && isNewerShift(live, rest) ? live : rest;
 }
 
-export function StatusBadge({ record }: { readonly record: ShiftRecordDto }) {
+/**
+ * Where a shift is (S-01): Running, or Ended once the plant clock has passed it. Whether its report
+ * may still change is the finality badge beside it, so a final shift never reads "Final Final".
+ * Neutral: neither is abnormal. `data-status` carries the raw status.
+ */
+export function ShiftStateBadge({ status }: { readonly status: ShiftRecordDto['status'] }) {
   return (
-    <span
-      data-status={record.status}
-      className={`rounded border px-1.5 text-xs font-medium ${
-        record.final
-          ? 'border-emerald-800 text-emerald-900'
-          : record.status === 'running'
-            ? 'border-sky-800 text-sky-900'
-            : 'border-amber-700 text-amber-950'
-      }`}
-    >
-      {STATUS_TEXT[record.status]}
-    </span>
+    <Badge tone="neutral" variant="outline" data-status={status}>
+      {status === 'running' ? 'Running' : 'Ended'}
+    </Badge>
   );
 }
 
-function ShiftRow({
-  shift,
-  record,
-  missing,
-  error,
-  current,
-}: {
+/** Whether a record's revision counters say something (S-01: shown only above 0). */
+const revised = (record: ShiftRecordDto): boolean =>
+  record.revision.inputs > 0 || record.revision.content > 0;
+
+interface ShiftRow {
   readonly shift: ShiftInstanceDto;
   readonly record: ShiftRecordDto | undefined;
   readonly missing: boolean;
   readonly error: Error | null | undefined;
   readonly current: boolean;
-}) {
-  const id = shiftTestKey(shift.key);
-  return (
-    <li
-      data-testid={`shift-row-${id}`}
-      data-status={record?.status ?? (missing ? 'none' : undefined)}
-      data-final={record ? String(record.final) : undefined}
-      data-current={String(current)}
-      className="flex flex-col gap-1 rounded-lg border border-slate-300 bg-white p-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-4"
-    >
-      <Link
-        to="/shifts/$date/$shift"
-        params={{ date: shift.date, shift: shift.shift }}
-        search={{}}
-        data-testid={`shift-link-${id}`}
-        className="font-medium text-sky-800 underline"
-      >
-        {shiftLabel(shift)}
-      </Link>
-      {current ? <span className="text-sm font-semibold">Current shift</span> : null}
-      {record ? (
-        <span className="flex flex-wrap items-center gap-2 text-sm">
-          <StatusBadge record={record} />
-          <span>{finalityText(record)}</span>
-          <span className="text-slate-700">Revision: {revisionText(record)}</span>
-        </span>
-      ) : missing ? (
-        <span className="text-sm text-slate-700">No record (the plant clock did not run it)</span>
-      ) : error ? (
-        <span role="alert" className="text-sm text-red-900" data-testid={`shift-error-${id}`}>
-          Could not read its status: {error.message}
-        </span>
-      ) : (
-        <span className="text-sm text-slate-700">Loading…</span>
-      )}
-    </li>
-  );
 }
 
+/** A row's state cell: the badge, or why there is none. */
+function StateCell({ row }: { readonly row: ShiftRow }) {
+  if (row.record) return <ShiftStateBadge status={row.record.status} />;
+  if (row.missing) {
+    return (
+      <span className="text-ink-secondary" title="The plant clock did not run this shift">
+        No record
+      </span>
+    );
+  }
+  if (row.error) {
+    return (
+      <span
+        role="alert"
+        className="text-alarm-ink"
+        data-testid={`shift-error-${shiftTestKey(row.shift.key)}`}
+      >
+        Could not read its status: {row.error.message}
+      </span>
+    );
+  }
+  return <span className="text-ink-secondary">Loading…</span>;
+}
+
+/**
+ * The list's columns (S-01, design system 4.5): the shift names the row (`th`) and links to its
+ * report; its time; its state and its finality, each said once; the revision only when a shift
+ * of the list was revised, and then only on the rows that were.
+ */
+function columns(withRevision: boolean): readonly Column<ShiftRow>[] {
+  return [
+    {
+      key: 'shift',
+      header: 'Shift',
+      rowHeader: true,
+      cell: (row) => (
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+          <Link
+            to="/shifts/$date/$shift"
+            params={{ date: row.shift.date, shift: row.shift.shift }}
+            search={{}}
+            data-testid={`shift-link-${shiftTestKey(row.shift.key)}`}
+            className="font-medium whitespace-nowrap text-link underline-offset-4 hover:underline"
+          >
+            {shiftKeyLabel(row.shift.key)}
+          </Link>
+          {row.current ? (
+            <Badge tone="neutral" variant="soft">
+              Current
+            </Badge>
+          ) : null}
+        </span>
+      ),
+    },
+    {
+      key: 'time',
+      header: 'Time',
+      priority: 2,
+      cell: (row) => <ShiftSpan start={row.shift.start} end={row.shift.end} />,
+    },
+    { key: 'state', header: 'State', cell: (row) => <StateCell row={row} /> },
+    {
+      key: 'finality',
+      header: 'Report',
+      cell: (row) =>
+        row.record ? (
+          <FinalityBadge
+            final={row.record.final}
+            title={
+              row.record.final
+                ? 'Every input (OEE, downtime, alarm KPIs) is final'
+                : 'An input is not final yet: the report may still change'
+            }
+          />
+        ) : (
+          <Missing reason="No report without a record" />
+        ),
+    },
+    ...(withRevision
+      ? [
+          {
+            key: 'revision',
+            header: 'Revision',
+            priority: 3 as const,
+            cell: (row: ShiftRow) =>
+              row.record && revised(row.record) ? (
+                <span className="tabular-nums">{revisionText(row.record)}</span>
+              ) : (
+                <Missing reason="Not revised" />
+              ),
+          },
+        ]
+      : []),
+  ];
+}
+
+/**
+ * The shift reports (UX-5b, #327; design system section 10, S-01, S-02): the last week's shifts,
+ * current first, as a table of shift, time, state and report finality, each row a link to its
+ * report.
+ */
 export function ShiftList() {
-  const heading = useHeadingFocus<HTMLHeadingElement>();
   useShiftsTopic();
   const selection = useShiftSelection(undefined);
   const currentKey = selection.current?.shift?.key;
@@ -117,43 +173,69 @@ export function ShiftList() {
     })),
   });
   const pushed = useLiveShifts()?.instances;
+  const rows: ShiftRow[] = selection.shifts.map((shift, index) => {
+    const query = instances[index];
+    return {
+      shift,
+      record: shownInstance(shift.key, query?.data, pushed),
+      missing: query?.error instanceof ApiError && query.error.status === 404,
+      error: query?.error,
+      current: shift.key === currentKey,
+    };
+  });
+  const withRevision = rows.some((row) => row.record !== undefined && revised(row.record));
+  const notFinal = rows.filter((row) => row.record && !row.record.final).length;
+  const loaded = !selection.pending && !selection.error;
 
   return (
     <section aria-labelledby="shift-list-title">
-      <h1 ref={heading} id="shift-list-title" tabIndex={-1} className="text-2xl font-bold">
-        Shift reports
-      </h1>
-      <p className="mt-1 text-sm text-slate-700">
-        The shifts of the last week, current first. A report is final once every input (OEE,
-        downtime, alarm KPIs) is final; its revision counts what changed after that.
-      </p>
-      {selection.pending ? <p className="mt-4">Loading shifts…</p> : null}
+      <PageHeader
+        id="shift-list-title"
+        title="Shift reports"
+        description="The last 7 days’ shifts, current first; days the plant does not work have none."
+        summary={
+          loaded && rows.length > 0 ? (
+            <span data-testid="shift-list-summary">
+              {rows.length} shift{rows.length === 1 ? '' : 's'}
+              {notFinal > 0 ? ` · ${String(notFinal)} not final yet` : ''}
+            </span>
+          ) : undefined
+        }
+      />
+      {selection.pending ? <Skeleton shape="table" label="Loading shifts…" /> : null}
       {selection.error ? (
-        <div className="mt-4">
-          <QueryError what="the shifts" error={selection.error} onRetry={selection.retry} />
-        </div>
+        <QueryError what="the shifts" error={selection.error} onRetry={selection.retry} />
       ) : null}
-      {!selection.pending && !selection.error && selection.shifts.length === 0 ? (
-        <p className="mt-4" data-testid="shift-list-empty">
-          No shift yet: the plant clock has not started.
+      {loaded ? (
+        <DataTable
+          caption="Shifts of the last 7 days, current first"
+          testId="shift-list"
+          columns={columns(withRevision)}
+          rows={rows}
+          rowKey={(row) => row.shift.key}
+          rowTestId={(row) => `shift-row-${shiftTestKey(row.shift.key)}`}
+          rowProps={(row) => ({
+            'data-status': row.record?.status ?? (row.missing ? 'none' : undefined),
+            'data-final': row.record ? String(row.record.final) : undefined,
+            'data-current': String(row.current),
+          })}
+          narrow="stack"
+          empty={
+            <EmptyState
+              icon="clock"
+              title="No shift yet"
+              body="The plant clock has not started."
+              testId="shift-list-empty"
+            />
+          }
+        />
+      ) : null}
+      {loaded && rows.length > 0 ? (
+        <p className="mt-3 text-sm text-ink-secondary">
+          A report is final once every input (OEE, downtime, alarm KPIs) is final; its revision
+          counts what changed after that.
         </p>
       ) : null}
-      <ol className="mt-4 flex flex-col gap-2" data-testid="shift-list" aria-label="Shifts">
-        {selection.shifts.map((shift, index) => {
-          const query = instances[index];
-          const missing = query?.error instanceof ApiError && query.error.status === 404;
-          return (
-            <ShiftRow
-              key={shift.key}
-              shift={shift}
-              record={shownInstance(shift.key, query?.data, pushed)}
-              missing={missing}
-              error={query?.error}
-              current={shift.key === currentKey}
-            />
-          );
-        })}
-      </ol>
     </section>
   );
 }

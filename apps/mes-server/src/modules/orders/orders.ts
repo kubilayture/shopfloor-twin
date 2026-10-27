@@ -1097,13 +1097,15 @@ export class Orders {
   }
 
   /**
-   * Closes an operator's open intervals at a work center started by `until` (the crew row's end,
-   * wall time): their crew row there ended.
+   * Closes an operator's open intervals at a work center started under the crew row `crewId`
+   * (#366; those without one: started by `until`, the crew row's end in wall time): that crew row
+   * ended.
    */
   async endActivities(who: {
     readonly userId: number;
     readonly workCenter: string;
     readonly until: Date;
+    readonly crewId?: number;
   }): Promise<number> {
     const touched = await endActivities(this.#db, who, this.#plantNow());
     await this.#emitOperations(touched);

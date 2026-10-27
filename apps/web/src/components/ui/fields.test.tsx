@@ -283,6 +283,17 @@ describe('the controls', () => {
     const show = screen.getByRole('group', { name: 'Show' });
     expect(describedText(show)).toBe('Any of them.');
     expect(within(show).getAllByRole('checkbox')).toHaveLength(2);
+    expect(show.querySelector('legend')?.className).toBe('mb-1 text-sm font-medium text-ink');
+  });
+
+  it('ChoiceGroup with a hidden legend: still the group’s name, visually hidden', () => {
+    render(
+      <ChoiceGroup legend="Roles of ana" legendHidden inline>
+        <Checkbox label="Operator" name="roles-ana" />
+      </ChoiceGroup>,
+    );
+    const group = screen.getByRole('group', { name: 'Roles of ana' });
+    expect(group.querySelector('legend')?.className).toBe('sr-only');
   });
 });
 

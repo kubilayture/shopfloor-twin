@@ -132,6 +132,17 @@ export async function outcome(page: Page, testId: string, pattern: RegExp): Prom
   await expect(line).toHaveAttribute('data-kind', 'done');
 }
 
+/**
+ * Gives the confirmation a lever that cannot be taken back asks for (UX-10, #334; design system
+ * 4.9): the button that repeats the verb in the dialog `testId`.
+ */
+export async function confirm(page: Page, testId: string, label: string): Promise<void> {
+  const dialog = page.getByTestId(testId);
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: label, exact: true }).click();
+  await expect(dialog).toBeHidden();
+}
+
 /** Sets the speed through the console's speed control. */
 export async function setSpeed(page: Page, speed: number): Promise<void> {
   await page.getByTestId('sim-speed-input').fill(String(speed));

@@ -462,12 +462,17 @@ function useFocusAfterRemoval(
 function Check({
   label,
   checked,
+  name,
+  value,
   indeterminate = false,
   disabled = false,
   testId,
   onChange,
 }: {
   readonly label: string;
+  /** Every control has a name (G-23): `<table test id>-select`, the row's key its value. */
+  readonly name: string;
+  readonly value?: string | undefined;
   readonly checked: boolean;
   readonly indeterminate?: boolean;
   readonly disabled?: boolean;
@@ -486,6 +491,8 @@ function Check({
         ref={ref}
         type="checkbox"
         aria-label={label}
+        name={name}
+        value={value}
         data-testid={testId}
         checked={checked}
         disabled={disabled}
@@ -649,6 +656,8 @@ export function DataTable<Row>({
     return (
       <Check
         label={selection.label(row)}
+        name={`${testId}-select`}
+        value={key}
         checked={selection.selected.has(key)}
         testId={selection.rowTestId?.(row)}
         onChange={(on) => {
@@ -660,6 +669,7 @@ export function DataTable<Row>({
   const allCheck = selection ? (
     <Check
       label={selection.allLabel}
+      name={`${testId}-select-all`}
       checked={all}
       indeterminate={chosen.length > 0 && !all}
       disabled={selectable.length === 0}

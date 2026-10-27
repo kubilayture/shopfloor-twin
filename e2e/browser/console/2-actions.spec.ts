@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { account, logIn } from '../login.ts';
+import { confirm } from './effects.ts';
 
 /**
  * Every console action through `/console` as admin (#237), each one seen where it lands: the
@@ -92,6 +93,7 @@ test('admin drives every console action, each reaching the simulator', async ({ 
   await page.getByTestId('failure-code').fill('COOLANT-PRESSURE');
   await page.getByTestId('failure-repair').fill('12');
   await page.getByTestId('failure-inject').click();
+  await confirm(page, 'confirm-failure', 'Inject failure');
   await outcome(page, 'failure-outcome', /Failure COOLANT-PRESSURE on cnc-02/);
   const injections = (
     await sim<{ injections: { machine: string; code: string; repairMs?: number }[] }>(
@@ -107,6 +109,7 @@ test('admin drives every console action, each reaching the simulator', async ({ 
   // A refused one is shown as the simulator said it (an unknown code: 404).
   await page.getByTestId('failure-code').fill('NO-SUCH-CODE');
   await page.getByTestId('failure-inject').click();
+  await confirm(page, 'confirm-failure', 'Inject failure');
   await expect(page.getByTestId('failure-outcome')).toHaveAttribute('data-kind', 'failed');
 
   // 4. A leak-test drift from now for 37 simulated minutes (off any calendar boundary).
@@ -116,6 +119,7 @@ test('admin drives every console action, each reaching the simulator', async ({ 
   await page.getByTestId('drift-shift').fill('0.6');
   await page.getByTestId('drift-until').fill(until);
   await page.getByTestId('drift-inject').click();
+  await confirm(page, 'confirm-drift', 'Inject drift');
   await outcome(page, 'drift-outcome', /Leak-test drift of 0.6/);
   const drifts = (await sim<{ drifts: { machine: string; until: string }[] }>('/faults/drifts'))
     .drifts;
@@ -148,10 +152,12 @@ test('admin drives every console action, each reaching the simulator', async ({ 
   await page.getByTestId('absent-op-c1').check();
   await page.getByTestId('absent-op-c2').check();
   await page.getByTestId('absent-submit').click();
+  await confirm(page, 'confirm-absent', 'Mark absent');
   await outcome(page, 'absent-outcome', /op-c1, op-c2 absent in shift 2026-10-12\/C/);
 
   // 8. CNC-01's tool breaks.
   await page.getByTestId('tool-break-cnc-01').click();
+  await confirm(page, 'confirm-tool', 'Break tool');
   await outcome(page, 'tool-outcome', /cnc-01's tool breaks/);
 
   // Every console action is in the simulator's list, in order, and on the page.

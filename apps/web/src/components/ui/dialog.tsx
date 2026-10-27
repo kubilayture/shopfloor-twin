@@ -204,7 +204,12 @@ export function Dialog({
             />
           </header>
           <div ref={content} className="flex min-h-0 flex-1 flex-col">
-            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4 text-sm">{children}</div>
+            {/* A confirmation says everything in its description: no empty padded body. */}
+            {children === undefined || children === null || children === false ? null : (
+              <div data-dialog-body="" className="min-h-0 flex-1 overflow-y-auto px-5 py-4 text-sm">
+                {children}
+              </div>
+            )}
             {footer === undefined ? null : (
               <footer className="flex flex-wrap justify-end gap-2 border-t border-line-subtle px-5 py-3">
                 {footer}

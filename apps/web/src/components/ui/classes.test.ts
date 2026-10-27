@@ -56,6 +56,9 @@ const FILES = [
   'screens/oee-dashboard.tsx',
   'screens/line-oee.tsx',
   'components/oee-ui.tsx',
+  // The simulation console and the users (UX-10, #334).
+  'screens/console.tsx',
+  'screens/users.tsx',
 ];
 
 /** Utility prefixes: a literal with one of these is a class list. */
@@ -183,6 +186,8 @@ for (const id of [
 ]) {
   NOT_CLASSES.add(id);
 }
+/** UX-10 (#334): the console's repair time unit, `unit="min"`. */
+NOT_CLASSES.add('min');
 
 const CLASSES = [...new Set([...FILES.flatMap(harvest), ...PASSED_IN])]
   .filter((c) => !NOT_CLASSES.has(c))

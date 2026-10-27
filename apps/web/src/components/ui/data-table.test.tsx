@@ -341,6 +341,10 @@ describe('DataTable selection', () => {
       'select-a1',
     );
     expect(screen.queryByTestId('select-a3')).toBeNull();
+    // Every control has a name (G-23): the table's, with the row's key as the value.
+    expect(all().getAttribute('name')).toBe('alarm-table-select-all');
+    expect(screen.getByTestId('select-a1').getAttribute('name')).toBe('alarm-table-select');
+    expect(screen.getByTestId<HTMLInputElement>('select-a1').value).toBe('a1');
     expect(all().parentElement?.tagName).toBe('LABEL');
     expect(all().parentElement?.className).toMatch(/\bsize-6\b/);
     expect(screen.getByTestId('select-a1').parentElement?.className).toMatch(/\bsize-6\b/);

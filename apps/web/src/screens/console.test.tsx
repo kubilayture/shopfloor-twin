@@ -84,6 +84,19 @@ function fakeSim() {
         return json({ injections: state.injections });
       case 'GET /faults/drifts':
         return json({ drifts: [] });
+      case 'POST /faults/drift/lkt-01': {
+        const { shift, until, at } = body as { shift: number; until: string; at?: string };
+        return json({
+          drift: {
+            id: 1,
+            machine: 'lkt-01',
+            shift,
+            until,
+            at: at ?? state.simTime,
+            status: 'scheduled',
+          },
+        });
+      }
       case 'POST /faults/failure/cnc-01': {
         const { code } = body as { code: string };
         if (code !== 'SPINDLE-OVERLOAD') {
@@ -216,6 +229,11 @@ class SilentSocket {
   }
 }
 
+/** Gives the confirmation of an irreversible lever (design system 4.9). */
+function confirm(testId: string, label: string) {
+  fireEvent.click(within(screen.getByTestId(testId)).getByRole('button', { name: label }));
+}
+
 beforeEach(() => {
   SilentSocket.instances.length = 0;
   vi.stubGlobal('WebSocket', SilentSocket);
@@ -284,6 +302,7 @@ it('drives the run, injects, blocks, marks absent, breaks a tool and loads a tim
   fireEvent.change(screen.getByTestId('failure-machine'), { target: { value: 'cnc-01' } });
   fireEvent.change(screen.getByTestId('failure-code'), { target: { value: 'NOPE' } });
   fireEvent.click(screen.getByTestId('failure-inject'));
+  confirm('confirm-failure', 'Inject failure');
   expect((await screen.findByTestId('failure-outcome')).textContent).toBe(
     'cnc-01 has no failure mode NOPE',
   );
@@ -292,6 +311,7 @@ it('drives the run, injects, blocks, marks absent, breaks a tool and loads a tim
   });
   fireEvent.change(screen.getByTestId('failure-repair'), { target: { value: '30' } });
   fireEvent.click(screen.getByTestId('failure-inject'));
+  confirm('confirm-failure', 'Inject failure');
   await waitFor(() => {
     expect(screen.getByTestId('failure-outcome').dataset.kind).toBe('done');
   });
@@ -302,11 +322,13 @@ it('drives the run, injects, blocks, marks absent, breaks a tool and loads a tim
 
   fireEvent.click(await screen.findByTestId('absent-op-b1'));
   fireEvent.click(screen.getByTestId('absent-submit'));
+  confirm('confirm-absent', 'Mark absent');
   expect((await screen.findByTestId('absent-outcome')).textContent).toMatch(
     /op-b1 absent in shift 2026-10-12\/B/,
   );
 
   fireEvent.click(screen.getByTestId('tool-break-cnc-01'));
+  confirm('confirm-tool', 'Break tool');
   expect((await screen.findByTestId('tool-outcome')).textContent).toMatch(/cnc-01's tool breaks/);
 
   fireEvent.click(screen.getByTestId('opcua-toggle-cnc-01'));
@@ -427,4 +449,100 @@ it('tails the plant event stream from /sim/api/v1/events, newest first', async (
     { timeout: 3_000 },
   );
   expect(screen.getByTestId('events-connection').dataset.connected).toBe('true');
+});
+
+it('lays the console out in sections with an index, and every field has a name (G-23)', async () => {
+  vi.stubGlobal('fetch', fakeSim().fetch);
+  await renderApp('/console', { session: ADMIN });
+  await screen.findByTestId('failure-code');
+  const index = screen.getByRole('navigation', { name: 'On this page' });
+  expect(
+    within(index)
+      .getAllByRole('link')
+      .map((a) => a.textContent),
+  ).toEqual(['Run', 'Scenario', 'Faults', 'Materials', 'Operators', 'Log']);
+  for (const link of within(index).getAllByRole<HTMLAnchorElement>('link')) {
+    const id = link.getAttribute('href')?.slice(1) ?? '';
+    expect(document.getElementById(id)?.tagName, id).toBe('H2');
+  }
+  await screen.findByTestId('lot-BL100-2610-01');
+  await screen.findByTestId('absent-op-b1');
+  const unnamed = [...document.querySelectorAll('main input, main select, main textarea')].filter(
+    (field) => !field.getAttribute('name'),
+  );
+  expect(unnamed.map((field) => field.outerHTML)).toEqual([]);
+  // Times in simulation time (design system 4.8).
+  expect(
+    screen.getByRole('group', {
+      name: /^Until \(required\), simulation time in Europe\/Istanbul$/,
+    }),
+  ).toBeTruthy();
+});
+
+it('says what a required field misses and sends nothing; an unreadable optional time is not dropped', async () => {
+  const sim = fakeSim();
+  vi.stubGlobal('fetch', sim.fetch);
+  await renderApp('/console', { session: ADMIN });
+  fireEvent.click(await screen.findByTestId('failure-inject'));
+  expect(screen.getByTestId('failure-code').getAttribute('aria-invalid')).toBe('true');
+  expect(screen.getByText('Enter a failure code.')).toBeTruthy();
+  fireEvent.click(screen.getByTestId('drift-inject'));
+  expect(screen.getByTestId('drift-until').getAttribute('aria-invalid')).toBe('true');
+  expect(screen.getByText('Enter when the drift ends.')).toBeTruthy();
+  fireEvent.change(screen.getByTestId('failure-code'), { target: { value: 'SPINDLE-OVERLOAD' } });
+  fireEvent.change(screen.getByTestId('failure-at'), { target: { value: 'soon' } });
+  fireEvent.click(screen.getByTestId('failure-inject'));
+  expect(screen.getByText('Enter a time this box can read, or leave it empty.')).toBeTruthy();
+  expect(screen.getByTestId<HTMLDialogElement>('confirm-failure').open).toBe(false);
+  expect(sim.calls.filter((c) => c.method !== 'GET')).toEqual([]);
+});
+
+it('asks before an irreversible lever; Cancel sends nothing, the drift keeps its milliseconds', async () => {
+  const sim = fakeSim();
+  vi.stubGlobal('fetch', sim.fetch);
+  await renderApp('/console', { session: ADMIN });
+  fireEvent.click(await screen.findByTestId('tool-break-cnc-01'));
+  const dialog = screen.getByTestId('confirm-tool');
+  expect(within(dialog).getByRole('heading').textContent).toMatch(
+    /^Break the tool on .* \(cnc-01\)\?$/,
+  );
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+  await waitFor(() => {
+    expect(screen.getByTestId<HTMLDialogElement>('confirm-tool').open).toBe(false);
+  });
+  expect(sim.calls.filter((c) => c.method !== 'GET')).toEqual([]);
+
+  // The time box takes a whole ISO instant, milliseconds kept to the write.
+  const until = '2026-10-12T03:37:00.123Z';
+  fireEvent.change(screen.getByTestId('drift-until'), { target: { value: until } });
+  fireEvent.click(screen.getByTestId('drift-inject'));
+  confirm('confirm-drift', 'Inject drift');
+  await waitFor(() => {
+    expect(screen.getByTestId('drift-outcome').dataset.kind).toBe('done');
+  });
+  expect(sim.calls.filter((c) => c.method !== 'GET').map((c) => c.body)).toEqual([
+    { shift: 0.6, until },
+  ]);
+});
+
+it('emphasises the lot action that matches its state, and every column has a header (N-01, N-03)', async () => {
+  vi.stubGlobal('fetch', fakeSim().fetch);
+  await renderApp('/console', { session: ADMIN });
+  const free = await screen.findByTestId('lot-BL100-2610-01');
+  const blocked = screen.getByTestId('lot-BL100-2610-02');
+  expect(free.dataset.blocked).toBe('false');
+  expect(blocked.dataset.blocked).toBe('true');
+  expect(screen.getByTestId('lot-block-BL100-2610-01').className).toMatch(/text-alarm-ink/);
+  expect(screen.getByTestId('lot-release-BL100-2610-01').className).toMatch(/border-transparent/);
+  expect(screen.getByTestId('lot-release-BL100-2610-02').className).toMatch(/border-line-strong/);
+  expect(screen.getByTestId('lot-block-BL100-2610-02').className).not.toMatch(/text-alarm-ink/);
+  const table = screen.getByRole('table', { name: 'Material lots' });
+  expect(
+    within(table)
+      .getAllByRole('columnheader')
+      .map((h) => h.textContent),
+  ).toEqual(['Lot', 'Material', 'Remaining', 'State', 'Actions']);
+  // Nothing on the event stream yet: an empty state, not a bare caption (N-05).
+  expect(screen.getByText('No plant event yet')).toBeTruthy();
+  expect(screen.queryByTestId('event-list')).toBeNull();
 });

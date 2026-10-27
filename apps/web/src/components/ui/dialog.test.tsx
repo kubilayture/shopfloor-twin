@@ -280,6 +280,8 @@ describe('ConfirmDialog', () => {
     expect(
       document.getElementById(dialog.getAttribute('aria-describedby') ?? '')?.textContent,
     ).toBe('Its open quantity is cancelled. A closed order cannot be opened again.');
+    // Everything is said in the description: no empty, padded body between it and the buttons.
+    expect(dialog.querySelector('[data-dialog-body]')).toBeNull();
     const confirm = screen.getByRole('button', { name: 'Close order' });
     expect(confirm.className).toContain('bg-alarm-solid');
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Cancel' }));

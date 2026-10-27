@@ -1,18 +1,50 @@
 import type { Ratio } from '@shopfloor/contracts/mes-api';
-import { NOT_APPLICABLE, percentText, ratioText, type StatusFlag } from '../domain/oee.ts';
-import { TONE_CLASS, badgeShape } from './ui/badge.tsx';
+import type { StatusFlag } from '../domain/oee.ts';
+import { minutesText } from '../domain/oee.ts';
+import { FinalityBadge } from './finality-badge.tsx';
+import { Badge, TONE_CLASS, badgeShape } from './ui/badge.tsx';
+import { Percent } from './ui/format.tsx';
 import { Icon } from './ui/icons.tsx';
+import type { StatProps } from './ui/stat.tsx';
+
+/** A flag as a badge: the key, the word and what it means (its tooltip). */
+type Flag = Pick<StatusFlag, 'key' | 'text' | 'title'>;
 
 /**
  * A status flag's look (design system 2.6): final is a neutral outline with a check, provisional a
  * neutral dashed outline, a revision `info`; what else may change (incidents, may be revised,
- * above 1) is `warn`.
+ * above 1, an anomaly) is `warn`.
  */
-function flagClass(flag: StatusFlag): string {
+function flagClass(flag: Flag): string {
   if (flag.key === 'final') return TONE_CLASS.neutral.outline;
   if (flag.key === 'provisional') return TONE_CLASS.neutral.dashed;
   if (flag.key === 'revision') return TONE_CLASS.info.outline;
   return TONE_CLASS.warn.outline;
+}
+
+/** The flags as a list of text badges, each with its key in `data-flag` and its meaning as tooltip. */
+export function FlagBadges({
+  flags,
+  label = 'Status',
+}: {
+  readonly flags: readonly Flag[];
+  readonly label?: string;
+}) {
+  return (
+    <ul className="flex flex-wrap gap-1" aria-label={label}>
+      {flags.map((flag) => (
+        <li
+          key={flag.key}
+          title={flag.title}
+          data-flag={flag.key}
+          className={`${badgeShape()} ${flagClass(flag)}`}
+        >
+          {flag.key === 'final' ? <Icon name="check" size={12} /> : null}
+          {flag.text}
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 /**
@@ -30,19 +62,7 @@ export function StatusFlags({
 }) {
   return (
     <div className="flex flex-col gap-1">
-      <ul className="flex flex-wrap gap-1" aria-label={label}>
-        {flags.map((flag) => (
-          <li
-            key={flag.key}
-            title={flag.title}
-            data-flag={flag.key}
-            className={`${badgeShape()} ${flagClass(flag)}`}
-          >
-            {flag.key === 'final' ? <Icon name="check" size={12} /> : null}
-            {flag.text}
-          </li>
-        ))}
-      </ul>
+      <FlagBadges flags={flags} label={label} />
       <details className="text-xs text-ink-secondary" data-testid="flag-explanations">
         <summary className="cursor-pointer">What the status means</summary>
         <dl className="mt-1">
@@ -69,64 +89,83 @@ export const NA_REASON = {
 } as const;
 
 /**
- * A ratio as the MES sends it: the four-decimal string as text (`n/a` when null), the exact
- * fraction in `data-fraction` and the tooltip, or why it is not applicable. Read by the
- * reconciliation's Playwright check. `data-decimal` holds the four-decimal string too (UX-1c,
- * #315), so the specs can move to it before the visible text becomes a percentage.
+ * A ratio as a `Stat`'s figure (UX-6b, UX-3): the percentage, its four decimals in
+ * `data-decimal` and the exact fraction in `data-fraction` and the tooltip; when it does not
+ * apply, the dash with its reason as the visible hint line under it, said once (E-01).
  */
-export function RatioValue({
-  ratio,
-  na,
+export function ratioStat(
+  label: string,
+  ratio: Ratio | null | undefined,
+  na: string,
+  testId?: string,
+): Omit<StatProps, 'emphasis'> {
+  return {
+    label,
+    value: <Percent ratio={ratio} na={na} naShown={!ratio} testId={testId} />,
+    hint: ratio ? undefined : na,
+  };
+}
+
+/** Whether a group of buckets is all final, all provisional or a mix (none: no bucket). */
+export type GroupFinality = 'final' | 'provisional' | 'mixed';
+
+export function groupFinality(
+  buckets: readonly { readonly final: boolean }[],
+): GroupFinality | undefined {
+  if (buckets.length === 0) return undefined;
+  const final = buckets.filter((bucket) => bucket.final).length;
+  return final === buckets.length ? 'final' : final === 0 ? 'provisional' : 'mixed';
+}
+
+/**
+ * The finality of a section's buckets, said once beside its heading (E-03): Final, Provisional
+ * (the most time that may still change in its tooltip), or how many are final. `data-finality`
+ * carries `final`, `provisional` or `mixed`.
+ */
+export function SectionFinality({
+  buckets,
   testId,
-  className = 'font-mono tabular-nums',
 }: {
-  readonly ratio: Ratio | null | undefined;
-  /** Why the value would be null (`NA_REASON`). */
-  readonly na: string;
-  readonly testId?: string;
-  readonly className?: string;
+  readonly buckets: readonly { readonly final: boolean; readonly provisionalMs?: number }[];
+  readonly testId: string;
 }) {
+  const finality = groupFinality(buckets);
+  if (finality === undefined) return null;
+  const open = buckets.flatMap((bucket) =>
+    bucket.provisionalMs === undefined ? [] : [bucket.provisionalMs],
+  );
+  const title =
+    finality === 'final'
+      ? 'Nothing that can still arrive changes these values'
+      : open.length > 0
+        ? `Time in pieces that may still change: up to ${minutesText(Math.max(0, ...open))} per item`
+        : 'An input is not final yet: these values may still change';
+  if (finality !== 'mixed') {
+    return <FinalityBadge final={finality === 'final'} title={title} testId={testId} />;
+  }
+  const final = buckets.filter((bucket) => bucket.final).length;
   return (
-    <span
+    <Badge
+      tone="neutral"
+      variant="dashed"
       data-testid={testId}
-      data-fraction={ratio?.fraction ?? NOT_APPLICABLE}
-      data-decimal={ratioText(ratio)}
-      title={ratio ? `${ratio.fraction} exactly` : na}
-      className={className}
+      data-finality="mixed"
+      title={`${title}; the provisional ones say so`}
     >
-      {ratioText(ratio)}
-    </span>
+      {final} of {buckets.length} final
+    </Badge>
   );
 }
 
-/** A headline ratio: the percentage large (its `data-decimal` raw), the four decimals beside it. */
-export function RatioHeadline({
-  label,
-  ratio,
-  na,
-  testId,
-}: {
-  readonly label: string;
-  readonly ratio: Ratio | null | undefined;
-  readonly na: string;
-  readonly testId: string;
-}) {
-  return (
-    <p>
-      <span className="text-sm text-slate-700">{label} </span>
-      <span
-        className="text-3xl font-bold tabular-nums"
-        data-testid={`${testId}-percent`}
-        data-decimal={ratioText(ratio)}
-      >
-        {percentText(ratio)}
-      </span>{' '}
-      <RatioValue
-        ratio={ratio}
-        na={na}
-        testId={testId}
-        className="ml-1 font-mono text-sm text-slate-700"
-      />
-    </p>
+/**
+ * An item's own flags under a section's finality (E-03): its finality only when the section is
+ * a mix, then revision, incidents and an anomaly, which are never the same for every item.
+ */
+export function itemFlags<F extends { readonly key: string }>(
+  flags: readonly F[],
+  finality: GroupFinality | undefined,
+): F[] {
+  return flags.filter(
+    (flag) => (flag.key !== 'final' && flag.key !== 'provisional') || finality === 'mixed',
   );
 }

@@ -55,6 +55,10 @@ const FILES = [
   'screens/trace-carton.tsx',
   // Quality holds (UX-9b, #333).
   'screens/holds.tsx',
+  // The OEE dashboard and line OEE (UX-3, #323).
+  'screens/oee-dashboard.tsx',
+  'screens/line-oee.tsx',
+  'components/oee-ui.tsx',
 ];
 
 /** Utility prefixes: a literal with one of these is a class list. */
@@ -163,6 +167,25 @@ const NOT_CLASSES = new Set(['top', 'bottom', 'text', 'p', 'group', 'size']);
 NOT_CLASSES.add('col');
 /** UX-2 (#322): a row header cell's `scope: 'row'`. */
 NOT_CLASSES.add('row');
+/** UX-3 (#323): the line OEE card's test ids and heading id, which start like `line-*` classes. */
+for (const id of [
+  'line-bottleneck-',
+  'line-bottlenecks',
+  'line-hour-',
+  'line-hours',
+  'line-hours-finality',
+  'line-oee-above-one',
+  'line-oee-card',
+  'line-oee-good',
+  'line-oee-ideal',
+  'line-oee-idle',
+  'line-oee-mode',
+  'line-oee-planned',
+  'line-oee-value',
+  'line-title',
+]) {
+  NOT_CLASSES.add(id);
+}
 
 const CLASSES = [...new Set([...FILES.flatMap(harvest), ...PASSED_IN])]
   .filter((c) => !NOT_CLASSES.has(c))

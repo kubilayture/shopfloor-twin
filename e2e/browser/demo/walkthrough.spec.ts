@@ -480,9 +480,11 @@ test('the demo walkthrough: eight scenes, each asserting what it shows', async (
       await expect(paretoRow).toBeVisible({ timeout: 30_000 });
       // On the page: the breakdown's 30 minutes in CNC-01's Pareto, its availability below 1.
       await expect(paretoRow.locator('td').nth(2)).toHaveText('30.0 min');
-      const shownAvailability = machineRow.locator('td').nth(1);
-      await expect(shownAvailability).toHaveText(/^0\.\d{4}$/);
-      await expect(shownAvailability).not.toHaveText('1.0000');
+      // The availability cell shows a percentage (UX-3, #323); its four decimals are raw in
+      // data-decimal.
+      const shownAvailability = machineRow.locator('td').nth(1).locator('[data-decimal]');
+      await expect(shownAvailability).toHaveAttribute('data-decimal', /^0\.\d{4}$/);
+      await expect(shownAvailability).not.toHaveAttribute('data-decimal', '1.0000');
 
       // The line card's bottleneck per product, equal to the MES's derived one.
       const line = await mes<{ bottlenecks: { product: string; equipment: string[] }[] }>(

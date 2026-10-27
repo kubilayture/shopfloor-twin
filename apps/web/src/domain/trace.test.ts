@@ -6,7 +6,9 @@ import {
   TRACE_POLL_MOVING_MS,
   TRACE_POLL_SETTLED_MS,
   LOT_FAST_POLL_UNITS,
+  RESULT_TONE,
   UNIT_KEY,
+  UNIT_STATUS_TONE,
   blankLots,
   blocking,
   componentPasses,
@@ -15,6 +17,7 @@ import {
   operatorText,
   overLimit,
   serialMoving,
+  singleRun,
   lotMoving,
   tracePoll,
   unitKey,
@@ -91,6 +94,24 @@ describe('trace helpers (#202)', () => {
     expect(componentPasses(assembly([]))[0]?.lots).toEqual([]);
     const washer = unit({ records: [record(), record({ operation: 'OP20', lots: null })] });
     expect(componentPasses(washer)).toEqual([]);
+  });
+
+  it('raises a scrapped unit and a scrapped or reworked cycle (T-02), and nothing normal', () => {
+    expect(UNIT_STATUS_TONE).toEqual({
+      wip: 'neutral',
+      packed: 'neutral',
+      scrapped: 'alarm',
+      lost: 'warn',
+    });
+    expect(RESULT_TONE).toEqual({ good: 'neutral', rework: 'warn', scrap: 'alarm' });
+  });
+
+  it('finds the one run of a list of units, or none when they span several (T-05)', () => {
+    expect(singleRun([])).toBeUndefined();
+    expect(singleRun([unit({ epoch: 3 })])).toBe(3);
+    expect(singleRun([unit({ epoch: 3 }), unit({ epoch: 3, partId: 43 })])).toBe(3);
+    expect(singleRun([unit({ epoch: 3 }), unit({ epoch: 2 })])).toBeUndefined();
+    expect(singleRun([unit({ epoch: 2 }), unit({ epoch: 3 }), unit({ epoch: 3 })])).toBeUndefined();
   });
 
   it('tells operators apart: an id, none, or not reported', () => {

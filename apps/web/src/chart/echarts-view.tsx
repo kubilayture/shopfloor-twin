@@ -4,6 +4,7 @@ import {
   use as registerModules,
   type EChartsCoreOption,
   type EChartsType,
+  type SetOptionOpts,
 } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
 import { useEffect, useRef } from 'react';
@@ -44,6 +45,44 @@ export function themedOption(option: EChartsCoreOption, read: TokenReader): ECha
 }
 
 /**
+ * An option's shape (#356): each component it has and how many, `series:2|xAxis:1|yAxis:1|...`.
+ * Two options of the same shape differ only in their values.
+ */
+export function optionShape(option: EChartsCoreOption): string {
+  return Object.keys(option)
+    .sort()
+    .map((key) => {
+      const value = option[key];
+      return Array.isArray(value) ? `${key}:${String(value.length)}` : key;
+    })
+    .join('|');
+}
+
+/**
+ * A live update (#356): merged into the chart, with the series and axes replaced (so a series or
+ * a mark left out goes), keeps the hover tooltip and highlight, which a redraw from scratch
+ * (`notMerge`) drops on every push, so the OEE page's tooltip never stayed. A new shape (a series
+ * or component added or gone) is drawn from scratch: ECharts would show the kept tooltip again
+ * for a series or axis that is no longer there, and fail.
+ */
+export const LIVE_UPDATE: SetOptionOpts = {
+  notMerge: false,
+  replaceMerge: ['series', 'xAxis', 'yAxis'],
+};
+
+/** Gives the chart its option (#356); returns the option's shape for the next update. */
+export function applyOption(
+  instance: Pick<EChartsType, 'setOption'>,
+  option: EChartsCoreOption,
+  previousShape: string | undefined,
+): string {
+  const shape = optionShape(option);
+  if (shape === previousShape) instance.setOption(option, LIVE_UPDATE);
+  else instance.setOption(option, { notMerge: true });
+  return shape;
+}
+
+/**
  * Apache ECharts on a canvas, created once and given new options as they change, in the theme
  * `shopfloor` (theme.ts) with the tokens' current values; a change of the theme on `<html>`
  * registers the theme again and redraws. Under the strict CSP ECharts styles its own elements
@@ -60,6 +99,8 @@ export function EChartsView({
   const snapshot = useRef<HTMLImageElement>(null);
   const chart = useRef<EChartsType | null>(null);
   const read = useRef<TokenReader | null>(null);
+  /** The shape of the option the chart has, so a live update is merged (#356). */
+  const shape = useRef<string | undefined>(undefined);
   const themeVersion = useThemeVersion();
 
   useEffect(() => {
@@ -108,7 +149,11 @@ export function EChartsView({
   useEffect(() => {
     const instance = chart.current;
     if (!instance) return;
-    instance.setOption(themedOption(option, read.current ?? readTokens()), { notMerge: true });
+    shape.current = applyOption(
+      instance,
+      themedOption(option, read.current ?? readTokens()),
+      shape.current,
+    );
   }, [option, height, themeVersion]);
 
   return (

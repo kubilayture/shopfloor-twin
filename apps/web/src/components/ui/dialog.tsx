@@ -145,6 +145,10 @@ export function Dialog({
     const onNativeClose = () => {
       // The owner closed it (the event of its own `close()`, a task later): nothing to say.
       if (!wantOpen.current) return;
+      // Open again by the time the event comes: it is the event of a `close()` already undone,
+      // such as the opening effect's cleanup that StrictMode runs before running the effect
+      // again (vite dev), not a close by the browser, which would leave it closed (#375).
+      if (element.open) return;
       requestClose();
       setNativeCloses((n) => n + 1);
     };

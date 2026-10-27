@@ -56,6 +56,8 @@ const FILES = [
   'screens/oee-dashboard.tsx',
   'screens/line-oee.tsx',
   'components/oee-ui.tsx',
+  // SPC (UX-9a, #332).
+  'screens/spc.tsx',
 ];
 
 /** Utility prefixes: a literal with one of these is a class list. */

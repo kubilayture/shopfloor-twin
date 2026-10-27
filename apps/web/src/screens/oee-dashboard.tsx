@@ -666,7 +666,8 @@ function ParetoChart({
       {pareto.isError ? (
         <QueryError what="the Pareto" error={pareto.error} onRetry={() => void pareto.refetch()} />
       ) : null}
-      {pareto.data ? (
+      {/* Nothing lost: the chart's empty state says so, without a line of zeros under it. */}
+      {pareto.data && pareto.data.reasons.length > 0 ? (
         <div className="mt-2 flex flex-col gap-2">
           <p className="text-sm text-ink-secondary">
             Availability loss:{' '}
@@ -679,7 +680,7 @@ function ParetoChart({
             </span>{' '}
             external
           </p>
-          {pareto.data.reasons.length === 0 ? null : <ParetoTable pareto={pareto.data} />}
+          <ParetoTable pareto={pareto.data} />
         </div>
       ) : null}
     </EChart>

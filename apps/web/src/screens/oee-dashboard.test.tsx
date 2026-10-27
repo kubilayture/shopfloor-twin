@@ -141,6 +141,7 @@ describe('OEE dashboard', () => {
     // The demo walkthrough reads the time as the row's third cell.
     expect(pareto.querySelectorAll('td')[2]?.textContent).toBe('1.7 min');
     expect(within(screen.getByTestId('pareto')).getByText(/CHIP-JAM/)).toBeTruthy();
+    expect(screen.getByTestId('pareto').textContent).toContain('Availability loss:');
     expect(await screen.findByTestId('hour-2026-10-15T04:00:00.000Z')).toBeTruthy();
     expect(screen.getByTestId('hour-2026-10-15T04:00:00.000Z').textContent).toContain('—');
 
@@ -548,6 +549,21 @@ describe('OEE dashboard', () => {
       ),
     ).toEqual(['line-hour-2026-10-15T03:00:00.000Z', 'line-hour-2026-10-15T06:00:00.000Z']);
     expect(card.textContent).toContain('2 hours without planned line time not listed.');
+  });
+
+  it('shows a Pareto without loss as its empty state alone', async () => {
+    vi.stubGlobal(
+      'fetch',
+      api({
+        '/api/v1/downtime/pareto': () =>
+          json({ ...PARETO, reasons: [], availability: { own: 0, external: 0 } }),
+      }),
+    );
+    await renderApp('/oee');
+    const pareto = await screen.findByTestId('pareto');
+    expect(await within(pareto).findByText('No availability loss in this shift.')).toBeTruthy();
+    expect(pareto.textContent).not.toContain('Availability loss:');
+    expect(within(pareto).queryByRole('table')).toBeNull();
   });
 
   it('says when no shift has started', async () => {

@@ -1,5 +1,5 @@
 import type { Ratio } from '@shopfloor/contracts/mes-api';
-import type { BucketFlag, StatusFlag } from '../domain/oee.ts';
+import type { StatusFlag } from '../domain/oee.ts';
 import { minutesText } from '../domain/oee.ts';
 import { FinalityBadge } from './finality-badge.tsx';
 import { Badge, TONE_CLASS, badgeShape } from './ui/badge.tsx';
@@ -126,16 +126,20 @@ export function SectionFinality({
   buckets,
   testId,
 }: {
-  readonly buckets: readonly { readonly final: boolean; readonly provisionalMs: number }[];
+  readonly buckets: readonly { readonly final: boolean; readonly provisionalMs?: number }[];
   readonly testId: string;
 }) {
   const finality = groupFinality(buckets);
   if (finality === undefined) return null;
-  const open = Math.max(0, ...buckets.map((bucket) => bucket.provisionalMs));
+  const open = buckets.flatMap((bucket) =>
+    bucket.provisionalMs === undefined ? [] : [bucket.provisionalMs],
+  );
   const title =
     finality === 'final'
       ? 'Nothing that can still arrive changes these values'
-      : `Time in pieces that may still change: up to ${minutesText(open)} per item`;
+      : open.length > 0
+        ? `Time in pieces that may still change: up to ${minutesText(Math.max(0, ...open))} per item`
+        : 'An input is not final yet: these values may still change';
   if (finality !== 'mixed') {
     return <FinalityBadge final={finality === 'final'} title={title} testId={testId} />;
   }
@@ -157,7 +161,10 @@ export function SectionFinality({
  * An item's own flags under a section's finality (E-03): its finality only when the section is
  * a mix, then revision, incidents and an anomaly, which are never the same for every item.
  */
-export function itemFlags(flags: readonly BucketFlag[], finality: GroupFinality | undefined) {
+export function itemFlags<F extends { readonly key: string }>(
+  flags: readonly F[],
+  finality: GroupFinality | undefined,
+): F[] {
   return flags.filter(
     (flag) => (flag.key !== 'final' && flag.key !== 'provisional') || finality === 'mixed',
   );

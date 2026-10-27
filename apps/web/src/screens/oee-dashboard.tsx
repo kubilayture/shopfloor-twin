@@ -55,7 +55,7 @@ import {
   waterfall,
   type WaterfallStep,
 } from '../domain/oee.ts';
-import { formatClockTime } from '../domain/time.ts';
+import { formatClockTime, formatPlantTime, plantDayOf } from '../domain/time.ts';
 import {
   useLiveDowntime,
   useLiveOee,
@@ -365,26 +365,47 @@ function MachineTable({
   );
 }
 
-const HOUR_COLUMNS: readonly Column<OeeBucketDto>[] = [
-  {
-    key: 'hour',
-    header: 'Hour',
-    rowHeader: true,
-    nowrap: true,
-    cell: (hour) => (
-      <time dateTime={hour.start} className="tabular-nums">
-        {formatClockTime(hour.start)}
-      </time>
-    ),
-  },
-  {
-    key: 'oee',
-    header: 'OEE',
-    numeric: true,
-    cell: (hour) => <Percent ratio={hour.result.oee} na={NA_REASON.oee} />,
-  },
-  { key: 'status', header: 'Status', cell: (hour) => (hour.final ? 'Final' : 'Provisional') },
-];
+/** The hourly values' columns: the status only when an hour has something of its own (E-03). */
+function hourColumns(
+  finality: GroupFinality | undefined,
+  withStatus: boolean,
+): readonly Column<OeeBucketDto>[] {
+  return [
+    {
+      key: 'hour',
+      header: 'Hour',
+      rowHeader: true,
+      nowrap: true,
+      cell: (hour) => (
+        <time dateTime={hour.start} className="tabular-nums">
+          {formatClockTime(hour.start)}
+        </time>
+      ),
+    },
+    {
+      key: 'oee',
+      header: 'OEE',
+      numeric: true,
+      cell: (hour) => <Percent ratio={hour.result.oee} na={NA_REASON.oee} />,
+    },
+    ...(withStatus
+      ? [
+          {
+            key: 'status',
+            header: 'Status',
+            cell: (hour: OeeBucketDto) => {
+              const flags = itemFlags(bucketFlags(hour), finality);
+              return flags.length > 0 ? (
+                <FlagBadges flags={flags} />
+              ) : (
+                <Missing reason="Nothing beyond the table’s status" />
+              );
+            },
+          },
+        ]
+      : []),
+  ];
+}
 
 function HourlyChart({
   scope,
@@ -424,6 +445,8 @@ function HourlyChart({
       option: sorted.some((hour) => hour.result.oee) ? hourlyOption(sorted) : null,
     };
   }, [hours.data, pushed, start, end]);
+  const finality = groupFinality(rows);
+  const withStatus = rows.some((hour) => itemFlags(bucketFlags(hour), finality).length > 0);
   return (
     <EChart
       testId="hourly"
@@ -459,11 +482,17 @@ function HourlyChart({
             </span>
             <span>No bar: no planned time in that hour</span>
           </p>
-          <Disclosure summary="Hourly values">
+          <Disclosure
+            summary={
+              <>
+                Hourly values <SectionFinality buckets={rows} testId="hourly-finality" />
+              </>
+            }
+          >
             <DataTable
               caption="OEE per hour of the shift"
               testId="hourly-values"
-              columns={HOUR_COLUMNS}
+              columns={hourColumns(finality, withStatus)}
               rows={rows}
               rowKey={(hour) => hour.key}
               rowTestId={(hour) => `hour-${hour.key}`}
@@ -767,6 +796,26 @@ function FocusDetails({
 }
 
 /**
+ * A shift's span (design system 6.2): `Mon 12 Oct, 06:00 – 14:00` within one plant day, the date
+ * on both sides only across midnight (`Mon 12 Oct, 22:00 – Tue 13 Oct, 06:00`).
+ */
+export function ShiftSpan({ start, end }: { readonly start: string; readonly end: string }) {
+  const oneDay = plantDayOf(start) === plantDayOf(end);
+  return (
+    <>
+      <PlantTime at={start} seconds={false} /> –{' '}
+      {oneDay ? (
+        <time dateTime={end} title={formatPlantTime(end)} className="tabular-nums">
+          {formatClockTime(end)}
+        </time>
+      ) : (
+        <PlantTime at={end} seconds={false} />
+      )}
+    </>
+  );
+}
+
+/**
  * The OEE dashboard (UX-3, #323; design system section 10): the line's throughput OEE, then each
  * work center's OEE as a KPI tile, the machines in a table, and the hours, losses and downtime of
  * one of them. Ratios are percentages; each keeps the MES's four decimals in `data-decimal` and
@@ -846,8 +895,7 @@ export function OeeDashboard() {
         summary={
           data ? (
             <span data-testid="oee-shift-span">
-              <PlantTime at={data.start} seconds={false} /> to{' '}
-              <PlantTime at={data.end} seconds={false} />
+              <ShiftSpan start={data.start} end={data.end} />
               {selection.isCurrent ? ' · live' : ''}
             </span>
           ) : undefined

@@ -7,7 +7,16 @@ import type {
 import { useQuery, type UseQueryResult } from '@tanstack/react-query';
 import { getLineOee } from '../api/client.ts';
 import { queryKeys } from '../api/queries.ts';
-import { NA_REASON, StatusFlags, ratioStat } from '../components/oee-ui.tsx';
+import {
+  FlagBadges,
+  NA_REASON,
+  SectionFinality,
+  StatusFlags,
+  groupFinality,
+  itemFlags,
+  ratioStat,
+  type GroupFinality,
+} from '../components/oee-ui.tsx';
 import { QueryError } from '../components/query-error.tsx';
 import { Callout } from '../components/ui/callout.tsx';
 import { Card } from '../components/ui/card.tsx';
@@ -15,17 +24,10 @@ import { Code } from '../components/ui/code.tsx';
 import { DataTable, type Column } from '../components/ui/data-table.tsx';
 import { Disclosure } from '../components/ui/disclosure.tsx';
 import { EmptyState } from '../components/ui/empty-state.tsx';
-import { Missing, Percent } from '../components/ui/format.tsx';
+import { Duration, Missing, Percent } from '../components/ui/format.tsx';
 import { Skeleton } from '../components/ui/skeleton.tsx';
 import { Stat } from '../components/ui/stat.tsx';
-import {
-  ABOVE_ONE_TEXT,
-  cycleText,
-  lineFlags,
-  minutesText,
-  parseFraction,
-  pickBucket,
-} from '../domain/oee.ts';
+import { ABOVE_ONE_TEXT, cycleText, lineFlags, parseFraction, pickBucket } from '../domain/oee.ts';
 import { formatClockTime } from '../domain/time.ts';
 import { useLiveLineOee } from '../live/live-context.tsx';
 
@@ -125,13 +127,10 @@ export function PackedGood({ good }: { readonly good: Readonly<Record<string, nu
   );
 }
 
-/** Exact milliseconds as minutes with one decimal, in tabular figures (the dashboard's unit). */
-function Minutes({ ms, testId }: { readonly ms: number | string; readonly testId?: string }) {
-  return (
-    <span data-testid={testId} className="tabular-nums">
-      {minutesText(typeof ms === 'number' ? ms : parseFraction(ms))}
-    </span>
-  );
+/** Exact milliseconds (`num/den`) as a number, for display only. */
+function msOf(text: string): number {
+  const exact = parseFraction(text);
+  return Number(exact.num) / Number(exact.den);
 }
 
 function Bottlenecks({
@@ -172,44 +171,57 @@ function Bottlenecks({
   );
 }
 
-/** An hour row's status as text: finality, revision, incidents, may be revised, above 1. */
-export function hourStatus(hour: LineBucketDto): string {
-  const n = hour.incidents.length;
-  return [
-    hour.final ? 'Final' : 'Provisional',
-    ...(hour.revision > 0 ? [`revision ${String(hour.revision)}`] : []),
-    ...(n > 0 ? [`${String(n)} incident${n === 1 ? '' : 's'}`] : []),
-    ...(hour.mayRevise ? ['may be revised'] : []),
-    ...(hour.aboveOne ? ['above 1'] : []),
-  ].join(', ');
-}
-
 /** Whether an hour has anything to show: a line OEE or units packed good. */
 function hasData(hour: LineBucketDto): boolean {
   return hour.oee !== null || Object.values(hour.good).some((n) => n !== 0);
 }
 
-const HOUR_COLUMNS: readonly Column<LineBucketDto>[] = [
-  {
-    key: 'hour',
-    header: 'Hour',
-    rowHeader: true,
-    nowrap: true,
-    cell: (hour) => (
-      <time dateTime={hour.from} className="tabular-nums">
-        {formatClockTime(hour.from)}
-      </time>
-    ),
-  },
-  {
-    key: 'oee',
-    header: 'Line OEE',
-    numeric: true,
-    cell: (hour) => <Percent ratio={hour.oee} na={NA_REASON.line} />,
-  },
-  { key: 'good', header: 'Packed good', cell: (hour) => <PackedGood good={hour.good} /> },
-  { key: 'status', header: 'Status', cell: (hour) => hourStatus(hour) },
-];
+/**
+ * The hour table's columns. Finality is said once beside the table (E-03): the status column is
+ * there only when a row has something of its own (a mixed finality, a revision, incidents, may be
+ * revised, above 1), as in the machine table.
+ */
+function hourColumns(
+  finality: GroupFinality | undefined,
+  withStatus: boolean,
+): readonly Column<LineBucketDto>[] {
+  return [
+    {
+      key: 'hour',
+      header: 'Hour',
+      rowHeader: true,
+      nowrap: true,
+      cell: (hour) => (
+        <time dateTime={hour.from} className="tabular-nums">
+          {formatClockTime(hour.from)}
+        </time>
+      ),
+    },
+    {
+      key: 'oee',
+      header: 'Line OEE',
+      numeric: true,
+      cell: (hour) => <Percent ratio={hour.oee} na={NA_REASON.line} />,
+    },
+    { key: 'good', header: 'Packed good', cell: (hour) => <PackedGood good={hour.good} /> },
+    ...(withStatus
+      ? [
+          {
+            key: 'status',
+            header: 'Status',
+            cell: (hour: LineBucketDto) => {
+              const flags = itemFlags(lineFlags(hour), finality);
+              return flags.length > 0 ? (
+                <FlagBadges flags={flags} />
+              ) : (
+                <Missing reason="Nothing beyond the table’s status" />
+              );
+            },
+          },
+        ]
+      : []),
+  ];
+}
 
 function LineHours({
   hours,
@@ -222,8 +234,17 @@ function LineHours({
   // counted, not listed as rows of dashes.
   const shown = hours.filter(hasData);
   const left = hours.length - shown.length;
+  const finality = groupFinality(shown);
+  const withStatus = shown.some((hour) => itemFlags(lineFlags(hour), finality).length > 0);
   return (
-    <Disclosure summary="Line OEE per hour" defaultOpen>
+    <Disclosure
+      summary={
+        <>
+          Line OEE per hour <SectionFinality buckets={shown} testId="line-hours-finality" />
+        </>
+      }
+      defaultOpen
+    >
       {read.isError ? (
         <QueryError
           what="the hourly line OEE"
@@ -237,7 +258,7 @@ function LineHours({
           <DataTable
             caption="Line throughput OEE per hour of the shift"
             testId="line-hours"
-            columns={HOUR_COLUMNS}
+            columns={hourColumns(finality, withStatus)}
             rows={shown}
             rowKey={(hour) => hour.key}
             rowTestId={(hour) => `line-hour-${hour.key}`}
@@ -249,7 +270,9 @@ function LineHours({
               'data-may-revise': String(hour.mayRevise),
             })}
             density="compact"
-            narrow="stack"
+            // A short table of three or four columns: on a phone it keeps its rows (and scrolls
+            // in its own frame) rather than a card per hour, which made the page 6000 px long.
+            narrow="scroll"
             empty={
               <div className="px-4">
                 <EmptyState size="inline" icon="info" title="No hour with planned line time yet" />
@@ -300,12 +323,12 @@ function LineFigures({ shift }: { readonly shift: LineBucketDto }) {
         <Stat
           label="Ideal time at the bottleneck"
           emphasis="compact"
-          value={<Minutes ms={shift.idealMs} testId="line-oee-ideal" />}
+          value={<Duration ms={msOf(shift.idealMs)} testId="line-oee-ideal" />}
         />
         <Stat
           label="Line planned busy time"
           emphasis="compact"
-          value={<Minutes ms={shift.plannedBusyMs} testId="line-oee-planned" />}
+          value={<Duration ms={shift.plannedBusyMs} testId="line-oee-planned" />}
         />
       </div>
       <StatusFlags flags={lineFlags(shift)} />
@@ -363,7 +386,19 @@ export function LineOeeCard({
                 size="inline"
                 icon="info"
                 testId="line-oee-idle"
-                title="No line time this shift"
+                title={
+                  <>
+                    No line time this shift
+                    {/* The raw marker the reconciliation reads (`data-decimal` n/a), kept. */}
+                    <Percent
+                      ratio={null}
+                      na={NA_REASON.line}
+                      naShown
+                      testId="line-oee-value"
+                      className="sr-only"
+                    />
+                  </>
+                }
                 body={
                   view.productionMode === 'orders'
                     ? 'No order was in progress, so the line had no planned busy time and its OEE does not apply.'

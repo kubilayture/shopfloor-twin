@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EQUIPMENT, PLANT, fakeFetch, json, problem } from '../test/fixtures.ts';
 import {
@@ -21,6 +21,8 @@ import {
 import { renderApp, settle } from '../test/render-app.tsx';
 import { expectDecimals } from '../test/decimals.ts';
 import { NA_REASON } from '../components/oee-ui.tsx';
+import { shiftKeyLabel } from '../components/shift-picker.tsx';
+import { ShiftSpan } from './oee-dashboard.tsx';
 
 // jsdom has no canvas: the chart is a stub, the tables beside it carry the values. It records
 // every option it is given (UX-1f: an unrelated re-render must hand it the same option).
@@ -355,8 +357,10 @@ describe('OEE dashboard', () => {
     expect(ratios.length).toBeGreaterThan(1);
     expect(expectDecimals(card).length).toBe(ratios.length);
     expect(within(card).getByTestId('line-oee-good').textContent).toBe('VB-100: 100');
-    expect(within(card).getByTestId('line-oee-planned').textContent).toBe('333.3 min');
-    expect(within(card).getByTestId('line-oee-ideal').textContent).toBe('250.0 min');
+    // Times as durations, as on the order detail (#367); the milliseconds in data-value.
+    expect(within(card).getByTestId('line-oee-planned').textContent).toBe('5 h 33 min');
+    expect(within(card).getByTestId('line-oee-planned').dataset.value).toBe('20000000');
+    expect(within(card).getByTestId('line-oee-ideal').textContent).toBe('4 h 10 min');
     expect(card.querySelector('[data-flag="final"]')?.textContent).toBe('Final');
     expect(within(card).getByTestId('line-oee-mode').textContent).toContain(
       'only while an order is in progress',
@@ -370,7 +374,9 @@ describe('OEE dashboard', () => {
     const above = await within(card).findByTestId('line-hour-2026-10-15T04:00:00.000Z');
     expect(above.dataset.oee).toBe('1.0500');
     expect(above.dataset.aboveOne).toBe('true');
-    expect(above.textContent).toContain('above 1');
+    expect(above.textContent).toContain('Above 1');
+    // Finality once beside the hour table (E-03): the hours are a mix, so each row says its own.
+    expect(within(card).getByTestId('line-hours-finality').textContent).toBe('1 of 2 final');
     expect(within(card).getByTestId('line-hour-2026-10-15T03:00:00.000Z').dataset.final).toBe(
       'true',
     );
@@ -436,9 +442,11 @@ describe('OEE dashboard', () => {
     }
     const revisedHour = within(card).getByTestId('line-hour-2026-10-15T05:00:00.000Z');
     expect(revisedHour.dataset.oee).toBe('1.1000');
-    expect(revisedHour.textContent).toContain(
-      'Final, revision 1, 1 incident, may be revised, above 1',
-    );
+    expect(
+      [...revisedHour.querySelectorAll<HTMLElement>('[data-flag]')].map(
+        (flag) => flag.dataset.flag,
+      ),
+    ).toEqual(['final', 'revision', 'incidents', 'may-revise', 'above-one']);
     // The bottleneck follows the MES's answer (here, for the test, a CNC).
     expect(within(screen.getByTestId('oee-machine-cnc-01')).getByText('Bottleneck')).toBeTruthy();
     expect(within(screen.getByTestId('oee-machine-asm-01')).queryByText('Bottleneck')).toBeNull();
@@ -512,7 +520,10 @@ describe('OEE dashboard', () => {
     expect(empty.textContent).toContain('No order was in progress');
     expect(card.dataset.oee).toBe('n/a');
     expect(card.dataset.final).toBe('true');
-    expect(within(card).queryByTestId('line-oee-value')).toBeNull();
+    // The raw marker stays for the reconciliation's page read (`orders-pass.ts`: n/a).
+    const marker = within(card).getByTestId('line-oee-value');
+    expect(marker.dataset.decimal).toBe('n/a');
+    expect(marker.dataset.fraction).toBe('n/a');
     expect(within(card).queryByTestId('line-oee-planned')).toBeNull();
     // Its finality is still said once, and the bottleneck still shown.
     expect(card.querySelector('[data-flag="final"]')).toBeTruthy();
@@ -549,6 +560,13 @@ describe('OEE dashboard', () => {
       ),
     ).toEqual(['line-hour-2026-10-15T03:00:00.000Z', 'line-hour-2026-10-15T06:00:00.000Z']);
     expect(card.textContent).toContain('2 hours without planned line time not listed.');
+    // Every listed hour provisional with nothing of its own: said once, no status column.
+    expect(within(card).getByTestId('line-hours-finality').textContent).toBe('Provisional');
+    expect(
+      within(within(card).getByTestId('line-hours')).queryByRole('columnheader', {
+        name: 'Status',
+      }),
+    ).toBeNull();
   });
 
   it('shows a Pareto without loss as its empty state alone', async () => {
@@ -564,6 +582,37 @@ describe('OEE dashboard', () => {
     expect(await within(pareto).findByText('No availability loss in this shift.')).toBeTruthy();
     expect(pareto.textContent).not.toContain('Availability loss:');
     expect(within(pareto).queryByRole('table')).toBeNull();
+  });
+
+  it('says the hourly values’ finality once, without a status column of repeats', async () => {
+    vi.stubGlobal('fetch', api());
+    await renderApp('/oee');
+    const values = await screen.findByTestId('hourly-values');
+    // One hour final, one provisional: a mix, each row its own.
+    expect(screen.getByTestId('hourly-finality').textContent).toBe('1 of 2 final');
+    expect(within(values).getByRole('columnheader', { name: 'Status' })).toBeTruthy();
+  });
+
+  it('writes a one-day shift span with the date once, and a shift outside the list in words', () => {
+    render(<ShiftSpan start="2026-10-12T03:00:00.000Z" end="2026-10-12T11:00:00.000Z" />);
+    expect(document.body.textContent).toBe('Mon 12 Oct, 06:00 – 14:00');
+    cleanup();
+    render(<ShiftSpan start="2026-10-12T19:00:00.000Z" end="2026-10-13T03:00:00.000Z" />);
+    expect(document.body.textContent).toBe('Mon 12 Oct, 22:00 – Tue 13 Oct, 06:00');
+    expect(shiftKeyLabel('2020-01-06/A')).toBe('Mon 6 Jan, shift A');
+    expect(shiftKeyLabel('not-a-key')).toBe('not-a-key');
+  });
+
+  it('names a shift asked for outside the picker’s list in words, not by its key', async () => {
+    vi.stubGlobal('fetch', api());
+    await renderApp('/oee?shift=2020-01-06%2FA');
+    const select = await screen.findByTestId('shift-select');
+    await waitFor(() => {
+      expect((select as HTMLSelectElement).value).toBe('2020-01-06/A');
+    });
+    expect((select as HTMLSelectElement).selectedOptions[0]?.textContent).toBe(
+      'Mon 6 Jan, shift A',
+    );
   });
 
   it('says when no shift has started', async () => {

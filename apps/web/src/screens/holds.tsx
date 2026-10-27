@@ -25,23 +25,33 @@ import {
   type HoldFilter,
 } from '../api/quality.ts';
 import { useCan, useUnsavedDraft } from '../auth/auth.tsx';
-import { useHeadingFocus } from '../components/heading-focus.ts';
 import { QueryError } from '../components/query-error.tsx';
 import {
   CommentInput,
   FailureMessage,
   HoldStateBadge,
-  Section,
-  Table,
-  buttonClass,
-  cell,
-  inputClass,
-  primaryClass,
   plantBeside,
   plantOrWall,
   timeOf,
   wallTimeOf,
 } from '../components/quality-ui.tsx';
+import { Badge } from '../components/ui/badge.tsx';
+import { Button, buttonClass, type ButtonVariant } from '../components/ui/button.tsx';
+import { Callout } from '../components/ui/callout.tsx';
+import { Code } from '../components/ui/code.tsx';
+import { Checkbox, ChoiceGroup, Select, TextInput } from '../components/ui/controls.tsx';
+import { DataTable, type Column } from '../components/ui/data-table.tsx';
+import { DescriptionList, type Fact } from '../components/ui/description-list.tsx';
+import { Disclosure } from '../components/ui/disclosure.tsx';
+import { EmptyState } from '../components/ui/empty-state.tsx';
+import { Missing } from '../components/ui/format.tsx';
+import { Icon } from '../components/ui/icons.tsx';
+import { Forbidden, NotFound } from '../components/ui/not-found.tsx';
+import { PageHeader } from '../components/ui/page-header.tsx';
+import { Section } from '../components/ui/section.tsx';
+import { SectionNav, type SectionNavItem } from '../components/ui/section-nav.tsx';
+import { Skeleton } from '../components/ui/skeleton.tsx';
+import { Stat } from '../components/ui/stat.tsx';
 import {
   COMMENT_MAX,
   HOLD_STATE_TEXT,
@@ -58,105 +68,165 @@ import {
 } from '../domain/quality.ts';
 import { useLiveQuality, useQualityTopic } from '../live/live-context.tsx';
 import { upsertHold } from '../live/live-quality.ts';
-import { SubjectLink as TraceSubjectLink } from './trace-common.tsx';
+import {
+  CartonLink,
+  IdText,
+  OrderLink,
+  SerialLink,
+  SubjectLink as TraceSubjectLink,
+} from './trace-common.tsx';
 
 // `/quality/holds`, `/quality/holds/new` and `/quality/holds/$id` (#203, plan "Web", ADR-0035):
 // the holds with filters, opening a hold on a lot, serial, carton or order (from a trace page, an
 // order, or a signal's suggested scope), and one hold's detail with its scope (it grows with
 // facts), transitions with their ERP notifications, incidents, and the actions: comment
 // (`quality:hold`), release and reject (`quality:release`), each with the version read.
+// On the design system since UX-9b (#333): page header, fields, data tables, stats.
 
 const HOLD_ID = /^[0-9a-fA-F-]{36}$/;
 
-/** What a hold does and doesn't do, said on its pages (ADR-0035). */
+const BACK = { label: 'All holds', link: { to: '/quality/holds', search: {} } } as const;
+
+/** A link in body text: underlined (WCAG 1.4.1). */
+const linkClass = 'text-link underline underline-offset-2 hover:text-accent-hover';
+/** A link on an id: it never breaks at a hyphen, so a focused one is never cut in two (2.4.11). */
+const idLinkClass = `${linkClass} whitespace-nowrap`;
+
+/** What a hold does and doesn't do, said on its pages (ADR-0035), closed by default (G-08). */
 function HoldEffect() {
   return (
-    <p className="mt-2 text-sm text-slate-700" data-testid="hold-effect">
-      An open hold refuses the close of every order with a unit in its scope; a carton is held while
-      a member is in an open or rejected hold; the ERP is told of each opening, release and
-      rejection. A hold never stops a machine: the line can keep using a held lot, which shows as
-      held-material-consumed.
-    </p>
+    <Disclosure summary="What a hold does" className="mt-2">
+      <p className="max-w-[90ch] text-ink-secondary" data-testid="hold-effect">
+        An open hold refuses the close of every order with a unit in its scope; a carton is held
+        while a member is in an open or rejected hold; the ERP is told of each opening, release and
+        rejection. A hold never stops a machine: the line can keep using a held lot, which shows as
+        held-material-consumed.
+      </p>
+    </Disclosure>
   );
 }
 
 /** A link to the subject's own page: its trace page (#202) or an order's detail. */
 export function SubjectLink({ subject }: { readonly subject: HoldSubjectDto }) {
-  return <TraceSubjectLink subject={subject} testId="hold-subject" />;
+  return (
+    <span className="whitespace-nowrap">
+      <TraceSubjectLink subject={subject} testId="hold-subject" />
+    </span>
+  );
 }
 
+const plural = (count: number, word: string): string =>
+  `${String(count)} ${word}${count === 1 ? '' : 's'}`;
+
 const scopeText = (scope: HoldDto['scope']): string =>
-  `${String(scope.units)} unit${scope.units === 1 ? '' : 's'}, ${String(scope.cartons)} carton${scope.cartons === 1 ? '' : 's'}, ${String(scope.orders)} order${scope.orders === 1 ? '' : 's'}`;
+  `${plural(scope.units, 'unit')}, ${plural(scope.cartons, 'carton')}, ${plural(scope.orders, 'order')}`;
 
 // ---- The list ----
 
-function HoldRow({ hold }: { readonly hold: HoldDto }) {
-  return (
-    <tr
-      data-testid={`hold-row-${hold.id}`}
-      data-state={hold.state}
-      data-version={String(hold.version)}
-      data-subject={`${hold.subject.kind}:${hold.subject.id}`}
-      data-units={String(hold.scope.units)}
-    >
-      <td className={cell}>
-        <SubjectLink subject={hold.subject} />
-      </td>
-      <td className={cell}>
-        <HoldStateBadge state={hold.state} />
-      </td>
-      <td className={cell}>
-        {hold.reason}
+const HOLD_COLUMNS: readonly Column<HoldDto>[] = [
+  {
+    key: 'subject',
+    header: 'Subject',
+    rowHeader: true,
+    cell: (hold) => <SubjectLink subject={hold.subject} />,
+  },
+  {
+    key: 'state',
+    header: 'State',
+    nowrap: true,
+    cell: (hold) => <HoldStateBadge state={hold.state} />,
+  },
+  {
+    key: 'reason',
+    header: 'Reason',
+    cell: (hold) => (
+      <>
+        <Code className="whitespace-nowrap">{hold.reason}</Code>
         {hold.decisionReason ? (
-          <span className="block text-xs">decided: {hold.decisionReason}</span>
+          <span className="block text-xs text-ink-secondary">
+            decided: <Code className="whitespace-nowrap">{hold.decisionReason}</Code>
+          </span>
         ) : null}
-      </td>
-      <td className={cell}>
-        {hold.openedBy}, {plantOrWall(hold.openedPlantAt, hold.openedAt)}
-      </td>
-      <td className={cell}>{scopeText(hold.scope)}</td>
-      <td className={cell}>{hold.heldMaterialConsumed}</td>
-      <td className={cell}>
-        <Link
-          to="/quality/holds/$id"
-          params={{ id: hold.id }}
-          data-testid={`hold-link-${hold.id}`}
-          className="text-sky-800 underline"
-        >
-          Details
-        </Link>
-      </td>
-    </tr>
-  );
-}
+      </>
+    ),
+  },
+  {
+    key: 'opened',
+    header: 'Opened',
+    priority: 2,
+    cell: (hold) => (
+      <>
+        {hold.openedBy},{' '}
+        <span className="block">{plantOrWall(hold.openedPlantAt, hold.openedAt)}</span>
+      </>
+    ),
+  },
+  {
+    key: 'scope',
+    header: 'Scope',
+    priority: 3,
+    cell: (hold) => scopeText(hold.scope),
+  },
+  {
+    key: 'consumed',
+    header: 'Held material consumed',
+    numeric: true,
+    priority: 3,
+    cell: (hold) => hold.heldMaterialConsumed,
+  },
+];
 
 /** A hold table (the list's, and an order's holds). */
 export function HoldTable({
   holds,
   testId,
   caption,
+  empty,
+  loading,
 }: {
   readonly holds: readonly HoldDto[];
   readonly testId: string;
   readonly caption: string;
+  readonly empty?: ReactNode;
+  readonly loading?: string | undefined;
 }) {
   return (
-    <Table
-      testId={testId}
+    <DataTable
       caption={caption}
-      columns={['Subject', 'State', 'Reason', 'Opened', 'Scope', 'Held material consumed', '']}
-      count={holds.length}
-    >
-      {holds.map((hold) => (
-        <HoldRow key={hold.id} hold={hold} />
-      ))}
-    </Table>
+      testId={testId}
+      columns={HOLD_COLUMNS}
+      rows={holds}
+      rowKey={(hold) => hold.id}
+      rowTestId={(hold) => `hold-row-${hold.id}`}
+      rowProps={(hold) => ({
+        'data-state': hold.state,
+        'data-version': String(hold.version),
+        'data-subject': `${hold.subject.kind}:${hold.subject.id}`,
+        'data-units': String(hold.scope.units),
+      })}
+      // The bar says "blocks" (open, and rejected whose cartons stay held), as the trace pages'
+      // holds do; the badge carries the state (design system 2.6).
+      rowTone={(hold) => (hold.state === 'released' ? undefined : 'alarm')}
+      actions={(hold) => (
+        <Link
+          to="/quality/holds/$id"
+          params={{ id: hold.id }}
+          data-testid={`hold-link-${hold.id}`}
+          // The containing block of its visually hidden words, which would widen a narrow page.
+          className={`${buttonClass({ variant: 'ghost', size: 'sm' })} relative`}
+        >
+          Details <span className="sr-only">of the hold on {subjectText(hold.subject)}</span>
+        </Link>
+      )}
+      narrow="stack"
+      empty={empty}
+      loading={loading}
+    />
   );
 }
 
 export function HoldList() {
   useQualityTopic();
-  const heading = useHeadingFocus<HTMLHeadingElement>();
   const search = useSearch({ from: '/quality/holds' });
   const navigate = useNavigate();
   const canHold = useCan('quality:hold');
@@ -171,142 +241,182 @@ export function HoldList() {
   const [kind, setKind] = useState<HoldSubjectKind>(subject?.kind ?? 'lot');
   const [id, setId] = useState(subject?.id ?? '');
   const [problem, setProblem] = useState<string | undefined>(undefined);
-  const stateId = useId();
-  const kindId = useId();
-  const idId = useId();
+  const problemId = useId();
+  const filtered = search.state !== undefined || subject !== undefined;
+  const openLink = (
+    <Link
+      to="/quality/holds/new"
+      search={{}}
+      data-testid="hold-open-link"
+      className={buttonClass({ variant: 'primary' })}
+    >
+      Open a hold
+    </Link>
+  );
   return (
     <section aria-labelledby="holds-title" data-testid="hold-list-page">
-      <h1 ref={heading} id="holds-title" tabIndex={-1} className="text-2xl font-bold">
-        Quality holds
-      </h1>
-      <HoldEffect />
-      {canHold ? (
-        <p className="mt-2">
-          <Link
-            to="/quality/holds/new"
-            search={{}}
-            data-testid="hold-open-link"
-            className={buttonClass}
-          >
-            Open a hold
-          </Link>
-        </p>
+      <PageHeader
+        id="holds-title"
+        title="Quality holds"
+        description="Holds on lots, serials, cartons and orders, newest first; the list follows the MES live."
+        actions={canHold ? openLink : undefined}
+        meta={<HoldEffect />}
+        filters={
+          <>
+            <Select
+              label="State"
+              inline
+              name="state"
+              data-testid="hold-filter-state"
+              value={search.state ?? ''}
+              onChange={(event) => {
+                const value = event.target.value;
+                void navigate({
+                  to: '/quality/holds',
+                  search: { ...search, state: value === '' ? undefined : (value as HoldState) },
+                });
+              }}
+            >
+              <option value="">All</option>
+              {HOLD_STATES.map((state) => (
+                <option key={state} value={state}>
+                  {HOLD_STATE_TEXT[state]}
+                </option>
+              ))}
+            </Select>
+            <form
+              role="search"
+              aria-label="One subject’s holds"
+              noValidate
+              className="flex flex-wrap items-center gap-x-3 gap-y-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const found = subjectFromSearch(kind, id.trim());
+                if (!found) {
+                  setProblem('Not a valid id for this kind of subject.');
+                  return;
+                }
+                setProblem(undefined);
+                void navigate({
+                  to: '/quality/holds',
+                  search: { ...search, kind: found.kind, id: found.id },
+                });
+              }}
+            >
+              <Select
+                label="Subject"
+                inline
+                name="kind"
+                data-testid="hold-filter-kind"
+                value={kind}
+                onChange={(event) => {
+                  setKind(event.target.value as HoldSubjectKind);
+                }}
+              >
+                {HOLD_SUBJECT_KINDS.map((k) => (
+                  <option key={k} value={k}>
+                    {SUBJECT_TEXT[k]}
+                  </option>
+                ))}
+              </Select>
+              <TextInput
+                label="Subject id"
+                inline
+                name="id"
+                data-testid="hold-filter-id"
+                value={id}
+                maxLength={64}
+                autoComplete="off"
+                spellCheck={false}
+                describedBy={problem ? problemId : undefined}
+                className="w-44"
+                onChange={(event) => {
+                  setId(event.target.value);
+                }}
+              />
+              <Button type="submit" data-testid="hold-filter-apply">
+                Show this subject’s holds
+              </Button>
+              {subject ? (
+                <Button
+                  variant="ghost"
+                  data-testid="hold-filter-clear"
+                  onClick={() => {
+                    setId('');
+                    setProblem(undefined);
+                    void navigate({ to: '/quality/holds', search: { state: search.state } });
+                  }}
+                >
+                  Every subject
+                </Button>
+              ) : null}
+              {problem ? (
+                <p
+                  id={problemId}
+                  role="alert"
+                  data-testid="hold-filter-problem"
+                  className="flex w-full items-start gap-1 text-sm font-medium text-alarm-ink"
+                >
+                  <Icon name="alert" size={16} className="mt-0.5 shrink-0" />
+                  {problem}
+                </p>
+              ) : null}
+            </form>
+          </>
+        }
+        summary={read.data ? plural(holds.length, 'hold') : undefined}
+      />
+      {read.data?.truncated ? (
+        <Callout tone="warn" role="status" data-testid="holds-truncated" className="mb-4">
+          More holds match than are listed; filter by state or subject.
+        </Callout>
       ) : null}
-      <div className="mt-3 flex flex-wrap items-end gap-3 text-sm">
-        <label htmlFor={stateId} className="flex flex-col gap-1 font-medium">
-          State
-          <select
-            id={stateId}
-            data-testid="hold-filter-state"
-            value={search.state ?? ''}
-            className={inputClass}
-            onChange={(event) => {
-              const value = event.target.value;
-              void navigate({
-                to: '/quality/holds',
-                search: { ...search, state: value === '' ? undefined : (value as HoldState) },
-              });
-            }}
-          >
-            <option value="">All</option>
-            {HOLD_STATES.map((state) => (
-              <option key={state} value={state}>
-                {HOLD_STATE_TEXT[state]}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label htmlFor={kindId} className="flex flex-col gap-1 font-medium">
-          Subject
-          <select
-            id={kindId}
-            data-testid="hold-filter-kind"
-            value={kind}
-            className={inputClass}
-            onChange={(event) => {
-              setKind(event.target.value as HoldSubjectKind);
-            }}
-          >
-            {HOLD_SUBJECT_KINDS.map((k) => (
-              <option key={k} value={k}>
-                {SUBJECT_TEXT[k]}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label htmlFor={idId} className="flex flex-col gap-1 font-medium">
-          Id
-          <input
-            id={idId}
-            data-testid="hold-filter-id"
-            value={id}
-            maxLength={64}
-            className={inputClass}
-            onChange={(event) => {
-              setId(event.target.value);
-            }}
-          />
-        </label>
-        <button
-          type="button"
-          data-testid="hold-filter-apply"
-          className={buttonClass}
-          onClick={() => {
-            const found = subjectFromSearch(kind, id.trim());
-            if (!found) {
-              setProblem('Not a valid id for this kind of subject.');
-              return;
-            }
-            setProblem(undefined);
-            void navigate({
-              to: '/quality/holds',
-              search: { ...search, kind: found.kind, id: found.id },
-            });
-          }}
-        >
-          Show this subject’s holds
-        </button>
-        {subject ? (
-          <button
-            type="button"
-            data-testid="hold-filter-clear"
-            className={buttonClass}
-            onClick={() => {
-              setId('');
-              void navigate({ to: '/quality/holds', search: { state: search.state } });
-            }}
-          >
-            Every subject
-          </button>
-        ) : null}
-        {problem ? (
-          <p role="alert" className="text-red-900" data-testid="hold-filter-problem">
-            {problem}
-          </p>
-        ) : null}
-      </div>
-      {read.isPending ? <p className="mt-4">Loading the holds…</p> : null}
       {read.isError ? (
-        <div className="mt-4">
-          <QueryError what="the holds" error={read.error} onRetry={() => void read.refetch()} />
-        </div>
-      ) : null}
-      {read.data ? (
-        holds.length === 0 ? (
-          <p className="mt-4" data-testid="holds-empty">
-            No hold matches.
-          </p>
-        ) : (
-          <div className="mt-4">
-            <HoldTable holds={holds} testId="hold-list" caption="Quality holds, newest first" />
-            {read.data.truncated ? (
-              <p className="mt-1 text-sm" data-testid="holds-truncated">
-                More holds match than are listed; filter by state or subject.
-              </p>
-            ) : null}
-          </div>
-        )
-      ) : null}
+        <QueryError what="the holds" error={read.error} onRetry={() => void read.refetch()} />
+      ) : (
+        <HoldTable
+          holds={holds}
+          testId="hold-list"
+          caption="Quality holds, newest first"
+          loading={read.isPending ? 'Loading the holds…' : undefined}
+          empty={
+            <EmptyState
+              testId="holds-empty"
+              icon={filtered ? 'search' : 'check'}
+              title={filtered ? 'No hold matches these filters' : 'No quality hold yet'}
+              body={
+                filtered
+                  ? 'Choose another state or subject, or show every hold.'
+                  : 'Holds are opened from a trace page, an order, an SPC episode or here.'
+              }
+              action={
+                filtered ? (
+                  <Link
+                    to="/quality/holds"
+                    search={{}}
+                    data-testid="holds-empty-clear"
+                    className={buttonClass({ variant: 'secondary' })}
+                    onClick={() => {
+                      setId('');
+                      setProblem(undefined);
+                    }}
+                  >
+                    Show every hold
+                  </Link>
+                ) : canHold ? (
+                  <Link
+                    to="/quality/holds/new"
+                    search={{}}
+                    className={buttonClass({ variant: 'secondary' })}
+                  >
+                    Open a hold
+                  </Link>
+                ) : undefined
+              }
+            />
+          }
+        />
+      )}
     </section>
   );
 }
@@ -358,63 +468,84 @@ function Suggestion({
       data-signal={String(suggestion.signal)}
       data-final={String(suggestion.final)}
       data-readings={String(suggestion.readings)}
-      className="rounded border border-slate-400 bg-white p-3 text-sm"
+      className="flex flex-col gap-3 rounded-md border border-line bg-surface-sunken p-3 text-sm sm:p-4"
     >
-      <p>
-        Episode {suggestion.signal} ({suggestion.chart}, rule {suggestion.rule}) on{' '}
-        {suggestion.characteristic}: the {suggestion.readings} readings (every pass) from{' '}
-        <span data-testid="hold-suggestion-from">{timeOf(suggestion.from.at)}</span> (
-        {suggestion.after ? (
-          <>after the last in-control point at {timeOf(suggestion.after.at)}</>
-        ) : (
-          'the start of its segment'
-        )}
-        ) through {timeOf(suggestion.through.at)}, {suggestion.units.length} units in{' '}
-        {suggestion.orders.length} orders and {suggestion.cartons.length} cartons.
-      </p>
-      {suggestion.final ? null : (
-        <p className="mt-1 font-semibold text-amber-900" data-testid="hold-suggestion-provisional">
-          The episode’s extent is not final yet: the window can still grow.
+      <div>
+        <h2 className="text-base font-semibold text-ink">
+          Suggested scope of episode {suggestion.signal}
+        </h2>
+        <p className="mt-1 text-ink-secondary">
+          {suggestion.chart}, rule {suggestion.rule}, on {suggestion.characteristic}: the{' '}
+          {suggestion.readings} readings (every pass) from{' '}
+          <span data-testid="hold-suggestion-from">{timeOf(suggestion.from.at)}</span> (
+          {suggestion.after ? (
+            <>after the last in-control point at {timeOf(suggestion.after.at)}</>
+          ) : (
+            'the start of its segment'
+          )}
+          ) through {timeOf(suggestion.through.at)}: {plural(suggestion.units.length, 'unit')} in{' '}
+          {plural(suggestion.orders.length, 'order')} and{' '}
+          {plural(suggestion.cartons.length, 'carton')}.
         </p>
+      </div>
+      {suggestion.final ? null : (
+        <Callout tone="warn" data-testid="hold-suggestion-provisional">
+          The episode’s extent is not final yet: the window can still grow.
+        </Callout>
       )}
       {subjects.length === 0 ? (
-        <p className="mt-2" data-testid="hold-suggestion-empty">
-          No unit of the window has a serial, an order or a carton to hold yet.
-        </p>
+        <EmptyState
+          size="inline"
+          icon="info"
+          testId="hold-suggestion-empty"
+          title="Nothing to hold yet"
+          body="No unit of the window has a serial, an order or a carton yet."
+        />
       ) : (
-        <fieldset className="mt-2">
-          <legend className="font-medium">Hold these (one hold each)</legend>
-          <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
-            {subjects.map((s) => {
-              const key = subjectKey(s);
-              return (
-                <li key={key}>
-                  <label className="flex items-center gap-1">
-                    <input
-                      type="checkbox"
-                      data-testid={`suggest-${s.kind}-${s.id}`}
-                      checked={selected.has(key)}
-                      onChange={(event) => {
-                        const next = new Set(selected);
-                        if (event.target.checked) next.add(key);
-                        else next.delete(key);
-                        setSelected(next);
-                      }}
-                    />
-                    {subjectText(s)}
-                  </label>
-                </li>
-              );
-            })}
-          </ul>
-        </fieldset>
+        <ChoiceGroup legend="Hold these (one hold each)" inline>
+          {subjects.map((s) => {
+            const key = subjectKey(s);
+            return (
+              <Checkbox
+                key={key}
+                name="subjects"
+                value={key}
+                data-testid={`suggest-${s.kind}-${s.id}`}
+                checked={selected.has(key)}
+                label={
+                  <>
+                    {SUBJECT_TEXT[s.kind]} <Code className="whitespace-nowrap">{s.id}</Code>
+                  </>
+                }
+                onChange={(event) => {
+                  const next = new Set(selected);
+                  if (event.target.checked) next.add(key);
+                  else next.delete(key);
+                  setSelected(next);
+                }}
+              />
+            );
+          })}
+        </ChoiceGroup>
       )}
     </div>
   );
 }
 
+/** The header of the new-hold page, with the way back. */
+function OpenHeader() {
+  return (
+    <PageHeader
+      id="hold-open-title"
+      back={BACK}
+      title="Open a quality hold"
+      description="One hold per subject; the MES derives its scope from the genealogy and grows it with facts."
+      meta={<HoldEffect />}
+    />
+  );
+}
+
 export function HoldOpen() {
-  const heading = useHeadingFocus<HTMLHeadingElement>();
   const search = useSearch({ from: '/quality/holds/new' });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -441,9 +572,6 @@ export function HoldOpen() {
   const [results, setResults] = useState<OpenResult[]>([]);
   const [existing, setExisting] = useState<Existing[]>([]);
   const sending = useRef(false);
-  const kindId = useId();
-  const idId = useId();
-  const reasonId = useId();
   const commentId = useId();
   useUnsavedDraft(
     comment.trim() !== '' || (fromSignal === undefined && id !== (initial?.id ?? '')),
@@ -525,31 +653,21 @@ export function HoldOpen() {
   if (!canHold) {
     return (
       <section aria-labelledby="hold-open-title">
-        <h1 ref={heading} id="hold-open-title" tabIndex={-1} className="text-2xl font-bold">
-          Open a quality hold
-        </h1>
-        <p className="mt-2" data-testid="hold-open-forbidden">
-          Your role cannot open holds (quality and supervisors can).
-        </p>
+        <OpenHeader />
+        <Forbidden permission="quality:hold" testId="hold-open-forbidden">
+          Your role cannot open holds: quality and supervisors can
+        </Forbidden>
       </section>
     );
   }
   return (
     <section aria-labelledby="hold-open-title" data-testid="hold-open-page">
-      <p className="text-sm">
-        <Link to="/quality/holds" search={{}} className="text-sky-800 underline">
-          All holds
-        </Link>
-      </p>
-      <h1 ref={heading} id="hold-open-title" tabIndex={-1} className="mt-1 text-2xl font-bold">
-        Open a quality hold
-      </h1>
-      <HoldEffect />
+      <OpenHeader />
       <form
         noValidate
         aria-label="Open a quality hold"
         data-testid="hold-open-form"
-        className="mt-3 flex max-w-3xl flex-col gap-3 rounded-lg border border-slate-400 bg-white p-3"
+        className="flex max-w-3xl flex-col gap-4 rounded-lg border border-line bg-surface p-4 text-ink sm:p-5"
         onSubmit={(event) => {
           event.preventDefault();
           if (sending.current) return;
@@ -568,12 +686,12 @@ export function HoldOpen() {
       >
         {fromSignal !== undefined ? (
           suggestion.isPending ? (
-            <p>Loading the episode’s suggested scope…</p>
+            <Skeleton shape="text" rows={3} label="Loading the episode’s suggested scope…" />
           ) : suggestion.isError ? (
             suggestion.error instanceof ApiError && suggestion.error.status === 404 ? (
-              <p role="alert" data-testid="hold-suggestion-missing">
+              <Callout tone="alarm" role="alert" data-testid="hold-suggestion-missing">
                 Episode {fromSignal} is unknown or withdrawn: it suggests no scope.
-              </p>
+              </Callout>
             ) : (
               <QueryError
                 what="the suggested scope"
@@ -589,58 +707,54 @@ export function HoldOpen() {
             />
           )
         ) : (
-          <div className="flex flex-wrap gap-3">
-            <label htmlFor={kindId} className="flex flex-col gap-1 text-sm font-medium">
-              Subject
-              <select
-                id={kindId}
-                data-testid="open-kind"
-                value={kind}
-                className={inputClass}
-                onChange={(event) => {
-                  setKind(event.target.value as HoldSubjectKind);
-                }}
-              >
-                {HOLD_SUBJECT_KINDS.map((k) => (
-                  <option key={k} value={k}>
-                    {SUBJECT_TEXT[k]}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label htmlFor={idId} className="flex flex-col gap-1 text-sm font-medium">
-              {kind === 'order' ? 'Order number' : `${SUBJECT_TEXT[kind]} id`}
-              <input
-                id={idId}
-                data-testid="open-id"
-                value={id}
-                maxLength={64}
-                className={inputClass}
-                onChange={(event) => {
-                  setId(event.target.value);
-                }}
-              />
-            </label>
+          <div className="flex flex-wrap items-start gap-x-4 gap-y-3">
+            <Select
+              label="Subject"
+              name="kind"
+              data-testid="open-kind"
+              value={kind}
+              onChange={(event) => {
+                setKind(event.target.value as HoldSubjectKind);
+              }}
+            >
+              {HOLD_SUBJECT_KINDS.map((k) => (
+                <option key={k} value={k}>
+                  {SUBJECT_TEXT[k]}
+                </option>
+              ))}
+            </Select>
+            <TextInput
+              label={kind === 'order' ? 'Order number' : `${SUBJECT_TEXT[kind]} id`}
+              name="id"
+              data-testid="open-id"
+              value={id}
+              maxLength={64}
+              autoComplete="off"
+              spellCheck={false}
+              fieldClassName="min-w-0 flex-1 basis-56"
+              className="w-full max-w-sm font-mono"
+              onChange={(event) => {
+                setId(event.target.value);
+              }}
+            />
           </div>
         )}
-        <label htmlFor={reasonId} className="flex flex-col gap-1 text-sm font-medium">
-          Reason
-          <select
-            id={reasonId}
-            data-testid="open-reason"
-            value={chosenReason}
-            className={`${inputClass} max-w-md`}
-            onChange={(event) => {
-              setReason(event.target.value);
-            }}
-          >
-            {openReasons.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.name} ({r.id})
-              </option>
-            ))}
-          </select>
-        </label>
+        {/* The option texts in full (H-05): the select is as wide as its longest option. */}
+        <Select
+          label="Reason"
+          name="reason"
+          data-testid="open-reason"
+          value={chosenReason}
+          onChange={(event) => {
+            setReason(event.target.value);
+          }}
+        >
+          {openReasons.map((r) => (
+            <option key={r.id} value={r.id}>
+              {r.name} ({r.id})
+            </option>
+          ))}
+        </Select>
         {reasons.isError ? (
           <QueryError
             what="the hold reasons"
@@ -658,47 +772,41 @@ export function HoldOpen() {
           onChange={setComment}
         />
         {problems.length > 0 ? (
-          <p role="alert" className="text-sm text-red-900" data-testid="open-invalid">
+          <Callout tone="alarm" role="alert" data-testid="open-invalid">
             {problems.join(' ')}
-          </p>
+          </Callout>
         ) : null}
         <div>
-          <button
+          <Button
             type="submit"
+            variant="primary"
             data-testid="open-submit"
-            disabled={write.isPending}
-            className={primaryClass}
+            loading={write.isPending}
           >
-            {write.isPending
-              ? 'Opening…'
-              : fromSignal !== undefined
-                ? `Open ${String(selected.size)} hold${selected.size === 1 ? '' : 's'}`
-                : 'Open the hold'}
-          </button>
+            {fromSignal !== undefined ? `Open ${plural(selected.size, 'hold')}` : 'Open the hold'}
+          </Button>
         </div>
       </form>
       {existing.length > 0 ? (
-        <div
+        <Callout
+          tone="warn"
           role="alert"
           data-testid="open-existing"
-          className="mt-3 rounded border border-amber-800 bg-amber-50 p-3 text-sm text-amber-950"
+          className="mt-4 max-w-3xl"
+          title="Not opened: these subjects have open holds already."
         >
-          <p>Not opened: these subjects have open holds already.</p>
-          <ul className="mt-1 list-disc pl-5">
+          <ul className="list-disc pl-5">
             {existing.map((e) => (
               <li
                 key={subjectKey(e.subject)}
                 data-testid={`open-existing-${e.subject.kind}-${e.subject.id}`}
               >
-                {subjectText(e.subject)}:{' '}
+                {SUBJECT_TEXT[e.subject.kind]}{' '}
+                <Code className="whitespace-nowrap">{e.subject.id}</Code>:{' '}
                 {e.holds.map((h, i) => (
                   <span key={h.id}>
                     {i > 0 ? ', ' : ''}
-                    <Link
-                      to="/quality/holds/$id"
-                      params={{ id: h.id }}
-                      className="text-sky-800 underline"
-                    >
+                    <Link to="/quality/holds/$id" params={{ id: h.id }} className={idLinkClass}>
                       {h.reason}
                     </Link>
                   </span>
@@ -706,12 +814,21 @@ export function HoldOpen() {
               </li>
             ))}
           </ul>
-          <div className="mt-2 flex flex-wrap gap-2">
-            <button
-              type="button"
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              data-testid="open-skip"
+              onClick={() => {
+                setExisting([]);
+              }}
+            >
+              Leave {existing.length === 1 ? 'it' : 'them'} as{' '}
+              {existing.length === 1 ? 'it is' : 'they are'}
+            </Button>
+            <Button
+              size="sm"
               data-testid="open-confirm"
-              className={buttonClass}
-              disabled={write.isPending}
+              loading={write.isPending}
               onClick={() => {
                 if (sending.current) return;
                 sending.current = true;
@@ -719,23 +836,12 @@ export function HoldOpen() {
               }}
             >
               Open another hold on {existing.length === 1 ? 'it' : 'them'} anyway
-            </button>
-            <button
-              type="button"
-              data-testid="open-skip"
-              className={buttonClass}
-              onClick={() => {
-                setExisting([]);
-              }}
-            >
-              Leave {existing.length === 1 ? 'it' : 'them'} as{' '}
-              {existing.length === 1 ? 'it is' : 'they are'}
-            </button>
+            </Button>
           </div>
-        </div>
+        </Callout>
       ) : null}
       {results.length > 0 ? (
-        <ul className="mt-3 flex flex-col gap-2" data-testid="open-results">
+        <ul className="mt-4 flex max-w-3xl flex-col gap-2" data-testid="open-results">
           {results.map((r) => (
             <li
               key={subjectKey(r.subject)}
@@ -743,17 +849,14 @@ export function HoldOpen() {
               data-kind={r.hold ? 'opened' : (r.failure?.kind ?? 'failed')}
             >
               {r.hold ? (
-                <p role="status" className="text-sm text-emerald-900">
-                  {subjectText(r.subject)}: hold opened (
-                  <Link
-                    to="/quality/holds/$id"
-                    params={{ id: r.hold.id }}
-                    className="text-sky-800 underline"
-                  >
+                <Callout tone="ok" role="status">
+                  {SUBJECT_TEXT[r.subject.kind]}{' '}
+                  <Code className="whitespace-nowrap">{r.subject.id}</Code>: hold opened (
+                  <Link to="/quality/holds/$id" params={{ id: r.hold.id }} className={linkClass}>
                     details
                   </Link>
                   ), scope {scopeText(r.hold.scope)} so far.
-                </p>
+                </Callout>
               ) : r.failure ? (
                 <FailureMessage failure={r.failure} testId="open-message" />
               ) : null}
@@ -778,15 +881,32 @@ const ACTION_TEXT: Readonly<Record<HoldAction, { label: string; effect: string; 
   release: {
     label: 'Release',
     effect:
-      'Releases the hold: the goods are used as is; it no longer blocks a close or its cartons. The ERP is told.',
+      'Releases the hold: the goods are used as is; it no longer blocks a close or its cartons. The ERP is told. This cannot be undone.',
     done: 'Hold released',
   },
   reject: {
     label: 'Reject',
     effect:
-      'Rejects the goods: quality wants the units scrapped or reworked outside the MES. Quantities and confirmations don’t change; the cartons stay held; a close is no longer blocked by it. The ERP is told.',
+      'Rejects the goods: quality wants the units scrapped or reworked outside the MES. Quantities and confirmations don’t change; the cartons stay held; a close is no longer blocked by it. The ERP is told. This cannot be undone.',
     done: 'Hold rejected',
   },
+};
+
+/**
+ * The variant of each action (design system 4.1): release, the forward step, `primary`; reject,
+ * which sends the goods to scrap or rework, `danger`; a comment `secondary` in the header and
+ * `primary` as its own form's send.
+ */
+const ACTION_VARIANT: Readonly<Record<HoldAction, ButtonVariant>> = {
+  comment: 'secondary',
+  reject: 'danger',
+  release: 'primary',
+};
+const SUBMIT_VARIANT: Readonly<Record<HoldAction, ButtonVariant>> = {
+  comment: 'primary',
+  // A decision cannot be taken back: the destructive one's send is the solid danger (4.1, 4.9).
+  reject: 'dangerSolid',
+  release: 'primary',
 };
 
 interface HoldDraft {
@@ -816,15 +936,23 @@ function HoldForm({
   const [problem, setProblem] = useState<string | undefined>(undefined);
   const sending = useRef(false);
   const form = useRef<HTMLFormElement>(null);
+  const submit = useRef<HTMLButtonElement>(null);
   const commentId = useId();
-  const reasonId = useId();
+  // "Start again" clears the stale state; the send button is enabled only after that render.
+  const focusSubmit = useRef(false);
   useUnsavedDraft(draft.comment.trim() !== '');
+  // The form takes the focus when it opens (and the browser brings it into view).
   useEffect(() => {
     form.current?.focus();
   }, []);
   // The first listed reason until one is chosen.
   const reason = draft.reason === '' ? (reasons[0]?.id ?? '') : draft.reason;
   const stale = isStale(draft.version, hold.version);
+  useEffect(() => {
+    if (!focusSubmit.current || stale) return;
+    focusSubmit.current = false;
+    submit.current?.focus();
+  }, [stale]);
   const applies = draft.action === 'comment' || hold.state === 'open';
   const text = ACTION_TEXT[draft.action];
   const write = useMutation({
@@ -864,12 +992,13 @@ function HoldForm({
       aria-label={text.label}
       data-testid={`hold-form-${draft.action}`}
       data-version={String(draft.version)}
-      className="mt-2 flex flex-col gap-2 rounded border border-slate-400 bg-slate-50 p-3"
+      className="flex max-w-3xl flex-col gap-4 rounded-lg border border-line bg-surface p-4 text-ink sm:p-5"
       onKeyDown={(event) => {
         if (event.key === 'Escape') onClose();
       }}
       onSubmit={(event) => {
         event.preventDefault();
+        // A ref, not `isPending`: two submits before the next render both see it false.
         if (stale || !applies || sending.current) return;
         const found =
           commentProblem(draft.comment, draft.action === 'comment') ??
@@ -881,32 +1010,68 @@ function HoldForm({
         write.mutate(draft);
       }}
     >
-      <h3 className="font-semibold">{text.label}</h3>
-      <p className="text-sm">{text.effect}</p>
-      <p className="text-xs text-slate-700">
-        Prepared on version {draft.version} of the hold; the MES refuses it if the hold has changed
-        since (409).
-      </p>
+      <div className="flex flex-col gap-1">
+        <h2 className="text-lg font-semibold">{text.label}</h2>
+        <p className="text-sm">{text.effect}</p>
+        <p className="text-xs text-ink-secondary">
+          Prepared on version {draft.version} of the hold; the MES refuses it if the hold has
+          changed since.
+        </p>
+      </div>
+      {failure ? <FailureMessage failure={failure} testId="hold-message" /> : null}
+      {problem ? (
+        <Callout tone="alarm" role="alert" data-testid="hold-invalid">
+          {problem}
+        </Callout>
+      ) : null}
+      {stale ? (
+        <Callout
+          tone="warn"
+          role="alert"
+          data-testid="hold-stale"
+          data-version={String(hold.version)}
+          title="The hold changed while you prepared this"
+        >
+          <p>
+            It is at version {hold.version} ({HOLD_STATE_TEXT[hold.state]}), you started on version{' '}
+            {draft.version}. Nothing is sent with the newer version.{' '}
+            {applies
+              ? 'Check the hold above, then start again: what you entered is kept.'
+              : 'This action no longer applies to the hold.'}
+          </p>
+          {applies ? (
+            <Button
+              size="sm"
+              data-testid="hold-restart"
+              className="mt-2"
+              onClick={() => {
+                setDraft((d) => ({ ...d, version: hold.version }));
+                setFailure(undefined);
+                focusSubmit.current = true;
+              }}
+            >
+              Start again on version {hold.version}
+            </Button>
+          ) : null}
+        </Callout>
+      ) : null}
       {draft.action !== 'comment' ? (
-        <label htmlFor={reasonId} className="flex flex-col gap-1 text-sm font-medium">
-          Reason
-          <select
-            id={reasonId}
-            data-testid="hold-reason"
-            value={reason}
-            className={`${inputClass} max-w-md`}
-            onChange={(event) => {
-              const reason = event.target.value;
-              setDraft((d) => ({ ...d, reason }));
-            }}
-          >
-            {reasons.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.name} ({r.id})
-              </option>
-            ))}
-          </select>
-        </label>
+        <Select
+          label="Reason"
+          name="reason"
+          data-testid="hold-reason"
+          value={reason}
+          onChange={(event) => {
+            const reason = event.target.value;
+            setDraft((d) => ({ ...d, reason }));
+          }}
+        >
+          {reasons.map((r) => (
+            <option key={r.id} value={r.id}>
+              {r.name} ({r.id})
+            </option>
+          ))}
+        </Select>
       ) : null}
       <CommentInput
         id={commentId}
@@ -919,88 +1084,479 @@ function HoldForm({
           setDraft((d) => ({ ...d, comment }));
         }}
       />
-      {stale ? (
-        <div
-          role="alert"
-          data-testid="hold-stale"
-          data-version={String(hold.version)}
-          className="rounded border border-red-800 bg-red-50 p-2 text-sm text-red-950"
-        >
-          <p>
-            The hold changed while you prepared this: it is at version {hold.version} (
-            {HOLD_STATE_TEXT[hold.state]}), you started on version {draft.version}. Nothing is sent
-            with the newer version.{' '}
-            {applies
-              ? 'Check the hold above, then start again: what you entered is kept.'
-              : 'This action no longer applies to the hold.'}
-          </p>
-          {applies ? (
-            <button
-              type="button"
-              data-testid="hold-restart"
-              className={`${buttonClass} mt-2`}
-              onClick={() => {
-                setDraft((d) => ({ ...d, version: hold.version }));
-                setFailure(undefined);
-              }}
-            >
-              Start again on version {hold.version}
-            </button>
-          ) : null}
-        </div>
-      ) : null}
-      {problem ? (
-        <p role="alert" className="text-sm text-red-900" data-testid="hold-invalid">
-          {problem}
-        </p>
-      ) : null}
-      {failure ? <FailureMessage failure={failure} testId="hold-message" /> : null}
+      {/* Cancel first, the send button last, on the right of the pair (design system 4.1). */}
       <div className="flex flex-wrap gap-2">
-        <button
-          type="submit"
-          data-testid="hold-submit"
-          disabled={write.isPending || stale || !applies}
-          className={primaryClass}
-        >
-          {write.isPending ? 'Sending…' : text.label}
-        </button>
-        <button
-          type="button"
+        <Button
           data-testid="hold-cancel"
-          className={buttonClass}
           onClick={() => {
             onClose();
           }}
         >
           Cancel
-        </button>
+        </Button>
+        <Button
+          ref={submit}
+          type="submit"
+          variant={SUBMIT_VARIANT[draft.action]}
+          data-testid="hold-submit"
+          disabled={stale || !applies}
+          loading={write.isPending}
+        >
+          {text.label}
+        </Button>
       </div>
     </form>
   );
 }
 
-function Facts({ items }: { readonly items: readonly (readonly [string, ReactNode])[] }) {
+/** The actions this role may take on the hold as it is now. */
+function useOffered(hold: HoldDto | undefined): HoldAction[] {
+  const canHold = useCan('quality:hold');
+  const canRelease = useCan('quality:release');
+  return [
+    ...(canHold ? (['comment'] as const) : []),
+    ...(canRelease && hold?.state === 'open' ? (['reject', 'release'] as const) : []),
+  ];
+}
+
+/**
+ * Where the focus goes when an action form closes: the button that opened it, else the header's
+ * last action, else the page's heading.
+ */
+function focusAfterClose(action: HoldAction): void {
+  const own = document.querySelector<HTMLElement>(`button[data-testid="hold-action-${action}"]`);
+  const actions = document.querySelectorAll<HTMLElement>('button[data-testid^="hold-action-"]');
+  (own ?? actions[actions.length - 1] ?? document.getElementById('hold-title'))?.focus();
+}
+
+/** The scope's counts as figures (design system 4.4), and the held material consumed. */
+function ScopeCounts({ hold }: { readonly hold: HoldDto }) {
+  const consumed = hold.heldMaterialConsumed;
   return (
-    <dl className="grid grid-cols-1 gap-x-6 gap-y-1 text-sm sm:grid-cols-2 lg:grid-cols-3">
-      {items.map(([label, value]) => (
-        <div key={label} className="flex gap-2">
-          <dt className="text-slate-700">{label}:</dt>
-          <dd className="font-medium">{value}</dd>
-        </div>
-      ))}
-    </dl>
+    <div className="rounded-lg border border-line bg-surface p-4">
+      <div
+        data-testid="hold-scope-counts"
+        data-units={String(hold.scope.units)}
+        data-cartons={String(hold.scope.cartons)}
+        data-orders={String(hold.scope.orders)}
+        className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4"
+      >
+        <Stat label="Units" value={hold.scope.units} dataValue={String(hold.scope.units)} />
+        <Stat label="Cartons" value={hold.scope.cartons} dataValue={String(hold.scope.cartons)} />
+        <Stat label="Orders" value={hold.scope.orders} dataValue={String(hold.scope.orders)} />
+        <Stat
+          label="Held material consumed"
+          value={consumed}
+          valueTestId="hold-consumed"
+          dataValue={String(consumed)}
+          // A consumption of a held lot is abnormal: the only coloured figure.
+          tone={consumed > 0 ? 'warn' : undefined}
+          hint={consumed > 0 ? 'Cycles that used a held lot after the opening' : undefined}
+        />
+      </div>
+    </div>
   );
 }
 
-function HoldActions({
-  hold,
-  onRead,
+/** Ids as links, comma-separated, each on one line; an em dash with its reason when none. */
+function IdLinks({
+  ids,
+  none,
+  link,
 }: {
-  readonly hold: HoldDto;
-  readonly onRead: () => Promise<void>;
+  readonly ids: readonly string[];
+  readonly none: string;
+  readonly link: (id: string) => ReactNode;
 }) {
+  if (ids.length === 0) return <Missing reason={none} />;
+  return (
+    <>
+      {ids.map((id, i) => (
+        <span key={id}>
+          {i > 0 ? ', ' : ''}
+          {link(id)}
+        </span>
+      ))}
+    </>
+  );
+}
+
+function Scope({ detail, hold }: { readonly detail: HoldDetailDto; readonly hold: HoldDto }) {
+  const facts: Fact[] = [
+    {
+      term: 'Orders',
+      detail: (
+        <span data-testid="hold-orders">
+          <IdLinks
+            ids={detail.orders}
+            none="No order in the scope yet"
+            link={(id) => <OrderLink order={id} />}
+          />
+        </span>
+      ),
+    },
+    {
+      term: 'Cartons',
+      detail: (
+        <span data-testid="hold-cartons">
+          <IdLinks
+            ids={detail.cartons}
+            none="No carton in the scope yet"
+            link={(id) => <CartonLink carton={id} />}
+          />
+        </span>
+      ),
+    },
+  ];
+  return (
+    <Section
+      id="hold-scope-title"
+      testId="hold-scope"
+      title="Scope"
+      description="Derived from the genealogy and growing with facts: a unit that consumes a held lot later, or whose fact arrives late, joins it (about a second behind the genealogy)."
+    >
+      <ScopeCounts hold={hold} />
+      <div className="mt-4">
+        <DescriptionList facts={facts} columns={2} label="Orders and cartons in the scope" />
+      </div>
+    </Section>
+  );
+}
+
+type HoldUnit = HoldDetailDto['units'][number];
+
+const unitKey = (u: HoldUnit): string => `${String(u.epoch)}-${String(u.partId)}`;
+
+/** Units on a page of their own size, as the lot's units on its trace page (#331). */
+const UNITS_PAGE_SIZE = 50;
+
+/**
+ * One link per row, the serial: the orders and cartons are linked once each in the scope above,
+ * so a keyboard user does not tab through the same order on every row (G-33), as on the lot's
+ * trace page; the ids and the absences in the trace pages' words.
+ */
+const UNIT_COLUMNS: readonly Column<HoldUnit>[] = [
+  {
+    key: 'serial',
+    header: 'Serial',
+    rowHeader: true,
+    nowrap: true,
+    cell: (u) => <SerialLink unit={u} />,
+  },
+  {
+    key: 'unit',
+    header: 'Unit (epoch / part)',
+    numeric: true,
+    priority: 3,
+    cell: (u) => (
+      <>
+        {u.epoch} / {u.partId}
+      </>
+    ),
+  },
+  {
+    key: 'order',
+    header: 'Order',
+    nowrap: true,
+    cell: (u) => <IdText id={u.orderId} kind="order" />,
+  },
+  {
+    key: 'carton',
+    header: 'Carton',
+    nowrap: true,
+    priority: 3,
+    cell: (u) => <IdText id={u.carton} kind="carton" />,
+  },
+  {
+    key: 'joined',
+    header: 'Joined',
+    align: 'end',
+    nowrap: true,
+    priority: 2,
+    cell: (u) => wallTimeOf(u.joinedAt),
+  },
+];
+
+function Units({ detail }: { readonly detail: HoldDetailDto }) {
+  return (
+    <Section
+      id="hold-units-title"
+      testId="hold-units-section"
+      title="Units in the scope"
+      description={
+        detail.unitsTruncated
+          ? undefined
+          : `${plural(detail.units.length, 'unit')}, by run and part.`
+      }
+    >
+      {detail.unitsTruncated ? (
+        <Callout tone="warn" role="status" data-testid="hold-units-truncated" className="mb-3">
+          More units are in the scope than are listed.
+        </Callout>
+      ) : null}
+      <DataTable
+        caption="Units in the hold's scope"
+        testId="hold-units"
+        columns={UNIT_COLUMNS}
+        rows={detail.units}
+        rowKey={unitKey}
+        rowTestId={(u) => `hold-unit-${unitKey(u)}`}
+        // At most 50 tab stops, and a way past them to the history (G-33), as the lot's units.
+        pageSize={UNITS_PAGE_SIZE}
+        skipToDetails="hold-history-title"
+        skipLabel="Skip past the units"
+        density="compact"
+        empty={
+          <EmptyState
+            size="inline"
+            icon="info"
+            testId="hold-units-empty"
+            title="No unit in the scope yet"
+            body="Units join as the genealogy links them to the held subject."
+          />
+        }
+      />
+    </Section>
+  );
+}
+
+const TRANSITION_TEXT: Readonly<Record<HoldDetailDto['transitions'][number]['kind'], string>> = {
+  opened: 'Opened',
+  commented: 'Commented',
+  released: 'Released',
+  rejected: 'Rejected',
+};
+
+type Transition = HoldDetailDto['transitions'][number];
+
+/** An ERP notification the ERP did not take is abnormal: a badge; the others are words. */
+function Notification({ notification }: { readonly notification: Transition['notification'] }) {
+  if (notification === null) return <>not notified</>;
+  const refused = notification.status === 'refused' || notification.status === 'conflict';
+  const attempts = plural(notification.attempts, 'attempt');
+  return (
+    <>
+      {refused ? (
+        <Badge tone="alarm">{notification.status}</Badge>
+      ) : (
+        <span>{notification.status}</span>
+      )}{' '}
+      ({attempts})
+      {notification.lastError ? (
+        <span className="block text-xs text-alarm-ink">{notification.lastError}</span>
+      ) : null}
+    </>
+  );
+}
+
+const TRANSITION_COLUMNS: readonly Column<Transition>[] = [
+  { key: 'n', header: '#', numeric: true, cell: (t) => t.n },
+  {
+    key: 'kind',
+    header: 'What',
+    nowrap: true,
+    rowHeader: true,
+    cell: (t) => TRANSITION_TEXT[t.kind],
+  },
+  {
+    key: 'reason',
+    header: 'Reason',
+    nowrap: true,
+    priority: 3,
+    cell: (t) => (t.reason ? <Code>{t.reason}</Code> : <Missing reason="No reason" />),
+  },
+  {
+    key: 'comment',
+    header: 'Comment',
+    priority: 2,
+    cell: (t) =>
+      t.comment ? (
+        <span className="break-words">{t.comment}</span>
+      ) : (
+        <Missing reason="No comment" />
+      ),
+  },
+  { key: 'by', header: 'By', nowrap: true, priority: 2, cell: (t) => t.by },
+  {
+    key: 'at',
+    header: 'When',
+    cell: (t) => (
+      <span data-testid="hold-transition-at">
+        {wallTimeOf(t.at)}
+        {plantBeside(t.plantAt)}
+      </span>
+    ),
+  },
+  {
+    key: 'scope',
+    header: 'Scope told',
+    priority: 3,
+    cell: (t) =>
+      t.scope ? (
+        `${scopeText(t.scope)}${t.scope.final ? '' : ' (provisional)'}`
+      ) : (
+        <Missing reason="Not notified" />
+      ),
+  },
+  {
+    key: 'notification',
+    header: 'ERP notification',
+    priority: 3,
+    cell: (t) => <Notification notification={t.notification} />,
+  },
+];
+
+function Transitions({ detail }: { readonly detail: HoldDetailDto }) {
+  return (
+    <Section
+      id="hold-history-title"
+      testId="hold-history"
+      title="Transitions and comments"
+      description="In order, with the notification each sent to the ERP."
+    >
+      <DataTable
+        caption="Transitions and comments in order, with their ERP notifications"
+        testId="hold-transitions"
+        columns={TRANSITION_COLUMNS}
+        rows={detail.transitions}
+        rowKey={(t) => String(t.n)}
+        rowTestId={(t) => `hold-transition-${String(t.n)}`}
+        // On a phone one card per transition, so its comment and its author stay readable.
+        narrow="stack"
+        rowProps={(t) => ({
+          'data-kind': t.kind,
+          'data-notification': t.notification?.status ?? '',
+        })}
+      />
+    </Section>
+  );
+}
+
+type Incident = HoldDetailDto['incidents'][number];
+
+const INCIDENT_COLUMNS: readonly Column<Incident>[] = [
+  { key: 'lot', header: 'Lot', nowrap: true, rowHeader: true, cell: (i) => <Code>{i.lot}</Code> },
+  { key: 'machine', header: 'Machine', nowrap: true, cell: (i) => <Code>{i.equipment}</Code> },
+  { key: 'part', header: 'Part', numeric: true, priority: 3, cell: (i) => i.partId },
+  {
+    key: 'operation',
+    header: 'Operation',
+    nowrap: true,
+    priority: 3,
+    cell: (i) => (
+      <>
+        {i.operation ?? <Missing reason="No operation" />}
+        {i.pass === null ? '' : ` (pass ${String(i.pass)})`}
+      </>
+    ),
+  },
+  { key: 'consumed', header: 'Consumed', nowrap: true, cell: (i) => timeOf(i.consumedAt) },
+  {
+    key: 'detected',
+    header: 'Detected',
+    nowrap: true,
+    priority: 2,
+    cell: (i) => wallTimeOf(i.detectedAt),
+  },
+  { key: 'message', header: 'Message', priority: 3, cell: (i) => i.message },
+];
+
+function Incidents({ detail }: { readonly detail: HoldDetailDto }) {
+  return (
+    <Section
+      id="hold-incidents-title"
+      testId="hold-incidents"
+      title="Held material consumed"
+      description="Cycles that consumed a held lot after the opening: the hold never stops a machine."
+    >
+      <DataTable
+        caption="Consumptions of a held lot after the opening"
+        testId="hold-incident-list"
+        columns={INCIDENT_COLUMNS}
+        rows={detail.incidents}
+        rowKey={(i) => String(i.id)}
+        rowTestId={(i) => `hold-incident-${String(i.id)}`}
+        rowTone={() => 'warn'}
+        empty={
+          <EmptyState
+            size="inline"
+            icon="check"
+            testId="hold-incidents-empty"
+            title="No held material consumed"
+            body="No cycle consumed a held lot after the opening."
+          />
+        }
+      />
+    </Section>
+  );
+}
+
+/** The page's sections in reading order (design system 3.4). */
+const SECTIONS: readonly SectionNavItem[] = [
+  { id: 'hold-scope-title', label: 'Scope' },
+  { id: 'hold-units-title', label: 'Units in the scope' },
+  { id: 'hold-history-title', label: 'Transitions and comments' },
+  { id: 'hold-incidents-title', label: 'Held material consumed' },
+];
+
+/** The header's title for a hold: "Hold on Lot `K1`", the id in monospace. */
+function holdTitle(hold: HoldDto): ReactNode {
+  return (
+    <>
+      Hold on {SUBJECT_TEXT[hold.subject.kind]}{' '}
+      <Code className="whitespace-nowrap">{hold.subject.id}</Code>
+    </>
+  );
+}
+
+/** The key facts (Q-02): the subject, the reason, who opened and decided it and when. */
+function HoldFacts({ hold }: { readonly hold: HoldDto }) {
+  const facts: Fact[] = [
+    { term: 'Subject', detail: <SubjectLink subject={hold.subject} /> },
+    { term: 'Reason', detail: <Code>{hold.reason}</Code> },
+    {
+      term: 'Opened',
+      detail: (
+        <span data-testid="hold-opened">
+          {hold.openedBy}, {wallTimeOf(hold.openedAt)}
+        </span>
+      ),
+    },
+    {
+      term: 'Opened at plant time',
+      detail: hold.openedPlantAt === null ? null : timeOf(hold.openedPlantAt),
+    },
+    {
+      term: 'Decided',
+      detail: hold.decidedBy ? (
+        <span data-testid="hold-decided">
+          {hold.decidedBy}, {wallTimeOf(hold.decidedAt)}
+          {plantBeside(hold.decidedPlantAt)} ({hold.decisionReason})
+        </span>
+      ) : null,
+    },
+    { term: 'Version', detail: <span className="tabular-nums">{hold.version}</span> },
+  ];
+  return (
+    <div data-testid="hold-summary" data-state={hold.state} data-version={String(hold.version)}>
+      <DescriptionList facts={facts} columns={4} label="Hold facts" />
+      <HoldEffect />
+    </div>
+  );
+}
+
+function HoldDetail({ id }: { readonly id: string }) {
+  const queryClient = useQueryClient();
+  const read = useQuery({
+    queryKey: qualityKeys.hold(id),
+    queryFn: ({ signal }) => getHold(id, signal),
+  });
+  const live = useLiveQuality();
+  const detail = read.data;
+  const hold = detail ? newestHold(detail.hold, live) : undefined;
   const canHold = useCan('quality:hold');
   const canRelease = useCan('quality:release');
+  const offered = useOffered(hold);
   const reasons = useQuery({
     queryKey: qualityKeys.reasons,
     queryFn: ({ signal }) => getHoldReasons(signal),
@@ -1009,344 +1565,131 @@ function HoldActions({
   });
   const [open, setOpen] = useState<HoldDraft | undefined>(undefined);
   const [done, setDone] = useState<string | undefined>(undefined);
-  const opener = useRef<HTMLDivElement>(null);
-  const offered: HoldAction[] = [
-    ...(canHold ? (['comment'] as const) : []),
-    ...(canRelease && hold.state === 'open' ? (['release', 'reject'] as const) : []),
-  ];
-  return (
-    <Section id="hold-actions" title="Actions">
-      {!canHold && !canRelease ? (
-        <p className="text-sm" data-testid="hold-read-only">
-          Your role cannot change holds: shown read-only.
-        </p>
-      ) : null}
-      {done && !open ? (
-        <p role="status" data-testid="hold-done" className="mb-2 text-sm text-emerald-900">
-          {done}
-        </p>
-      ) : null}
-      {!open ? (
-        <div ref={opener} className="flex flex-wrap gap-2">
-          {offered.map((action) => (
-            <button
-              key={action}
-              type="button"
-              data-testid={`hold-action-${action}`}
-              className={buttonClass}
-              onClick={() => {
-                setDone(undefined);
-                setOpen({ action, version: hold.version, reason: '', comment: '' });
-              }}
-            >
-              {ACTION_TEXT[action].label}
-            </button>
-          ))}
-        </div>
-      ) : (
-        <HoldForm
-          key={`${open.action}:${String(open.version)}`}
-          hold={hold}
-          initial={open}
-          reasons={
-            open.action === 'comment' ? [] : reasonsFor(reasons.data?.reasons ?? [], open.action)
-          }
-          onRead={onRead}
-          onClose={(text) => {
-            setOpen(undefined);
-            setDone(text);
-            requestAnimationFrame(() => opener.current?.querySelector('button')?.focus());
-          }}
-        />
-      )}
-    </Section>
-  );
-}
-
-function Scope({ detail }: { readonly detail: HoldDetailDto }) {
-  return (
-    <Section id="hold-scope" title="Scope">
-      <p className="text-sm text-slate-700">
-        Derived from the genealogy and growing with facts: a unit that consumes a held lot later, or
-        whose fact arrives late, joins it (shown about a second behind the genealogy).
-      </p>
-      <p className="mt-2 text-sm">
-        Orders:{' '}
-        <span data-testid="hold-orders">
-          {detail.orders.length === 0
-            ? '–'
-            : detail.orders.map((id, i) => (
-                <span key={id}>
-                  {i > 0 ? ', ' : ''}
-                  <Link to="/orders/$id" params={{ id }} className="text-sky-800 underline">
-                    {id}
-                  </Link>
-                </span>
-              ))}
-        </span>
-      </p>
-      <p className="mt-1 text-sm">
-        Cartons:{' '}
-        <span data-testid="hold-cartons">
-          {detail.cartons.length === 0
-            ? '–'
-            : detail.cartons.map((id, i) => (
-                <span key={id}>
-                  {i > 0 ? ', ' : ''}
-                  <Link
-                    to="/trace/cartons/$carton"
-                    params={{ carton: id }}
-                    className="text-sky-800 underline"
-                  >
-                    {id}
-                  </Link>
-                </span>
-              ))}
-        </span>
-      </p>
-      {detail.units.length === 0 ? (
-        <p className="mt-2 text-sm" data-testid="hold-units-empty">
-          No unit in the scope yet.
-        </p>
-      ) : (
-        <div className="mt-2">
-          <Table
-            bounded
-            testId="hold-units"
-            caption="Units in the hold's scope"
-            columns={['Serial', 'Unit (epoch / part)', 'Order', 'Carton', 'Joined']}
-            count={detail.units.length}
-          >
-            {detail.units.map((u) => (
-              <tr
-                key={`${String(u.epoch)}-${String(u.partId)}`}
-                data-testid={`hold-unit-${String(u.epoch)}-${String(u.partId)}`}
-              >
-                <td className={cell}>
-                  {u.serial ? (
-                    <Link
-                      to="/trace/serials/$serial"
-                      params={{ serial: u.serial }}
-                      search={{ unit: `${String(u.epoch)}-${String(u.partId)}` }}
-                      className="text-sky-800 underline"
-                    >
-                      {u.serial}
-                    </Link>
-                  ) : (
-                    '–'
-                  )}
-                </td>
-                <td className={cell}>
-                  {u.epoch} / {u.partId}
-                </td>
-                <td className={cell}>
-                  {u.orderId ? (
-                    <Link
-                      to="/orders/$id"
-                      params={{ id: u.orderId }}
-                      className="text-sky-800 underline"
-                    >
-                      {u.orderId}
-                    </Link>
-                  ) : (
-                    '–'
-                  )}
-                </td>
-                <td className={cell}>{u.carton ?? '–'}</td>
-                <td className={cell}>{wallTimeOf(u.joinedAt)}</td>
-              </tr>
-            ))}
-          </Table>
-        </div>
-      )}
-      {detail.unitsTruncated ? (
-        <p className="mt-1 text-sm" data-testid="hold-units-truncated">
-          More units are in the scope than are listed.
-        </p>
-      ) : null}
-    </Section>
-  );
-}
-
-function Transitions({ detail }: { readonly detail: HoldDetailDto }) {
-  return (
-    <Section id="hold-history" title="Transitions and comments">
-      <Table
-        testId="hold-transitions"
-        caption="Transitions and comments in order, with their ERP notifications"
-        columns={['#', 'What', 'Reason', 'Comment', 'By', 'When', 'Scope told', 'ERP notification']}
-        count={detail.transitions.length}
-      >
-        {detail.transitions.map((t) => (
-          <tr
-            key={t.n}
-            data-testid={`hold-transition-${String(t.n)}`}
-            data-kind={t.kind}
-            data-notification={t.notification?.status ?? ''}
-          >
-            <td className={cell}>{t.n}</td>
-            <td className={cell}>{t.kind}</td>
-            <td className={cell}>{t.reason ?? '–'}</td>
-            <td className={cell}>{t.comment ?? '–'}</td>
-            <td className={cell}>{t.by}</td>
-            <td className={cell} data-testid="hold-transition-at">
-              {wallTimeOf(t.at)}
-              {plantBeside(t.plantAt)}
-            </td>
-            <td className={cell}>
-              {t.scope
-                ? `${String(t.scope.units)} units, ${String(t.scope.cartons)} cartons, ${String(t.scope.orders)} orders${t.scope.final ? '' : ' (provisional)'}`
-                : '–'}
-            </td>
-            <td className={cell}>
-              {t.notification ? (
-                <>
-                  {t.notification.status} ({t.notification.attempts} attempt
-                  {t.notification.attempts === 1 ? '' : 's'})
-                  {t.notification.lastError ? (
-                    <span className="block text-xs text-red-900">{t.notification.lastError}</span>
-                  ) : null}
-                </>
-              ) : (
-                'not notified'
-              )}
-            </td>
-          </tr>
-        ))}
-      </Table>
-    </Section>
-  );
-}
-
-function Incidents({ detail }: { readonly detail: HoldDetailDto }) {
-  return (
-    <Section id="hold-incidents" title="Held material consumed">
-      {detail.incidents.length === 0 ? (
-        <p className="text-sm" data-testid="hold-incidents-empty">
-          No consumption of a held lot after the opening.
-        </p>
-      ) : (
-        <Table
-          testId="hold-incident-list"
-          caption="Consumptions of a held lot after the opening"
-          columns={['Lot', 'Machine', 'Part', 'Operation', 'Consumed', 'Detected', 'Message']}
-          count={detail.incidents.length}
-        >
-          {detail.incidents.map((i) => (
-            <tr key={i.id} data-testid={`hold-incident-${String(i.id)}`}>
-              <td className={cell}>{i.lot}</td>
-              <td className={cell}>{i.equipment}</td>
-              <td className={cell}>{i.partId}</td>
-              <td className={cell}>
-                {i.operation ?? '–'}
-                {i.pass === null ? '' : ` (pass ${String(i.pass)})`}
-              </td>
-              <td className={cell}>{timeOf(i.consumedAt)}</td>
-              <td className={cell}>{wallTimeOf(i.detectedAt)}</td>
-              <td className={cell}>{i.message}</td>
-            </tr>
-          ))}
-        </Table>
-      )}
-    </Section>
-  );
-}
-
-function HoldDetail({ id }: { readonly id: string }) {
-  const heading = useHeadingFocus<HTMLHeadingElement>();
-  const queryClient = useQueryClient();
-  const read = useQuery({
-    queryKey: qualityKeys.hold(id),
-    queryFn: ({ signal }) => getHold(id, signal),
-  });
-  const live = useLiveQuality();
   const onRead = async () => {
     await queryClient.refetchQueries({ queryKey: qualityKeys.hold(id) });
   };
-  const missing = read.error instanceof ApiError && read.error.status === 404;
-  const detail = read.data;
-  const hold = detail ? newestHold(detail.hold, live) : undefined;
-  return (
-    <section aria-labelledby="hold-title" data-testid="hold-detail" data-hold={id}>
-      <p className="text-sm">
-        <Link to="/quality/holds" search={{}} className="text-sky-800 underline">
-          All holds
-        </Link>
-      </p>
-      <h1 ref={heading} id="hold-title" tabIndex={-1} className="mt-1 text-2xl font-bold">
-        {hold ? `Hold on ${subjectText(hold.subject)}` : 'Quality hold'}
-      </h1>
-      {read.isPending ? <p className="mt-4">Loading the hold…</p> : null}
-      {missing ? (
-        <p className="mt-4" data-testid="hold-missing">
-          The MES has no hold {id}.
+
+  if (read.isPending) {
+    // No `h1` until the hold is read: the heading takes the focus when it mounts.
+    return (
+      <div className="flex flex-col gap-6" data-testid="hold-detail" data-hold={id}>
+        <p className="text-sm">
+          <Link {...BACK.link} className="text-link underline-offset-4 hover:underline">
+            ‹ {BACK.label}
+          </Link>
         </p>
-      ) : read.isError ? (
-        <div className="mt-4">
-          <QueryError what="the hold" error={read.error} onRetry={() => void read.refetch()} />
+        <Skeleton shape="card" label="Loading the hold…" />
+      </div>
+    );
+  }
+  if (read.error instanceof ApiError && read.error.status === 404) {
+    return <HoldNotFound id={id} />;
+  }
+  if (read.isError || !detail || !hold) {
+    return (
+      <section aria-labelledby="hold-title" data-testid="hold-detail" data-hold={id}>
+        <PageHeader
+          id="hold-title"
+          back={BACK}
+          title={
+            <>
+              Hold <Code className="break-all">{id}</Code>
+            </>
+          }
+          documentTitle={`Hold ${id}`}
+        />
+        <QueryError what="the hold" error={read.error} onRetry={() => void read.refetch()} />
+      </section>
+    );
+  }
+
+  return (
+    <section
+      aria-labelledby="hold-title"
+      data-testid="hold-detail"
+      data-hold={id}
+      data-state={hold.state}
+      data-subject={`${hold.subject.kind}:${hold.subject.id}`}
+    >
+      <PageHeader
+        id="hold-title"
+        back={BACK}
+        title={holdTitle(hold)}
+        documentTitle={`Hold on ${subjectText(hold.subject)}`}
+        status={<HoldStateBadge state={hold.state} />}
+        actions={
+          open === undefined && offered.length > 0 ? (
+            <>
+              {offered.map((action) => (
+                <Button
+                  key={action}
+                  variant={ACTION_VARIANT[action]}
+                  data-testid={`hold-action-${action}`}
+                  onClick={() => {
+                    setDone(undefined);
+                    setOpen({ action, version: hold.version, reason: '', comment: '' });
+                  }}
+                >
+                  {ACTION_TEXT[action].label}
+                </Button>
+              ))}
+            </>
+          ) : undefined
+        }
+        meta={<HoldFacts hold={hold} />}
+      />
+      {!canHold && !canRelease ? (
+        <Callout tone="info" data-testid="hold-read-only" className="mb-4">
+          Your role cannot change holds: shown read-only.
+        </Callout>
+      ) : null}
+      {done && !open ? (
+        <Callout tone="ok" role="status" data-testid="hold-done" className="mb-4">
+          {done}
+        </Callout>
+      ) : null}
+      {open ? (
+        <div className="mb-6">
+          <HoldForm
+            // A new draft (another action or version) starts a new form: nothing carries over.
+            key={`${open.action}:${String(open.version)}`}
+            hold={hold}
+            initial={open}
+            reasons={
+              open.action === 'comment' ? [] : reasonsFor(reasons.data?.reasons ?? [], open.action)
+            }
+            onRead={onRead}
+            onClose={(text) => {
+              const closed = open.action;
+              setOpen(undefined);
+              setDone(text);
+              requestAnimationFrame(() => {
+                focusAfterClose(closed);
+              });
+            }}
+          />
         </div>
       ) : null}
-      {detail && hold ? (
-        <>
-          <div
-            className="mt-3"
-            data-testid="hold-summary"
-            data-state={hold.state}
-            data-version={String(hold.version)}
-          >
-            <Facts
-              items={[
-                ['Subject', <SubjectLink key="s" subject={hold.subject} />],
-                ['State', <HoldStateBadge key="st" state={hold.state} />],
-                ['Reason', hold.reason],
-                [
-                  'Opened',
-                  <span key="o" data-testid="hold-opened">
-                    {hold.openedBy}, {wallTimeOf(hold.openedAt)}
-                  </span>,
-                ],
-                ['Opened at plant time', timeOf(hold.openedPlantAt)],
-                [
-                  'Decided',
-                  hold.decidedBy ? (
-                    <span key="d" data-testid="hold-decided">
-                      {hold.decidedBy}, {wallTimeOf(hold.decidedAt)}
-                      {plantBeside(hold.decidedPlantAt)} ({hold.decisionReason})
-                    </span>
-                  ) : (
-                    '–'
-                  ),
-                ],
-                [
-                  'Scope',
-                  <span
-                    key="sc"
-                    data-testid="hold-scope-counts"
-                    data-units={String(hold.scope.units)}
-                    data-cartons={String(hold.scope.cartons)}
-                    data-orders={String(hold.scope.orders)}
-                  >
-                    {scopeText(hold.scope)}
-                  </span>,
-                ],
-                [
-                  'Held material consumed',
-                  <span key="hm" data-testid="hold-consumed">
-                    {hold.heldMaterialConsumed}
-                  </span>,
-                ],
-                ['Version', String(hold.version)],
-              ]}
-            />
-            <HoldEffect />
-          </div>
-          <HoldActions hold={hold} onRead={onRead} />
-          <Scope detail={detail} />
-          <Transitions detail={detail} />
-          <Incidents detail={detail} />
-        </>
-      ) : null}
+      <SectionNav items={SECTIONS} testId="hold-section-nav" />
+      <div className="mt-6">
+        <Scope detail={detail} hold={hold} />
+        <Units detail={detail} />
+        <Transitions detail={detail} />
+        <Incidents detail={detail} />
+      </div>
     </section>
+  );
+}
+
+/** An unknown hold, or an id that cannot be one: the not-found page (G-21, H-04). */
+function HoldNotFound({ id }: { readonly id: string }) {
+  return (
+    <NotFound
+      kind="hold"
+      id={id}
+      back={{ to: '/quality/holds', label: BACK.label }}
+      testId="hold-missing"
+    />
   );
 }
 
@@ -1354,15 +1697,6 @@ function HoldDetail({ id }: { readonly id: string }) {
 export function HoldDetailRoute() {
   const { id } = useParams({ from: '/quality/holds/$id' });
   useQualityTopic();
-  if (!HOLD_ID.test(id)) {
-    return (
-      <section>
-        <h1 className="text-2xl font-bold">Quality hold</h1>
-        <p className="mt-2" data-testid="hold-missing">
-          No hold has this id.
-        </p>
-      </section>
-    );
-  }
+  if (!HOLD_ID.test(id)) return <HoldNotFound id={id} />;
   return <HoldDetail key={id} id={id.toLowerCase()} />;
 }

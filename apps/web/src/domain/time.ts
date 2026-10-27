@@ -143,6 +143,16 @@ export function isoDuration(ms: number): string {
   }`;
 }
 
+/**
+ * A plant-time range without seconds (design system 6.2): `Mon 12 Oct, 06:15 – 12:17` on one plant
+ * day, `Wed 21 Oct, 22:00 – Thu 22 Oct, 06:00` across midnight.
+ */
+export function plantRangeText(from: string | number, to: string | number): string {
+  const end =
+    plantDayOf(from) === plantDayOf(to) ? formatClockTime(to) : formatPlantTimeMinutes(to);
+  return `${formatPlantTimeMinutes(from)} – ${end}`;
+}
+
 export const RANGES = {
   '1h': { label: 'Last hour', ms: 3_600_000 },
   '8h': { label: 'Last 8 h', ms: 8 * 3_600_000 },

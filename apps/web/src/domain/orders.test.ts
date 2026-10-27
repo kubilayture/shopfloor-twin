@@ -19,11 +19,11 @@ import {
   mergeCommands,
   mergeOrders,
   newestOrder,
-  orderCodeWords,
   orderFailure,
   priorityGlyph,
   unsettledCommands,
 } from './orders.ts';
+import { codeWords } from './plant.ts';
 
 const conflict = (type: string) =>
   new ApiError('Conflict', 409, {
@@ -212,9 +212,9 @@ describe('orders domain', () => {
   });
 
   it('writes codes as words, ERP statuses as tones and priorities as glyphs', () => {
-    expect(orderCodeWords('revision-refused')).toBe('Revision refused');
-    expect(orderCodeWords('  command_failed ')).toBe('Command failed');
-    expect(orderCodeWords('SENT')).toBe('Sent');
+    expect(codeWords('revision-refused')).toBe('Revision refused');
+    expect(codeWords('  command_failed ')).toBe('Command failed');
+    expect(codeWords('SENT')).toBe('Sent');
     expect(
       ['rejected', 'refused', 'conflict', 'revision-refused', 'pending', 'sent', 'imported'].map(
         erpStatusTone,

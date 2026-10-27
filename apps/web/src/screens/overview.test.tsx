@@ -39,8 +39,83 @@ describe('plant overview', () => {
     expect(screen.getByRole('status').textContent).toContain('Live');
 
     const card = screen.getByTestId('machine-cnc-01');
+    expect(card.tagName).toBe('ARTICLE');
     const link = within(card).getByRole('link', { name: 'Machine cnc-01' });
     expect(link.getAttribute('href')).toBe('/equipment/cnc-01?range=8h');
+    expect(within(card).getByRole('heading', { level: 4, name: 'Machine cnc-01' })).toBeTruthy();
+    // Normal states have no colour on the card (ISA-101): no left bar.
+    expect(card.className).not.toContain('border-l-4');
+    // No cause, no "Cause —" (O-02).
+    expect(within(card).queryByText('Cause')).toBeNull();
+    // The walkthrough counts the cards by `article[data-testid^="machine-"]`: only the cards.
+    expect(document.querySelectorAll('[data-testid^="machine-"]')).toHaveLength(EQUIPMENT.length);
+    expect(document.querySelectorAll('article[data-testid^="machine-"]')).toHaveLength(
+      EQUIPMENT.length,
+    );
+  });
+
+  it('sums the machines per state, the abnormal ones first, and raises an abnormal card', async () => {
+    vi.stubGlobal('fetch', fakeFetch(api));
+    const app = await renderApp('/');
+    await app.open();
+    await screen.findByTestId('state-cnc-01');
+    const summary = screen.getByTestId('overview-summary');
+    expect(
+      within(summary).getByRole('heading', { level: 2, name: 'Machines by state' }),
+    ).toBeTruthy();
+    const tiles = () =>
+      [...summary.querySelectorAll<HTMLElement>('[data-testid^="summary-state-"]')].map((tile) => [
+        tile.dataset.state,
+        tile.dataset.count,
+      ]);
+    expect(tiles()).toEqual([
+      ['Running', '1'],
+      ['Idle', '1'],
+      ['no-data', '1'],
+    ]);
+    expect(summary.textContent).toContain('3 machines; none needs attention');
+    expect(within(summary).getByText('Running: 1 machine')).toBeTruthy();
+
+    await app.push({
+      type: 'state',
+      equipment: 'asm-01',
+      current: current({ state: 'Starved', cause: 'MATERIAL:BLANK-VB', seq: 12 }),
+    });
+    await app.push({
+      type: 'state',
+      equipment: 'wsh-01',
+      current: current({ state: 'Down', cause: 'HEATER-FAULT', seq: 13 }),
+    });
+    expect(tiles()).toEqual([
+      ['Down', '1'],
+      ['Starved', '1'],
+      ['Running', '1'],
+    ]);
+    expect(summary.textContent).toContain('3 machines; 2 need attention');
+    expect(screen.getByTestId('summary-state-Down').className).toContain(
+      'border-l-state-down-border',
+    );
+    expect(screen.getByTestId('summary-state-Running').className).not.toContain('border-l-4');
+    // The abnormal card's 4 px bar in its state's border colour (G-13).
+    const asm = screen.getByTestId('machine-asm-01');
+    expect(asm.className.split(' ')).toEqual(
+      expect.arrayContaining(['border-l-4', 'border-l-state-starved-border']),
+    );
+    expect(screen.getByTestId('machine-wsh-01').className).toContain('border-l-state-down-border');
+    // Causes as words, the code beside them.
+    expect(within(asm).getByText('Material missing: BLANK-VB')).toBeTruthy();
+    expect(within(asm).getByText('MATERIAL:BLANK-VB')).toBeTruthy();
+    expect(within(screen.getByTestId('machine-wsh-01')).getByText('Heater fault')).toBeTruthy();
+
+    // A cause whose code says no more than its words shows the words alone.
+    await app.push({
+      type: 'state',
+      equipment: 'cnc-01',
+      current: current({ state: 'PlannedStop', cause: 'BREAK', seq: 14 }),
+    });
+    const cnc = screen.getByTestId('machine-cnc-01');
+    expect(within(cnc).getByText('Break')).toBeTruthy();
+    expect(within(cnc).queryByText('BREAK')).toBeNull();
   });
 
   it('subscribes to states and applies the snapshot and pushed deltas', async () => {
@@ -66,6 +141,7 @@ describe('plant overview', () => {
     );
     expect(screen.getByTestId('state-asm-01').dataset.state).toBe('Starved');
     expect(screen.getByText('no-parts')).toBeTruthy();
+    expect(screen.getByText('No parts')).toBeTruthy();
     expect(screen.getByText('Provisional')).toBeTruthy();
     expect(screen.getByTestId('time-in-state-cnc-01').textContent).toBe('20 min 00 s');
 
@@ -106,6 +182,8 @@ describe('plant overview', () => {
       await app.drop();
       expect(screen.getByRole('status').textContent).toContain('Reconnecting');
       expect(screen.getByTestId('stale-cnc-01').textContent).toBe('Stale: live connection lost');
+      // The summary's counts are as stale as the cards: it says so beside its heading.
+      expect(screen.getByTestId('summary-stale').textContent).toBe('Stale: live connection lost');
 
       await settle(() => {
         vi.advanceTimersByTime(1_000);
@@ -114,9 +192,11 @@ describe('plant overview', () => {
       expect(app.factory.sockets).toHaveLength(2);
       expect(app.factory.last.sent).toEqual([{ type: 'subscribe', topic: 'states' }]);
       expect(screen.queryByTestId('stale-cnc-01')).toBeNull();
+      expect(screen.queryByTestId('summary-stale')).toBeNull();
 
       await app.push({ type: 'clock', epoch: EPOCH + 60, watermark: '2026-10-15T06:00:00.000Z' });
       expect(screen.getByTestId('stale-cnc-01').textContent).toBe('Stale: from an earlier run');
+      expect(screen.getByTestId('summary-stale').textContent).toBe('Stale: from an earlier run');
     } finally {
       vi.useRealTimers();
     }
@@ -159,7 +239,24 @@ describe('plant overview', () => {
     );
     await renderApp('/');
     expect(await screen.findByText(/master data is not seeded/)).toBeTruthy();
+    expect(screen.getByText('No machines yet')).toBeTruthy();
+    expect(screen.queryByTestId('overview-summary')).toBeNull();
     expect(screen.getByTestId('plant-clock').textContent).toContain('no data yet');
+  });
+
+  it('loads in the shape of the page: summary tiles and a row of cards, one status', async () => {
+    vi.stubGlobal(
+      'fetch',
+      fakeFetch({ ...api, '/api/v1/equipment': () => new Promise<Response>(() => undefined) }),
+    );
+    await renderApp('/');
+    const loading = await screen.findByTestId('overview-loading');
+    const status = within(loading).getByRole('status');
+    expect(status.textContent).toBe('Loading equipment…');
+    expect(within(loading).getAllByRole('status')).toHaveLength(1);
+    expect(
+      [...loading.querySelectorAll<HTMLElement>('[data-shape]')].map((el) => el.dataset.shape),
+    ).toEqual(['stat', 'card']);
   });
 
   it('shows a page for unknown paths', async () => {

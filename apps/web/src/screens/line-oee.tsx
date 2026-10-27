@@ -5,20 +5,29 @@ import type {
   LineOeeDto,
 } from '@shopfloor/contracts/mes-api';
 import { useQuery, type UseQueryResult } from '@tanstack/react-query';
-import { useId } from 'react';
 import { getLineOee } from '../api/client.ts';
 import { queryKeys } from '../api/queries.ts';
-import { NA_REASON, RatioHeadline, RatioValue, StatusFlags } from '../components/oee-ui.tsx';
-import { QueryError } from '../components/query-error.tsx';
 import {
-  ABOVE_ONE_TEXT,
-  cycleText,
-  goodText,
-  lineFlags,
-  minutesText,
-  parseFraction,
-  pickBucket,
-} from '../domain/oee.ts';
+  FlagBadges,
+  NA_REASON,
+  SectionFinality,
+  StatusFlags,
+  groupFinality,
+  itemFlags,
+  ratioStat,
+  type GroupFinality,
+} from '../components/oee-ui.tsx';
+import { QueryError } from '../components/query-error.tsx';
+import { Callout } from '../components/ui/callout.tsx';
+import { Card } from '../components/ui/card.tsx';
+import { Code } from '../components/ui/code.tsx';
+import { DataTable, type Column } from '../components/ui/data-table.tsx';
+import { Disclosure } from '../components/ui/disclosure.tsx';
+import { EmptyState } from '../components/ui/empty-state.tsx';
+import { Duration, Missing, Percent } from '../components/ui/format.tsx';
+import { Skeleton } from '../components/ui/skeleton.tsx';
+import { Stat } from '../components/ui/stat.tsx';
+import { ABOVE_ONE_TEXT, cycleText, lineFlags, parseFraction, pickBucket } from '../domain/oee.ts';
 import { formatClockTime } from '../domain/time.ts';
 import { useLiveLineOee } from '../live/live-context.tsx';
 
@@ -100,6 +109,30 @@ export function useLineOee(
   };
 }
 
+/** Units packed good per product, one per line: "VB-100: 38" (never run together, Q-04). */
+export function PackedGood({ good }: { readonly good: Readonly<Record<string, number>> }) {
+  const entries = Object.entries(good)
+    .filter(([, n]) => n !== 0)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  if (entries.length === 0) return <Missing reason="Nothing packed good" />;
+  return (
+    // Phrasing content only: it sits inside a figure's `<span>` too.
+    <span className="inline-flex flex-col">
+      {entries.map(([product, n]) => (
+        <span key={product} className="whitespace-nowrap">
+          <Code>{product}</Code>: <span className="tabular-nums">{n}</span>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/** Exact milliseconds (`num/den`) as a number, for display only. */
+function msOf(text: string): number {
+  const exact = parseFraction(text);
+  return Number(exact.num) / Number(exact.den);
+}
+
 function Bottlenecks({
   bottlenecks,
   equipment,
@@ -109,9 +142,9 @@ function Bottlenecks({
 }) {
   if (bottlenecks.length === 0) return null;
   return (
-    <div className="text-sm" data-testid="line-bottlenecks">
-      <h4 className="font-medium">Bottleneck per product (from the MES)</h4>
-      <ul className="mt-1 flex flex-col gap-0.5">
+    <div className="flex flex-col gap-1 text-sm" data-testid="line-bottlenecks">
+      <h4 className="font-semibold text-ink">Bottleneck per product</h4>
+      <ul className="flex flex-col gap-1">
         {bottlenecks.map((b) => (
           <li
             key={b.product}
@@ -119,32 +152,75 @@ function Bottlenecks({
             data-operation={b.operation}
             data-equipment={b.equipment.join(',')}
           >
-            <span className="font-semibold">{b.product}</span>: {b.operation} on{' '}
-            {b.equipment.map((id) => equipment.get(id)?.name ?? id).join(', ')}, effective cycle{' '}
-            {cycleText(b.effectiveCycleMs)} (ideal {cycleText(`${String(b.idealCycleMs)}/1`)} ÷{' '}
-            {b.equipment.length} machine{b.equipment.length === 1 ? '' : 's'})
+            <Code className="font-medium">{b.product}</Code>: {b.operation} on{' '}
+            {b.equipment.map((id) => equipment.get(id)?.name ?? id).join(', ')}
+            <span className="block text-xs text-ink-secondary">
+              Effective cycle <span className="tabular-nums">{cycleText(b.effectiveCycleMs)}</span>{' '}
+              (ideal{' '}
+              <span className="tabular-nums">{cycleText(`${String(b.idealCycleMs)}/1`)}</span> ÷{' '}
+              {b.equipment.length} machine{b.equipment.length === 1 ? '' : 's'})
+            </span>
           </li>
         ))}
       </ul>
-      <p className="mt-1 text-xs text-slate-700">
-        The operation with the largest effective cycle on the routing (ideal cycle ÷ the machines
-        that run it). It stays the bottleneck when only one CNC has work: that shows as a lower line
-        OEE.
+      <p className="text-xs text-ink-secondary">
+        As the MES derives it: the operation with the largest effective cycle on the routing. It
+        stays the bottleneck when only one CNC has work; that shows as a lower line OEE.
       </p>
     </div>
   );
 }
 
-/** An hour row's status as text: finality, revision, incidents, may be revised, above 1. */
-export function hourStatus(hour: LineBucketDto): string {
-  const n = hour.incidents.length;
+/** Whether an hour has anything to show: a line OEE or units packed good. */
+function hasData(hour: LineBucketDto): boolean {
+  return hour.oee !== null || Object.values(hour.good).some((n) => n !== 0);
+}
+
+/**
+ * The hour table's columns. Finality is said once beside the table (E-03): the status column is
+ * there only when a row has something of its own (a mixed finality, a revision, incidents, may be
+ * revised, above 1), as in the machine table.
+ */
+function hourColumns(
+  finality: GroupFinality | undefined,
+  withStatus: boolean,
+): readonly Column<LineBucketDto>[] {
   return [
-    hour.final ? 'Final' : 'Provisional',
-    ...(hour.revision > 0 ? [`revision ${String(hour.revision)}`] : []),
-    ...(n > 0 ? [`${String(n)} incident${n === 1 ? '' : 's'}`] : []),
-    ...(hour.mayRevise ? ['may be revised'] : []),
-    ...(hour.aboveOne ? ['above 1'] : []),
-  ].join(', ');
+    {
+      key: 'hour',
+      header: 'Hour',
+      rowHeader: true,
+      nowrap: true,
+      cell: (hour) => (
+        <time dateTime={hour.from} className="tabular-nums">
+          {formatClockTime(hour.from)}
+        </time>
+      ),
+    },
+    {
+      key: 'oee',
+      header: 'Line OEE',
+      numeric: true,
+      cell: (hour) => <Percent ratio={hour.oee} na={NA_REASON.line} />,
+    },
+    { key: 'good', header: 'Packed good', cell: (hour) => <PackedGood good={hour.good} /> },
+    ...(withStatus
+      ? [
+          {
+            key: 'status',
+            header: 'Status',
+            cell: (hour: LineBucketDto) => {
+              const flags = itemFlags(lineFlags(hour), finality);
+              return flags.length > 0 ? (
+                <FlagBadges flags={flags} />
+              ) : (
+                <Missing reason="Nothing beyond the table’s status" />
+              );
+            },
+          },
+        ]
+      : []),
+  ];
 }
 
 function LineHours({
@@ -154,65 +230,122 @@ function LineHours({
   readonly hours: readonly LineBucketDto[];
   readonly read: LineOeeView['hoursRead'];
 }) {
+  // E-01: the hours without planned line time (the rest of a running shift, an idle hour) are
+  // counted, not listed as rows of dashes.
+  const shown = hours.filter(hasData);
+  const left = hours.length - shown.length;
+  const finality = groupFinality(shown);
+  const withStatus = shown.some((hour) => itemFlags(lineFlags(hour), finality).length > 0);
   return (
-    <details className="text-sm" open>
-      <summary className="cursor-pointer font-medium">Line OEE per hour</summary>
+    <Disclosure
+      summary={
+        <>
+          Line OEE per hour <SectionFinality buckets={shown} testId="line-hours-finality" />
+        </>
+      }
+      defaultOpen
+    >
       {read.isError ? (
         <QueryError
           what="the hourly line OEE"
           error={read.error}
           onRetry={() => void read.refetch()}
         />
-      ) : null}
-      {hours.length === 0 ? (
-        <p className="mt-1">{read.isPending ? 'Loading hours…' : 'No hours with data yet.'}</p>
+      ) : read.isPending && hours.length === 0 ? (
+        <Skeleton shape="table" rows={3} label="Loading hours…" />
       ) : (
-        <table className="mt-1 w-full" data-testid="line-hours">
-          <caption className="sr-only">Line throughput OEE per hour of the shift</caption>
-          <thead>
-            <tr className="text-left">
-              <th scope="col">Hour</th>
-              <th scope="col" className="text-right">
-                Line OEE
-              </th>
-              <th scope="col" className="text-right">
-                Packed good
-              </th>
-              <th scope="col" className="pl-2">
-                Status
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {hours.map((hour) => (
-              <tr
-                key={hour.key}
-                data-testid={`line-hour-${hour.key}`}
-                data-oee={hour.oee?.decimal ?? 'n/a'}
-                data-final={String(hour.final)}
-                data-above-one={String(hour.aboveOne)}
-                data-revision={String(hour.revision)}
-                data-may-revise={String(hour.mayRevise)}
-              >
-                <td>{formatClockTime(hour.from)}</td>
-                <td className="text-right">
-                  <RatioValue ratio={hour.oee} na={NA_REASON.line} />
-                </td>
-                <td className="text-right tabular-nums">{goodText(hour.good)}</td>
-                <td className="pl-2">{hourStatus(hour)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div className="flex flex-col gap-2">
+          <DataTable
+            caption="Line throughput OEE per hour of the shift"
+            testId="line-hours"
+            columns={hourColumns(finality, withStatus)}
+            rows={shown}
+            rowKey={(hour) => hour.key}
+            rowTestId={(hour) => `line-hour-${hour.key}`}
+            rowProps={(hour) => ({
+              'data-oee': hour.oee?.decimal ?? 'n/a',
+              'data-final': String(hour.final),
+              'data-above-one': String(hour.aboveOne),
+              'data-revision': String(hour.revision),
+              'data-may-revise': String(hour.mayRevise),
+            })}
+            density="compact"
+            // A short table of three or four columns: on a phone it keeps its rows (and scrolls
+            // in its own frame) rather than a card per hour, which made the page 6000 px long.
+            narrow="scroll"
+            empty={
+              <div className="px-4">
+                <EmptyState size="inline" icon="info" title="No hour with planned line time yet" />
+              </div>
+            }
+          />
+          {left > 0 && shown.length > 0 ? (
+            <p className="text-xs text-ink-secondary">
+              {left} hour{left === 1 ? '' : 's'} without planned line time not listed.
+            </p>
+          ) : null}
+        </div>
       )}
-    </details>
+    </Disclosure>
+  );
+}
+
+/** How the line OEE is computed, said once as a hint under the figures. */
+function ModeHint({ mode }: { readonly mode: LineOeeView['productionMode'] }) {
+  return (
+    <p className="text-xs text-ink-secondary" data-testid="line-oee-mode">
+      Good units packed × the bottleneck’s effective cycle ÷ the line’s planned busy time (the shift
+      less breaks and the bottleneck’s maintenance
+      {mode === 'orders' ? '; only while an order is in progress' : ''}). One ratio, no A × P × Q
+      split: the machines’ losses are in the waterfall below.
+    </p>
+  );
+}
+
+/** The figures of a shift with line time: the headline, its inputs, its status. */
+function LineFigures({ shift }: { readonly shift: LineBucketDto }) {
+  return (
+    <>
+      <Stat
+        {...ratioStat('Line OEE', shift.oee, NA_REASON.line, 'line-oee-value')}
+        emphasis="headline"
+      />
+      <div className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">
+        <Stat
+          label="Packed good"
+          emphasis="compact"
+          value={
+            <span data-testid="line-oee-good" className="text-sm font-normal">
+              <PackedGood good={shift.good} />
+            </span>
+          }
+        />
+        <Stat
+          label="Ideal time at the bottleneck"
+          emphasis="compact"
+          value={<Duration ms={msOf(shift.idealMs)} testId="line-oee-ideal" />}
+        />
+        <Stat
+          label="Line planned busy time"
+          emphasis="compact"
+          value={<Duration ms={shift.plannedBusyMs} testId="line-oee-planned" />}
+        />
+      </div>
+      <StatusFlags flags={lineFlags(shift)} />
+      {shift.aboveOne ? (
+        <Callout tone="warn" data-testid="line-oee-above-one">
+          {ABOVE_ONE_TEXT}
+        </Callout>
+      ) : null}
+    </>
   );
 }
 
 /**
  * The line card of the OEE dashboard (#233): the line throughput OEE of the selected shift (good
  * packed × the bottleneck's effective cycle ÷ the line's planned busy time, one ratio, not
- * capped), its hours, the bottleneck per product and the production mode.
+ * capped), its hours, the bottleneck per product and the production mode. A shift without line
+ * time (no order in progress) is an empty state with its reason, not a card of dashes (E-01).
  */
 export function LineOeeCard({
   view,
@@ -221,70 +354,76 @@ export function LineOeeCard({
   readonly view: LineOeeView;
   readonly equipment: ReadonlyMap<string, EquipmentDto>;
 }) {
-  const titleId = useId();
   const { shift, shiftRead } = view;
+  const idle = shift?.oee === null;
   return (
-    <article
-      aria-labelledby={titleId}
-      data-testid="line-oee-card"
+    <Card
+      as="article"
+      headingLevel={3}
+      title="Line A1 throughput"
+      description="The line OEE of the shift: what the line packed against what its bottleneck could."
+      tone={shift?.aboveOne ? 'warn' : undefined}
+      testId="line-oee-card"
       data-key={shift?.key}
       data-oee={shift?.oee?.decimal ?? 'n/a'}
       data-final={shift ? String(shift.final) : undefined}
       data-above-one={shift ? String(shift.aboveOne) : undefined}
-      className="flex flex-col gap-3 rounded-lg border border-slate-300 bg-white p-4 shadow-sm"
     >
-      <h3 id={titleId} className="font-semibold">
-        Line A1 throughput (line OEE)
-      </h3>
-      {shiftRead.isError ? (
-        <QueryError
-          what="the line OEE"
-          error={shiftRead.error}
-          onRetry={() => void shiftRead.refetch()}
-        />
-      ) : null}
-      {shift ? (
-        <>
-          <RatioHeadline
-            label="Line OEE"
-            ratio={shift.oee}
-            na={NA_REASON.line}
-            testId="line-oee-value"
-          />
-          <dl className="grid grid-cols-[1fr_auto] gap-x-4 text-sm">
-            <dt className="text-slate-700">Packed good</dt>
-            <dd className="text-right tabular-nums" data-testid="line-oee-good">
-              {goodText(shift.good)}
-            </dd>
-            <dt className="text-slate-700">Ideal time at the bottleneck</dt>
-            <dd className="text-right tabular-nums" data-testid="line-oee-ideal">
-              {minutesText(parseFraction(shift.idealMs))}
-            </dd>
-            <dt className="text-slate-700">Line planned busy time</dt>
-            <dd className="text-right tabular-nums" data-testid="line-oee-planned">
-              {minutesText(shift.plannedBusyMs)}
-            </dd>
-          </dl>
-          <StatusFlags flags={lineFlags(shift)} />
-          {shift.aboveOne ? (
-            <p className="text-sm text-amber-950" data-testid="line-oee-above-one">
-              {ABOVE_ONE_TEXT}
-            </p>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)]">
+        <div className="flex min-w-0 flex-col gap-3">
+          {shiftRead.isError ? (
+            <QueryError
+              what="the line OEE"
+              error={shiftRead.error}
+              onRetry={() => void shiftRead.refetch()}
+            />
           ) : null}
-        </>
-      ) : shiftRead.isPending ? (
-        <p className="text-sm">Loading the line OEE…</p>
-      ) : (
-        <p className="text-sm">No line OEE for this shift.</p>
-      )}
-      <p className="text-xs text-slate-700" data-testid="line-oee-mode">
-        Good units packed × the bottleneck’s effective cycle ÷ the line’s planned busy time (the
-        shift less breaks and the bottleneck’s maintenance
-        {view.productionMode === 'orders' ? '; only while an order is in progress' : ''}). One
-        ratio, no A × P × Q split; the machines’ waterfall is below.
-      </p>
-      <Bottlenecks bottlenecks={view.bottlenecks} equipment={equipment} />
-      <LineHours hours={view.hours} read={view.hoursRead} />
-    </article>
+          {shift && !idle ? (
+            <LineFigures shift={shift} />
+          ) : shift && idle ? (
+            <>
+              <EmptyState
+                size="inline"
+                icon="info"
+                testId="line-oee-idle"
+                title={
+                  <>
+                    No line time this shift
+                    {/* The raw marker the reconciliation reads (`data-decimal` n/a), kept. */}
+                    <Percent
+                      ratio={null}
+                      na={NA_REASON.line}
+                      naShown
+                      testId="line-oee-value"
+                      className="sr-only"
+                    />
+                  </>
+                }
+                body={
+                  view.productionMode === 'orders'
+                    ? 'No order was in progress, so the line had no planned busy time and its OEE does not apply.'
+                    : 'The line had no planned busy time, so its OEE does not apply.'
+                }
+              />
+              <StatusFlags flags={lineFlags(shift)} />
+            </>
+          ) : shiftRead.isPending ? (
+            <Skeleton shape="stat" label="Loading the line OEE…" />
+          ) : shiftRead.isError ? null : (
+            <EmptyState
+              size="inline"
+              icon="info"
+              title="No line OEE for this shift"
+              body="The MES has no line bucket for it."
+            />
+          )}
+          <ModeHint mode={view.productionMode} />
+        </div>
+        <div className="flex min-w-0 flex-col gap-4">
+          <Bottlenecks bottlenecks={view.bottlenecks} equipment={equipment} />
+          <LineHours hours={view.hours} read={view.hoursRead} />
+        </div>
+      </div>
+    </Card>
   );
 }

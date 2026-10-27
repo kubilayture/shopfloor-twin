@@ -5,7 +5,7 @@ import { COMMAND_STATE_TEXT, ORDER_STATUS_TEXT } from '../domain/orders.ts';
 import { STALE_TEXT, stateStyle } from '../domain/states.ts';
 import { FinalityBadge } from './finality-badge.tsx';
 import { LossBadge } from './loss-badge.tsx';
-import { NA_REASON, RatioHeadline, RatioValue, StatusFlags } from './oee-ui.tsx';
+import { FlagBadges, SectionFinality, StatusFlags, groupFinality, itemFlags } from './oee-ui.tsx';
 import { CommandStateBadge, OrderFlags, OrderStatusBadge } from './order-badges.tsx';
 import { PriorityBadge } from './priority-badge.tsx';
 import { HoldStateBadge, SignalStatusBadge } from './quality-ui.tsx';
@@ -437,37 +437,44 @@ describe('StatusFlags', () => {
   });
 });
 
-describe('ratio elements: data-decimal (UX-1c)', () => {
-  it('RatioValue keeps its text and adds data-decimal equal to it, n/a included', () => {
-    const { rerender } = render(
-      <RatioValue
-        ratio={{ fraction: '83/100', decimal: '0.8300' }}
-        na={NA_REASON.oee}
-        testId="r"
-      />,
-    );
-    const value = screen.getByTestId('r');
-    expect(value.textContent).toBe('0.8300');
-    expect(value.dataset.decimal).toBe('0.8300');
-    expect(value.dataset.fraction).toBe('83/100');
-    rerender(<RatioValue ratio={null} na={NA_REASON.oee} testId="r" />);
-    expect(value.textContent).toBe('n/a');
-    expect(value.dataset.decimal).toBe('n/a');
-    expect(value.dataset.fraction).toBe('n/a');
+describe('OEE finality once per section (UX-3, E-03)', () => {
+  const bucket = (final: boolean, provisionalMs = 0) => ({ final, provisionalMs });
+
+  it('groups buckets as final, provisional or mixed, none without a bucket', () => {
+    expect(groupFinality([])).toBeUndefined();
+    expect(groupFinality([bucket(true), bucket(true)])).toBe('final');
+    expect(groupFinality([bucket(false), bucket(false)])).toBe('provisional');
+    expect(groupFinality([bucket(true), bucket(false)])).toBe('mixed');
   });
 
-  it('RatioHeadline: the percentage keeps its text, both carry the four decimals', () => {
-    render(
-      <RatioHeadline
-        label="OEE"
-        ratio={{ fraction: '1042/1000', decimal: '1.0420' }}
-        na={NA_REASON.line}
-        testId="h"
-      />,
+  it('says the section’s finality once, the most open time in the tooltip', () => {
+    const { rerender } = render(
+      <SectionFinality buckets={[bucket(false, 60_000), bucket(false, 186_000)]} testId="f" />,
     );
-    expect(screen.getByTestId('h-percent').textContent).toBe('104.20 %');
-    expect(screen.getByTestId('h-percent').dataset.decimal).toBe('1.0420');
-    expect(screen.getByTestId('h').textContent).toBe('1.0420');
-    expect(screen.getByTestId('h').dataset.decimal).toBe('1.0420');
+    const badge = screen.getByTestId('f');
+    expect(badge.textContent).toBe('Provisional');
+    expect(badge.dataset.finality).toBe('provisional');
+    expect(badge.getAttribute('title')).toContain('up to 3.1 min');
+    rerender(<SectionFinality buckets={[bucket(true), bucket(true)]} testId="f" />);
+    expect(screen.getByTestId('f').textContent).toBe('Final');
+    rerender(<SectionFinality buckets={[bucket(true), bucket(false), bucket(true)]} testId="f" />);
+    expect(screen.getByTestId('f').textContent).toBe('2 of 3 final');
+    expect(screen.getByTestId('f').dataset.finality).toBe('mixed');
+    rerender(<SectionFinality buckets={[]} testId="f" />);
+    expect(screen.queryByTestId('f')).toBeNull();
+  });
+
+  it('keeps an item’s finality only in a mixed section, its other flags always', () => {
+    const flags = [
+      { key: 'provisional', text: 'Provisional (2.0 min)', title: 'open' },
+      { key: 'revision', text: 'Revision 1', title: 'changed' },
+    ] as const;
+    expect(itemFlags(flags, 'provisional').map((flag) => flag.key)).toEqual(['revision']);
+    expect(itemFlags(flags, 'final').map((flag) => flag.key)).toEqual(['revision']);
+    expect(itemFlags(flags, 'mixed').map((flag) => flag.key)).toEqual(['provisional', 'revision']);
+    render(<FlagBadges flags={itemFlags(flags, 'provisional')} />);
+    const list = screen.getByRole('list', { name: 'Status' });
+    expect(list.textContent).toBe('Revision 1');
+    expect(list.querySelector('[data-flag="revision"]')?.getAttribute('title')).toBe('changed');
   });
 });

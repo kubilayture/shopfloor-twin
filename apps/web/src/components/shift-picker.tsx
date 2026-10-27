@@ -24,6 +24,18 @@ const clock = new Intl.DateTimeFormat('en-GB', {
   hourCycle: 'h23',
 });
 
+/**
+ * A shift key (`2026-10-12/A`) as words, for a shift outside the picker's list (an old one asked
+ * for by URL): `Mon 12 Oct, shift A`; an unparseable key as it is.
+ */
+export function shiftKeyLabel(key: string): string {
+  const match = /^(\d{4}-\d{2}-\d{2})\/([A-Za-z0-9]+)$/.exec(key);
+  const day = match?.[1];
+  const date = day === undefined ? Number.NaN : Date.parse(`${day}T00:00:00.000Z`);
+  if (!match || !Number.isFinite(date)) return key;
+  return `${shiftDay.format(new Date(date))}, shift ${match[2] ?? ''}`;
+}
+
 /** `Mon 12 Oct, shift A (06:00–14:00)`: the shift's own date, its times in plant time. */
 export function shiftLabel(shift: ShiftInstanceDto): string {
   const day = shiftDay.format(new Date(`${shift.date}T00:00:00.000Z`));
@@ -112,7 +124,7 @@ export function ShiftPicker({
       >
         {selection.selected !== undefined &&
         !options.some((shift) => shift.key === selection.selected) ? (
-          <option value={selection.selected}>{selection.selected}</option>
+          <option value={selection.selected}>{shiftKeyLabel(selection.selected)}</option>
         ) : null}
         {options.map((shift) => (
           <option key={shift.key} value={shift.key}>

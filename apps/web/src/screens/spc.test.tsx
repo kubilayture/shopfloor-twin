@@ -666,7 +666,13 @@ describe('SPC on the design system (UX-9a)', () => {
         .queryAllByRole('link', { current: 'page' })
         .map((a) => a.textContent),
     ).toEqual([]);
-    fireEvent.click(within(shown).getByRole('link', { name: 'Clear the range' }));
+    const clear = within(shown).getByRole('link', { name: 'Clear the range' });
+    expect(clear.hasAttribute('aria-current')).toBe(false);
+    // Nor is the way back the page.
+    expect(screen.getByRole('link', { name: '‹ SPC charts' }).hasAttribute('aria-current')).toBe(
+      false,
+    );
+    fireEvent.click(clear);
     await waitFor(() => {
       expect(screen.queryByTestId('chart-window-range')).toBeNull();
     });

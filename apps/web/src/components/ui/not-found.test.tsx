@@ -44,6 +44,16 @@ describe('NotFound', () => {
     expect(screen.getByRole('link', { name: 'All orders' }).getAttribute('href')).toBe('/orders');
   });
 
+  it('never marks its way back as the current page, under the parent it links to', async () => {
+    await routed(
+      () => <NotFound kind="order" id="PO-NOPE" back={{ to: '/orders', label: 'All orders' }} />,
+      '/orders/PO-NOPE',
+    );
+    const back = screen.getByRole('link', { name: 'All orders' });
+    expect(back.getAttribute('href')).toBe('/orders');
+    expect(back.hasAttribute('aria-current')).toBe(false);
+  });
+
   it('adds a sentence of why after the one it always says', async () => {
     await routed(() => (
       <NotFound

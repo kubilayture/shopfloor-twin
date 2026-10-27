@@ -46,7 +46,11 @@ import { EmptyState } from '../components/ui/empty-state.tsx';
 import { Missing } from '../components/ui/format.tsx';
 import { Icon } from '../components/ui/icons.tsx';
 import { NotFound } from '../components/ui/not-found.tsx';
-import { PageHeader, type PageHeaderBack } from '../components/ui/page-header.tsx';
+import {
+  BACK_LINK_ACTIVE,
+  PageHeader,
+  type PageHeaderBack,
+} from '../components/ui/page-header.tsx';
 import { PlantTimeInput, readPlantTime } from '../components/ui/plant-time-input.tsx';
 import { Section } from '../components/ui/section.tsx';
 import { SectionNav, type SectionNavItem } from '../components/ui/section-nav.tsx';
@@ -404,6 +408,8 @@ function WindowPicker({ id, search }: { readonly id: string; readonly search: Sp
               to="/quality/spc/$characteristic"
               params={{ characteristic: id }}
               search={{}}
+              // Not the page: `{}` is a subset of the range's search, which the router counts.
+              activeOptions={{ exact: true, includeSearch: true }}
               data-testid="chart-window-clear"
               className="text-link underline underline-offset-2 hover:text-accent-hover"
             >
@@ -1517,7 +1523,11 @@ function SpcChartScreen({ id, search }: { readonly id: string; readonly search: 
     return (
       <div className="flex flex-col gap-6" data-testid="spc-chart-page" data-characteristic={id}>
         <p className="text-sm">
-          <Link {...BACK.link} className="text-link underline-offset-4 hover:underline">
+          <Link
+            {...BACK.link}
+            activeOptions={BACK_LINK_ACTIVE}
+            className="text-link underline-offset-4 hover:underline"
+          >
             ‹ {BACK.label}
           </Link>
         </p>

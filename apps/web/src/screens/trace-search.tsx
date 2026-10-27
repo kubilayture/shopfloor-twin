@@ -5,17 +5,20 @@ import { useState } from 'react';
 import { queryKeys } from '../api/queries.ts';
 import { searchTrace } from '../api/trace.ts';
 import { QueryError } from '../components/query-error.tsx';
+import { Badge } from '../components/ui/badge.tsx';
 import { Button } from '../components/ui/button.tsx';
 import { Callout } from '../components/ui/callout.tsx';
 import { Code } from '../components/ui/code.tsx';
 import { TextInput } from '../components/ui/controls.tsx';
 import { DataTable } from '../components/ui/data-table.tsx';
 import { EmptyState } from '../components/ui/empty-state.tsx';
+import { Missing } from '../components/ui/format.tsx';
 import { PageHeader } from '../components/ui/page-header.tsx';
 import { Section } from '../components/ui/section.tsx';
 import { Skeleton } from '../components/ui/skeleton.tsx';
+import { ORDER_STATUS_TEXT, ORDER_STATUS_TONE } from '../domain/orders.ts';
 import { validQuery } from '../domain/trace.ts';
-import { linkClass } from './trace-common.tsx';
+import { linkClass, UnitStatusBadge } from './trace-common.tsx';
 
 type Result = TraceSearchDto['results'][number];
 type Kind = Result['kind'];
@@ -30,7 +33,7 @@ const KIND_TEXT: Readonly<Record<Kind, { readonly one: string; readonly many: st
   order: { one: 'Order', many: 'orders' },
 };
 
-/** What following a result opens (the search answer names only the kind and the id). */
+/** What following a result opens. */
 const OPENS: Readonly<Record<Kind, string>> = {
   serial: 'Backward trace: its order, lots, machines, operators, readings and carton',
   lot: 'Forward trace: the units, orders and cartons that used it',
@@ -71,6 +74,85 @@ function ResultLink({ result }: { readonly result: Result }) {
         </Link>
       );
   }
+}
+
+/**
+ * A result's status (#364), in the words of the page it opens: a serial's newest unit, a lot's ERP
+ * status, a carton closed or filling, an order's MES status. `data-status` keeps the raw value; a
+ * dash where the MES sent none (an order it no longer holds, or a MES before #364).
+ */
+function ResultStatus({ result }: { readonly result: Result }) {
+  const badge = (() => {
+    switch (result.kind) {
+      case 'serial':
+        return result.status === undefined ? undefined : <UnitStatusBadge status={result.status} />;
+      case 'lot':
+        if (result.status === undefined) return undefined;
+        return result.status === 'active' ? (
+          <Badge tone="neutral" variant="outline" title="Listed by the ERP">
+            ERP listed
+          </Badge>
+        ) : (
+          <Badge tone="warn" title="No longer listed by the ERP">
+            ERP retired
+          </Badge>
+        );
+      case 'carton':
+        if (result.status === undefined) return undefined;
+        return result.status === 'closed' ? (
+          <Badge tone="neutral" icon="check">
+            Closed
+          </Badge>
+        ) : (
+          <Badge tone="neutral" variant="outline" title="Still filling">
+            Open
+          </Badge>
+        );
+      case 'order':
+        if (result.status === undefined || result.status === null) return undefined;
+        return (
+          <Badge
+            tone={ORDER_STATUS_TONE[result.status]}
+            icon={result.status === 'completed' ? 'check' : undefined}
+          >
+            {ORDER_STATUS_TEXT[result.status]}
+          </Badge>
+        );
+    }
+  })();
+  return (
+    <span
+      data-testid={`result-status-${result.kind}-${result.id}`}
+      data-status={result.status ?? ''}
+    >
+      {badge ?? <Missing reason="status not known" />}
+    </span>
+  );
+}
+
+/** The order a result belongs to (#364): a serial's unit's, a carton's; a lot or an order has none. */
+function ResultOrder({ result }: { readonly result: Result }) {
+  const order = result.kind === 'serial' || result.kind === 'carton' ? result.order : undefined;
+  const testId = `result-order-${result.kind}-${result.id}`;
+  if (order === undefined || order === null) {
+    const reason =
+      result.kind === 'lot'
+        ? 'a lot is used by any number of orders'
+        : result.kind === 'order'
+          ? 'the result is the order'
+          : 'no order known';
+    return <Missing reason={reason} testId={testId} />;
+  }
+  return (
+    <Link
+      to="/orders/$id"
+      params={{ id: order }}
+      className={`${linkClass} whitespace-nowrap`}
+      data-testid={testId}
+    >
+      <Code>{order}</Code>
+    </Link>
+  );
 }
 
 /** "4 results: 2 serials, 1 lot, 1 order", counted by kind in the table's order. */
@@ -145,6 +227,19 @@ function Results({ q }: { readonly q: string }) {
             header: 'Type',
             nowrap: true,
             cell: (result) => KIND_TEXT[result.kind].one,
+          },
+          {
+            key: 'status',
+            header: 'Status',
+            nowrap: true,
+            cell: (result) => <ResultStatus result={result} />,
+          },
+          {
+            key: 'order',
+            header: 'Order',
+            nowrap: true,
+            priority: 2,
+            cell: (result) => <ResultOrder result={result} />,
           },
           {
             key: 'opens',

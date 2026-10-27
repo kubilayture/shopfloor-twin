@@ -205,6 +205,32 @@ export interface GenealogyIncident {
 
 export type SearchKind = 'serial' | 'lot' | 'carton' | 'order';
 
+/**
+ * A trace search result (#364): its kind and id, its status and the order it belongs to. A serial
+ * is its newest unit (highest device epoch: serials repeat across runs), a carton its order; a lot
+ * (used by any number of orders) and an order (itself) have none.
+ */
+export type SearchResult =
+  | {
+      readonly kind: 'serial';
+      readonly id: string;
+      readonly status: SerialUnitTable['status'];
+      readonly order: string | null;
+    }
+  | { readonly kind: 'lot'; readonly id: string; readonly status: LotStatus; readonly order: null }
+  | {
+      readonly kind: 'carton';
+      readonly id: string;
+      readonly status: CartonTable['status'];
+      readonly order: string;
+    }
+  | {
+      readonly kind: 'order';
+      readonly id: string;
+      readonly status: OrderRecord['status'] | null;
+      readonly order: null;
+    };
+
 /** What a quality hold is on (#201): its scope follows the genealogy. */
 export interface ScopeSubject {
   readonly kind: 'lot' | 'serial' | 'carton' | 'order';
@@ -1186,10 +1212,12 @@ export class Genealogy {
 
   /**
    * Serials, lots (as imported), cartons and orders whose id starts with `q` (case as given), at
-   * most `limit` each, by id. A range on the id in byte order (`COLLATE "C"`), which the
-   * `*_prefix` indexes serve (review M6).
+   * most `limit` each, by id, with each one's status and order (#364). A range on the id in byte
+   * order (`COLLATE "C"`), which the `*_prefix` indexes serve (review M6); the serials' newest
+   * units are read after, by the serials found (index `serial_unit_serial`), and the orders'
+   * statuses from the orders module.
    */
-  async search(q: string, limit = 20): Promise<{ kind: SearchKind; id: string }[]> {
+  async search(q: string, limit = 20): Promise<SearchResult[]> {
     // PostgreSQL text holds no U+0000: no id can start with it (the API refuses it with 400).
     if (q.includes('\u0000')) return [];
     const upper = prefixUpperBound(q);
@@ -1209,14 +1237,14 @@ export class Genealogy {
         .execute(),
       this.#readDb
         .selectFrom('genealogy.material_lot')
-        .select('id')
+        .select(['id', 'status'])
         .where(range('id'))
         .orderBy(byte('id'))
         .limit(limit)
         .execute(),
       this.#readDb
         .selectFrom('genealogy.carton')
-        .select('id')
+        .select(['id', 'status', 'order_id'])
         .where(range('id'))
         .orderBy(byte('id'))
         .limit(limit)
@@ -1230,11 +1258,40 @@ export class Genealogy {
         .limit(limit)
         .execute(),
     ]);
+    const serialIds = serials.flatMap((s) => (s.serial === null ? [] : [s.serial]));
+    const orderIds = orders.flatMap((o) => (o.order_id === null ? [] : [o.order_id]));
+    const [newest, orderRecords] = await Promise.all([
+      serialIds.length === 0
+        ? Promise.resolve([])
+        : this.#readDb
+            .selectFrom('genealogy.serial_unit')
+            .select(['serial', 'status', 'order_id'])
+            .distinctOn('serial')
+            .where('serial', 'in', serialIds)
+            .orderBy('serial')
+            .orderBy('epoch', 'desc')
+            .execute(),
+      Promise.all(orderIds.map((id) => this.#options.orders.order(id))),
+    ]);
+    const unitOf = new Map(newest.map((u) => [u.serial, u]));
     return [
-      ...serials.map((s) => ({ kind: 'serial' as const, id: s.serial ?? '' })),
-      ...lots.map((l) => ({ kind: 'lot' as const, id: l.id })),
-      ...cartons.map((c) => ({ kind: 'carton' as const, id: c.id })),
-      ...orders.map((o) => ({ kind: 'order' as const, id: o.order_id ?? '' })),
+      ...serialIds.flatMap((id): SearchResult[] => {
+        const unit = unitOf.get(id);
+        return unit ? [{ kind: 'serial', id, status: unit.status, order: unit.order_id }] : [];
+      }),
+      ...lots.map((l): SearchResult => ({ kind: 'lot', id: l.id, status: l.status, order: null })),
+      ...cartons.map((c): SearchResult => ({
+        kind: 'carton',
+        id: c.id,
+        status: c.status,
+        order: c.order_id,
+      })),
+      ...orderIds.map((id, i): SearchResult => ({
+        kind: 'order',
+        id,
+        status: orderRecords[i]?.status ?? null,
+        order: null,
+      })),
     ];
   }
 

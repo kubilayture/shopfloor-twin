@@ -58,6 +58,7 @@ const FILES = [
   'components/oee-ui.tsx',
   // Shift reports and handover notes (UX-5b, #327).
   'components/shift-picker.tsx',
+  'components/shift-state-badge.tsx',
   'screens/shift-list.tsx',
   'screens/shift-report.tsx',
   'screens/handover-notes.tsx',

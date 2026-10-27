@@ -134,8 +134,16 @@ describe('shift report', () => {
     // Alarms: KPIs, bad actors and operator figures; Line A1 has no bucket: n/a, never 0.
     const plant = screen.getByTestId('report-alarm-scope-plant');
     expect(plant.dataset.raises).toBe('14');
-    expect(measure(plant, 'raises')).toBe('14 (2 / 11 / 1)');
-    expect(measure(plant, 'average-rate')).toBe('0.2917');
+    expect(measure(plant, 'raises')).toBe('14');
+    expect(plant.textContent).toContain('2 high · 11 medium · 1 low');
+    expect(measure(plant, 'active-time')).toBeTruthy();
+    expect(measure(plant, 'average-rate')).toContain('0.2917');
+    // The headline is a Ratio: its raw markers beside the figure, as on Alarm KPIs.
+    expect(
+      plant
+        .querySelector('[data-measure="average-rate"] [data-decimal]')
+        ?.getAttribute('data-decimal'),
+    ).toBe('0.2917');
     // R-03: named as on Alarm KPIs.
     expect(within(plant).getByRole('heading', { level: 3 }).textContent).toBe('Plant');
     expect(
@@ -145,12 +153,14 @@ describe('shift report', () => {
     ).toBe('Cell M1');
     // Banded with the benchmarks the MES serves (#160): the headline's verdict.
     await waitFor(() => {
-      expect(plant.textContent).toContain('Acceptable (≤ 1 per 10 min)');
+      expect(measure(plant, 'average-rate')).toContain('Acceptable (≤ 1 per 10 min)');
     });
+    expect(plant.querySelector<HTMLElement>('[data-measure="average-rate"]')?.dataset.band).toBe(
+      'acceptable',
+    );
     // The labels name the served window (#147), 10 minutes here.
     expect(
-      plant.querySelector('[data-measure="peak10"]')?.closest('div')?.querySelector('dt')
-        ?.textContent,
+      plant.querySelector('[data-measure="peak10"]')?.previousElementSibling?.textContent,
     ).toBe('Peak per 10 min');
     expect(within(plant).getByText('Average per 10 min')).toBeTruthy();
     expect(
@@ -371,6 +381,8 @@ describe('shift report', () => {
     const again = await renderApp(PATH);
     const failure = await screen.findByTestId('report-error', {}, { timeout: 5_000 });
     expect(failure.textContent).toContain('Could not load the shift report');
+    // The picker is a control: never printed, in this state too.
+    expect(screen.getByTestId('shift-select').closest('.print\\:hidden')).not.toBeNull();
     // The page keeps its h1, named after the shift asked for.
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(
       'Shift report: Thu 15 Oct, shift A',

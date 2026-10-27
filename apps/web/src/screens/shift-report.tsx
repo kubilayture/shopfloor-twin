@@ -21,6 +21,7 @@ import { EChart } from '../chart/echart.tsx';
 import { paretoOption, paretoReading } from '../chart/oee-options.ts';
 import { FinalityBadge } from '../components/finality-badge.tsx';
 import { LossBadge } from '../components/loss-badge.tsx';
+import { ShiftStateBadge } from '../components/shift-state-badge.tsx';
 import {
   FlagBadges,
   NA_REASON,
@@ -45,14 +46,14 @@ import { Code } from '../components/ui/code.tsx';
 import { DataTable, type Column } from '../components/ui/data-table.tsx';
 import { DescriptionList, type Fact } from '../components/ui/description-list.tsx';
 import { EmptyState } from '../components/ui/empty-state.tsx';
-import { Missing, Percent, PlantTime, WallTime } from '../components/ui/format.tsx';
+import { Missing, Percent, PlantTime, Ratio, WallTime } from '../components/ui/format.tsx';
 import { Icon } from '../components/ui/icons.tsx';
 import { NotFound } from '../components/ui/not-found.tsx';
 import { PageHeader } from '../components/ui/page-header.tsx';
 import { Section } from '../components/ui/section.tsx';
 import { SectionNav, type SectionNavItem } from '../components/ui/section-nav.tsx';
 import { Skeleton } from '../components/ui/skeleton.tsx';
-import { Stat } from '../components/ui/stat.tsx';
+import { KpiTile, Stat } from '../components/ui/stat.tsx';
 import type { Tone } from '../components/ui/tokens.ts';
 import {
   alarmBucketFlags,
@@ -84,7 +85,6 @@ import {
   useShiftsTopic,
 } from '../live/live-context.tsx';
 import { HandoverNotes } from './handover-notes.tsx';
-import { ShiftStateBadge } from './shift-list.tsx';
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const SHIFT = /^[A-Za-z0-9_-]{1,16}$/;
@@ -885,161 +885,182 @@ function DowntimeSection({
 
 // ---- Alarms ----
 
-/** A measure's value, the element tests read by `data-measure` (no label or unit inside). */
-function measure(name: string, value: ReactNode): ReactNode {
-  return (
-    <span data-measure={name} className="tabular-nums">
-      {value}
-    </span>
-  );
-}
+/** A measure as a fact whose `dd` carries `data-measure` (the tests read it, #295), as on Alarm KPIs. */
+const measure = (name: string, term: string, detail: ReactNode): Fact => ({
+  id: name,
+  term,
+  detail,
+  detailData: { 'data-measure': name },
+});
 
-/** The EEMUA verdict's tone (design system 2.3): green only for a passed check. */
+/**
+ * The EEMUA 191 verdict's tone, as on Alarm KPIs (design system section 1: colour only for
+ * abnormal): acceptable is neutral, manageable a warning, over the benchmark an alarm.
+ */
 const BAND_TONE: Readonly<Record<RateBand, Tone>> = {
-  acceptable: 'ok',
-  manageable: 'caution',
-  over: 'warn',
+  acceptable: 'neutral',
+  manageable: 'warn',
+  over: 'alarm',
 };
 
 type AlarmScope = ShiftReportDto['alarms']['scopes'][number];
 
-/** The KPI measures under the headline, in a compact list (K-01, as on Alarm KPIs). */
-function kpiFacts(bucket: AlarmKpiBucketDto, per: string): Fact[] {
+/** The measures under the headline, the raises and the peak (K-01), as on Alarm KPIs. */
+function kpiFacts(bucket: AlarmKpiBucketDto): Fact[] {
   return [
-    {
-      term: 'Raises (high / medium / low)',
-      detail: measure(
-        'raises',
-        `${String(bucket.raises)} (${String(bucket.byPriority.high)} / ${String(bucket.byPriority.medium)} / ${String(bucket.byPriority.low)})`,
-      ),
-    },
-    { term: `Peak per ${per}`, detail: measure('peak10', bucket.peak10) },
-    {
-      term: 'Flood windows',
-      detail: measure(
-        'flood-windows',
-        `${String(bucket.floodWindows)} of ${String(bucket.windows)}`,
-      ),
-    },
-    {
-      term: 'Flood episodes (time)',
-      detail: measure(
-        'flood-episodes',
-        `${String(bucket.floods.length)} (${msText(bucket.floodMs)})`,
-      ),
-    },
-    {
-      term: 'Standing (active at end)',
-      detail: measure(
-        'standing',
-        `${String(bucket.standing.length)} (${String(bucket.activeAtEnd)})`,
-      ),
-    },
-    {
-      term: 'Chattering raises (points)',
-      detail: measure(
-        'chattering',
-        `${String(bucket.chatteringRaises)} (${String(bucket.chatteringPoints.length)})`,
-      ),
-    },
-    {
-      term: 'Fleeting',
-      detail: measure(
-        'fleeting',
-        `${String(bucket.fleeting)}${bucket.fleetingUndecided > 0 ? ` (+${String(bucket.fleetingUndecided)} undecided)` : ''}`,
-      ),
-    },
+    measure(
+      'flood-windows',
+      'Flood windows',
+      `${String(bucket.floodWindows)} of ${String(bucket.windows)}`,
+    ),
+    measure(
+      'flood-episodes',
+      'Flood episodes (time)',
+      `${String(bucket.floods.length)} (${msText(bucket.floodMs)})`,
+    ),
+    measure(
+      'chattering',
+      'Chattering raises (points)',
+      `${String(bucket.chatteringRaises)} (${String(bucket.chatteringPoints.length)})`,
+    ),
+    measure(
+      'fleeting',
+      'Fleeting',
+      `${String(bucket.fleeting)}${bucket.fleetingUndecided > 0 ? ` (+${String(bucket.fleetingUndecided)} undecided)` : ''}`,
+    ),
+    measure(
+      'standing',
+      'Standing (active at end)',
+      `${String(bucket.standing.length)} (${String(bucket.activeAtEnd)})`,
+    ),
+    measure('active-time', 'Active time', msText(bucket.activeMs)),
   ];
+}
+
+const NO_ACK = 'No acknowledgement in this shift';
+
+/** A time to acknowledge without any: the dash with its reason as visible text, as on Alarm KPIs. */
+function NoAck() {
+  return (
+    <span className="flex flex-col">
+      <Missing reason={NO_ACK} reasonShown />
+      <span className="text-xs text-ink-secondary">{NO_ACK}</span>
+    </span>
+  );
 }
 
 function operatorFacts(operator: NonNullable<AlarmScope['operator']>): Fact[] {
-  const acknowledged = operator.timeToAck.count > 0;
-  const noAck = <Missing reason="Nothing acknowledged in this shift" />;
   return [
-    { term: 'Annunciated raises', detail: measure('annunciated', operator.annunciatedRaises) },
-    { term: 'Raises while shelved', detail: measure('shelved-raises', operator.shelvedRaises) },
-    { term: 'Acknowledged', detail: measure('acknowledged', operator.timeToAck.count) },
-    {
-      term: 'Mean time to acknowledge',
-      detail: measure('mean-time-to-ack', acknowledged ? meanTimeToAck(operator.timeToAck) : noAck),
-    },
-    {
-      term: 'Longest time to acknowledge',
-      detail: measure('max-time-to-ack', acknowledged ? msText(operator.timeToAck.maxMs) : noAck),
-    },
-    {
-      term: 'Unacknowledged at the end',
-      detail: measure('unacknowledged', operator.unacknowledgedAtEnd),
-    },
+    measure('annunciated', 'Annunciated raises', String(operator.annunciatedRaises)),
+    measure('shelved-raises', 'Raises while shelved', String(operator.shelvedRaises)),
+    measure('acknowledged', 'Acknowledged', String(operator.timeToAck.count)),
+    measure(
+      'mean-time-to-ack',
+      'Mean time to acknowledge',
+      operator.timeToAck.count === 0 ? <NoAck /> : meanTimeToAck(operator.timeToAck),
+    ),
+    measure(
+      'max-time-to-ack',
+      'Longest time to acknowledge',
+      operator.timeToAck.maxMs === null ? <NoAck /> : msText(operator.timeToAck.maxMs),
+    ),
+    measure('unacknowledged', 'Unacknowledged at the end', String(operator.unacknowledgedAtEnd)),
   ];
 }
 
+/**
+ * One alarm scope's KPIs of the shift, built as on Alarm KPIs (UX-4b's `ScopeTile`; design system
+ * 4.4, K-01): a `KpiTile` with the average per window and its EEMUA 191 verdict as the headline,
+ * the raises and the peak under it, the other measures in a compact list; then the report's own
+ * parts, the top bad actors and the operator measures. Named as on Alarm KPIs (R-03).
+ */
 function AlarmScopeTile({
   scope,
   bucket,
   live,
+  running,
   finality,
   names,
 }: {
   readonly scope: AlarmScope;
   readonly bucket: AlarmKpiBucketDto | undefined;
   readonly live: boolean;
+  /** The shift is running: the average is over the whole shift, which is not over. */
+  readonly running: boolean;
   readonly finality: GroupFinality | undefined;
   readonly names: ReadonlyMap<string, string>;
 }) {
   const key = testKey(scopeKey(scope));
-  // The benchmarks are the MES's (#160): no band until they arrived.
+  // The benchmarks are the MES's (#160): no verdict until they arrived.
   const config = useAlarmConfig();
   const band = bucket && config ? rateBand(bucket.averageRate, config) : undefined;
   // The window as served (#160, #147): `10 min` by default, `window` until the answer arrived.
   const per = windowLabel(config?.kpi.windowMs);
+  const label = `Average per ${per}`;
   const operator = scope.operator;
   const flags = bucket ? itemFlags(alarmBucketFlags(bucket), finality) : [];
   return (
-    <Card
-      as="article"
-      // R-03: named as on Alarm KPIs ("Cell M1", not "Position Cell M1").
-      title={scope.name}
-      status={<LiveBadge live={live} />}
-      headingLevel={3}
-      padding="compact"
-      testId={`report-alarm-scope-${key}`}
-      data-raises={bucket ? String(bucket.raises) : NOT_APPLICABLE}
-      data-final={bucket ? String(bucket.final) : undefined}
-      data-live={String(live)}
-      // On paper the cards flow one under the other (R-05: no orphan third card).
-      className="report-section print:mb-4"
-    >
-      <div className="flex flex-col gap-3">
-        {flags.length > 0 ? <FlagBadges flags={flags} /> : null}
+    // On paper the tiles flow one under the other, each kept whole (R-05: no orphan third).
+    <div className="report-section print:mb-4">
+      <KpiTile
+        title={scope.name}
+        testId={`report-alarm-scope-${key}`}
+        data-raises={bucket ? String(bucket.raises) : NOT_APPLICABLE}
+        data-final={bucket ? String(bucket.final) : undefined}
+        data-live={String(live)}
+        status={
+          flags.length > 0 || live ? (
+            <span className="flex flex-wrap items-center gap-1.5">
+              {flags.length > 0 ? <FlagBadges flags={flags} /> : null}
+              <LiveBadge live={live} />
+            </span>
+          ) : undefined
+        }
+        headline={
+          bucket
+            ? {
+                label,
+                value: <Ratio ratio={bucket.averageRate} na="No raise rate" />,
+                verdict:
+                  band && config
+                    ? { tone: BAND_TONE[band], text: rateBandText(band, config) }
+                    : undefined,
+                tone: band === 'over' ? 'alarm' : undefined,
+                hint: running
+                  ? 'Over the whole shift; the shift is not over'
+                  : 'Verdict against the EEMUA 191 benchmarks',
+                detailData: { 'data-measure': 'average-rate', 'data-band': band },
+              }
+            : { label, missing: 'No alarm KPIs for this shift' }
+        }
+        details={
+          bucket
+            ? [
+                {
+                  label: 'Raises',
+                  value: String(bucket.raises),
+                  hint: `${String(bucket.byPriority.high)} high · ${String(bucket.byPriority.medium)} medium · ${String(bucket.byPriority.low)} low`,
+                  detailData: { 'data-measure': 'raises' },
+                },
+                {
+                  label: `Peak per ${per}`,
+                  value: String(bucket.peak10),
+                  detailData: { 'data-measure': 'peak10' },
+                },
+              ]
+            : []
+        }
+      >
         {bucket ? (
-          <>
-            <Stat
-              label={`Average per ${per}`}
-              emphasis="headline"
-              value={
-                <span data-measure="average-rate" title={bucket.averageRate.fraction}>
-                  {bucket.averageRate.decimal}
-                </span>
-              }
-              verdict={
-                config && band
-                  ? { tone: BAND_TONE[band], text: rateBandText(band, config) }
-                  : undefined
-              }
-            />
-            <DescriptionList facts={kpiFacts(bucket, per)} columns={2} />
-          </>
-        ) : (
-          <Stat
-            label={`Average per ${per}`}
-            emphasis="headline"
-            missing="No alarm KPIs for this shift"
+          <DescriptionList
+            columns="tile"
+            label={`Measures of ${scope.name}`}
+            facts={kpiFacts(bucket)}
           />
-        )}
+        ) : null}
         <Section level={4} title="Top 5 bad actors">
           {scope.badActors.length === 0 ? (
-            <EmptyState size="inline" title="No alarm in this shift" />
+            <EmptyState size="inline" title="No bad actor listed" />
           ) : (
             <ol className="flex flex-col gap-1 text-sm" data-testid={`report-bad-actors-${key}`}>
               {scope.badActors.map((actor) => (
@@ -1051,7 +1072,7 @@ function AlarmScopeTile({
                   {names.get(actor.equipment) ?? actor.equipment}{' '}
                   <Code className="text-ink-secondary">{actor.code}</Code>:{' '}
                   <span className="tabular-nums">{actor.raises}</span> raises (
-                  <Percent ratio={actor.share} na="No raises" />
+                  <Percent ratio={actor.share} na="No raise in the shift" />
                   ), {msText(actor.activeMs)} active
                 </li>
               ))}
@@ -1060,32 +1081,39 @@ function AlarmScopeTile({
         </Section>
         <Section
           level={4}
-          title="Operator figures"
-          description="From the MES only, not reconciled."
+          title="Operator measures"
+          description="From the MES only, not reconciled with the ground truth: they depend on what operators do."
         >
           <div
             data-testid={`report-operator-${key}`}
             data-provisional={operator ? String(operator.provisional) : undefined}
           >
             {operator ? (
-              <DescriptionList facts={operatorFacts(operator)} columns={2} />
+              <DescriptionList columns="tile" facts={operatorFacts(operator)} />
             ) : (
-              <EmptyState size="inline" title="No operator figures for this scope" />
+              <EmptyState size="inline" title="No operator measures for this scope" />
             )}
           </div>
           {operator && operator.shelvedMs.length > 0 ? (
-            <ul className="text-sm" data-testid={`report-shelved-${key}`}>
-              {operator.shelvedMs.map((point) => (
-                <li key={`${point.equipment}/${point.code}`}>
-                  Shelved {names.get(point.equipment) ?? point.equipment}{' '}
-                  <Code className="text-ink-secondary">{point.code}</Code>: {msText(point.ms)}
-                </li>
-              ))}
-            </ul>
+            <div className="mt-2">
+              <h5 className="text-sm font-semibold text-ink">Shelved time per point</h5>
+              <ul
+                className="mt-1 flex flex-col gap-1 text-sm"
+                data-testid={`report-shelved-${key}`}
+              >
+                {operator.shelvedMs.map((point) => (
+                  <li key={`${point.equipment}/${point.code}`} className="flex flex-wrap gap-x-2">
+                    <span>{names.get(point.equipment) ?? point.equipment}</span>
+                    <Code className="whitespace-nowrap text-ink-secondary">{point.code}</Code>
+                    <span className="tabular-nums">{msText(point.ms)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
           ) : null}
         </Section>
-      </div>
-    </Card>
+      </KpiTile>
+    </div>
   );
 }
 
@@ -1124,6 +1152,7 @@ function AlarmSection({
               scope={scope}
               bucket={bucket}
               live={live}
+              running={report.status === 'running'}
               finality={finality}
               names={names}
             />
@@ -1396,7 +1425,11 @@ export function ShiftReport() {
             id="shift-report-title"
             back={BACK}
             title={`Shift report: ${shiftKeyLabel(key)}`}
-            filters={<ShiftPicker selection={selection} onChange={onPick} />}
+            filters={
+              <div className="print:hidden">
+                <ShiftPicker selection={selection} onChange={onPick} />
+              </div>
+            }
           />
           <div data-testid="report-error">
             <QueryError

@@ -288,8 +288,8 @@ function NoteEditor({
         }}
       />
       {/*
-       * Not a confirmation: a retraction is undone by unticking it (design system 4.9 keeps
-       * confirmations for what cannot be undone).
+       * No confirmation (design system 4.9): a retraction is a checkbox of the edit form, sent
+       * only by "Save note", undone by unticking it, and every version stays in its history.
        */}
       <Checkbox
         name="retracted"

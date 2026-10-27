@@ -6,6 +6,7 @@ import { queryKeys } from '../api/queries.ts';
 import { FinalityBadge } from '../components/finality-badge.tsx';
 import { QueryError } from '../components/query-error.tsx';
 import { ShiftSpan, shiftKeyLabel, useShiftSelection } from '../components/shift-picker.tsx';
+import { ShiftStateBadge } from '../components/shift-state-badge.tsx';
 import { Badge } from '../components/ui/badge.tsx';
 import { DataTable, type Column } from '../components/ui/data-table.tsx';
 import { EmptyState } from '../components/ui/empty-state.tsx';
@@ -33,19 +34,6 @@ function shownInstance(
   if (newest && newest.epoch > rest.epoch) return newest;
   const live = pushed?.[instanceKey(rest.epoch, rest.key)];
   return live && isNewerShift(live, rest) ? live : rest;
-}
-
-/**
- * Where a shift is (S-01): Running, or Ended once the plant clock has passed it. Whether its report
- * may still change is the finality badge beside it, so a final shift never reads "Final Final".
- * Neutral: neither is abnormal. `data-status` carries the raw status.
- */
-export function ShiftStateBadge({ status }: { readonly status: ShiftRecordDto['status'] }) {
-  return (
-    <Badge tone="neutral" variant="outline" data-status={status}>
-      {status === 'running' ? 'Running' : 'Ended'}
-    </Badge>
-  );
 }
 
 /** Whether a record's revision counters say something (S-01: shown only above 0). */

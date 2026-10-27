@@ -1,9 +1,9 @@
-import type { OrderJobOeeDto, OrderOeeDto, Ratio } from '@shopfloor/contracts/mes-api';
+import type { OrderJobOeeDto, OrderOeeDto } from '@shopfloor/contracts/mes-api';
 import { useQuery } from '@tanstack/react-query';
 import { ApiError, getOrderOee } from '../api/client.ts';
 import { queryKeys } from '../api/queries.ts';
 import { FinalityBadge } from '../components/finality-badge.tsx';
-import { NA_REASON, StatusFlags } from '../components/oee-ui.tsx';
+import { NA_REASON, StatusFlags, ratioStat } from '../components/oee-ui.tsx';
 import { QueryError } from '../components/query-error.tsx';
 import { Callout } from '../components/ui/callout.tsx';
 import { Code } from '../components/ui/code.tsx';
@@ -12,7 +12,7 @@ import { EmptyState } from '../components/ui/empty-state.tsx';
 import { Duration, Missing, Percent, PlantTime } from '../components/ui/format.tsx';
 import { Section } from '../components/ui/section.tsx';
 import { Skeleton } from '../components/ui/skeleton.tsx';
-import { KpiTile, type StatProps } from '../components/ui/stat.tsx';
+import { KpiTile } from '../components/ui/stat.tsx';
 import {
   ABOVE_ONE_TEXT,
   orderFlags,
@@ -129,23 +129,6 @@ const JOB_COLUMNS: readonly Column<OrderJobOeeDto>[] = [
 function msOf(text: string): number {
   const exact = parseFraction(text);
   return Number(exact.num) / Number(exact.den);
-}
-
-/**
- * A ratio as a tile's figure: the percentage (its four decimals in `data-decimal`); when it does
- * not apply, the dash with its reason as the visible hint line under it, said once (E-01).
- */
-function ratioStat(
-  label: string,
-  ratio: Ratio | null | undefined,
-  na: string,
-  testId: string,
-): Omit<StatProps, 'emphasis'> {
-  return {
-    label,
-    value: <Percent ratio={ratio} na={na} naShown={!ratio} testId={testId} />,
-    hint: ratio ? undefined : na,
-  };
 }
 
 function OrderOeeTile({ order }: { readonly order: OrderOeeDto }) {

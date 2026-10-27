@@ -1,5 +1,6 @@
 import type {
   CartonTraceDto,
+  EquipmentDto,
   HoldDto,
   HoldRefDto,
   LotTraceDto,
@@ -212,6 +213,8 @@ export interface TraceState {
   serials: Record<string, SerialTraceDto>;
   lots: Record<string, LotTraceDto>;
   cartons: Record<string, CartonTraceDto>;
+  /** `GET /equipment` (the machines' names, UX-8); a 404 when absent, as before. */
+  equipment?: EquipmentDto[];
 }
 
 export function traceState(overrides: Partial<TraceState> = {}): TraceState {
@@ -226,6 +229,9 @@ export function traceMes(state: TraceState) {
     const path = url.pathname;
     reads.push(path + url.search);
     if (path === '/api/v1/plant') return Promise.resolve(json(PLANT));
+    if (path === '/api/v1/equipment' && state.equipment) {
+      return Promise.resolve(json({ equipment: state.equipment }));
+    }
     if (path === '/api/v1/trace/search') {
       const q = url.searchParams.get('q') ?? '';
       return Promise.resolve(json({ q, results: state.search[q] ?? [] }));

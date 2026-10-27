@@ -62,10 +62,12 @@ export interface NotFoundProps {
   readonly kind: string;
   readonly id: string;
   readonly back: BackLink;
+  /** One more sentence after "The MES has no … with this id.": why it may not exist yet. */
+  readonly detail?: string | undefined;
   readonly testId?: string | undefined;
 }
 
-export function NotFound({ kind, id, back, testId }: NotFoundProps) {
+export function NotFound({ kind, id, back, detail, testId }: NotFoundProps) {
   return (
     <MissingPage
       back={back}
@@ -84,7 +86,7 @@ export function NotFound({ kind, id, back, testId }: NotFoundProps) {
             No {kind} <Code>{id}</Code>
           </>
         }
-        body={`The MES has no ${kind} with this id.`}
+        body={`The MES has no ${kind} with this id.${detail === undefined ? '' : ` ${detail}`}`}
       />
     </MissingPage>
   );

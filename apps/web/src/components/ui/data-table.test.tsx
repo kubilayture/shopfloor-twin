@@ -229,6 +229,8 @@ describe('DataTable sticky header', () => {
     expect(frame?.className).toContain('max-h-[min(70vh,720px)]');
     // Its scroll padding keeps a focused row clear of the sticky header inside it.
     expect(frame?.className).toMatch(/\bscroll-pt-12\b/);
+    // The containing block of absolutely positioned cell content (sr-only text): kept inside.
+    expect(frame?.className).toMatch(/(^| )relative( |$)/);
     expect(frame?.hasAttribute('tabindex')).toBe(false);
     expect(frame?.hasAttribute('role')).toBe(false);
     expect(screen.queryByRole('region')).toBeNull();
@@ -716,6 +718,20 @@ describe('DataTable row actions and focus', () => {
     const detail = screen.getByText('Detail');
     expect(document.activeElement).toBe(detail);
     expect(detail.getAttribute('tabindex')).toBe('-1');
+  });
+
+  it('words the skip link by skipLabel, past a long table to the next section (G-33)', () => {
+    render(
+      <>
+        {table({ rows: rowsOf(2), skipToDetails: 'next-title', skipLabel: 'Skip past the units' })}
+        <h2 id="next-title">Orders</h2>
+      </>,
+    );
+    expect(screen.queryByRole('link', { name: 'Skip to the details' })).toBeNull();
+    const skip = screen.getByRole('link', { name: 'Skip past the units' });
+    expect(skip.getAttribute('href')).toBe('#next-title');
+    fireEvent.click(skip);
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Orders' }));
   });
 });
 

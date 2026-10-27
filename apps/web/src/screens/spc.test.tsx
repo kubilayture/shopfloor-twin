@@ -627,6 +627,52 @@ describe('SPC on the design system (UX-9a)', () => {
     expect(await screen.findByRole('alert')).toBeTruthy();
   });
 
+  it('says which range is shown, with a way back; a range ending before it starts is refused', async () => {
+    const server = qualityMes(qualityState());
+    vi.stubGlobal('fetch', server.fetch);
+    const app = await renderApp('/quality/spc/leak-rate');
+    await screen.findByRole('heading', { level: 1, name: 'Leak rate' });
+    expect(screen.queryByTestId('chart-window-range')).toBeNull();
+    // An end before the start: said, nothing read.
+    const fill = (end: 'from' | 'to', time: string) => {
+      fireEvent.change(screen.getByTestId(`chart-window-${end}-date`), {
+        target: { value: '15/10/2026' },
+      });
+      fireEvent.change(screen.getByTestId(`chart-window-${end}`), { target: { value: time } });
+    };
+    fill('from', '09:00:00');
+    fill('to', '08:00:00');
+    const reads = server.reads('/api/v1/quality/characteristics/leak-rate/chart').length;
+    fireEvent.click(screen.getByTestId('chart-window-apply'));
+    expect(screen.getByTestId('chart-window-problem').textContent).toBe(
+      'The range’s end must not be before its start.',
+    );
+    expect(app.history.location.search).toBe('');
+    // A range that holds: applied, then said above the boxes with a link that clears it.
+    fill('to', '10:00:00');
+    fireEvent.click(screen.getByTestId('chart-window-apply'));
+    const shown = await screen.findByTestId('chart-window-range');
+    expect(shown.textContent).toBe(
+      'Showing a plant-time range: Thu 15 Oct, 09:00:00 – Thu 15 Oct, 10:00:00. Clear the range',
+    );
+    expect(app.history.location.search).toContain('from=2026-10-15T06');
+    expect(server.reads('/api/v1/quality/characteristics/leak-rate/chart').length).toBeGreaterThan(
+      reads,
+    );
+    // Neither view link is the current one while a range is shown.
+    const views = screen.getByRole('group', { name: 'Points shown' });
+    expect(
+      within(views)
+        .queryAllByRole('link', { current: 'page' })
+        .map((a) => a.textContent),
+    ).toEqual([]);
+    fireEvent.click(within(shown).getByRole('link', { name: 'Clear the range' }));
+    await waitFor(() => {
+      expect(screen.queryByTestId('chart-window-range')).toBeNull();
+    });
+    expect(app.history.location.search).toBe('');
+  });
+
   it('answers an id that cannot be a characteristic with the not-found page', async () => {
     vi.stubGlobal('fetch', qualityMes(qualityState()).fetch);
     await renderApp('/quality/spc/Not_An_Id');

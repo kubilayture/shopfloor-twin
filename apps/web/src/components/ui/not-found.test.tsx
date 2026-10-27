@@ -135,4 +135,34 @@ describe('SegmentedLinks', () => {
     expect(links[0]?.hasAttribute('aria-current')).toBe(false);
     expect(links[0]?.className).not.toContain('bg-accent');
   });
+
+  it('marks only the `current` item, not a link whose search is a subset of the URL’s', async () => {
+    await routed(
+      () => (
+        <SegmentedLinks
+          label="Points shown"
+          current="range"
+          items={[
+            {
+              key: 'recent',
+              label: 'Recent',
+              to: '/equipment/$id',
+              params: { id: 'cnc-01' },
+              search: {},
+            },
+            {
+              key: 'all',
+              label: 'All',
+              to: '/equipment/$id',
+              params: { id: 'cnc-01' },
+              search: { range: '24h' },
+            },
+          ]}
+        />
+      ),
+      '/equipment/cnc-01?range=8h',
+    );
+    const group = screen.getByRole('group', { name: 'Points shown' });
+    expect(within(group).queryAllByRole('link', { current: 'page' })).toEqual([]);
+  });
 });

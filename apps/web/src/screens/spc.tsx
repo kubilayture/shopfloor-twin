@@ -237,8 +237,10 @@ function CharacteristicCard({ characteristic: c }: { readonly characteristic: Ch
       }
       className="h-full"
     >
-      <DescriptionList facts={facts} columns="compact" label={`${c.name}: facts`} />
-      <Baseline characteristic={c} />
+      <DescriptionList facts={facts} columns={2} label={`${c.name}: facts`} />
+      <div className="mt-1">
+        <Baseline characteristic={c} />
+      </div>
       {c.notice ? (
         <p className="mt-2 text-sm text-ink">
           A late reading changed the baseline: a decision on a new limit version is pending.
@@ -340,7 +342,6 @@ function WindowPicker({ id, search }: { readonly id: string; readonly search: Sp
     search.from !== undefined || search.to !== undefined ? 'range' : search.all ? 'all' : 'recent';
   const [problem, setProblem] = useState<string | undefined>(undefined);
   const problemId = useId();
-  const labelId = useId();
   const onSubmit = (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -354,6 +355,10 @@ function WindowPicker({ id, search }: { readonly id: string; readonly search: Sp
       setProblem('Give at least one end of the range.');
       return;
     }
+    if (a.iso !== undefined && b.iso !== undefined && Date.parse(a.iso) > Date.parse(b.iso)) {
+      setProblem('The range’s end must not be before its start.');
+      return;
+    }
     setProblem(undefined);
     void navigate({
       to: '/quality/spc/$characteristic',
@@ -364,7 +369,7 @@ function WindowPicker({ id, search }: { readonly id: string; readonly search: Sp
   return (
     <div data-testid="chart-window" data-mode={mode} className="flex w-full flex-col gap-3">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <span id={labelId} aria-hidden="true" className="text-sm font-medium text-ink">
+        <span aria-hidden="true" className="text-sm font-medium text-ink">
           Points shown
         </span>
         <SegmentedLinks
@@ -390,6 +395,22 @@ function WindowPicker({ id, search }: { readonly id: string; readonly search: Sp
             },
           ]}
         />
+        {mode === 'range' ? (
+          <p className="text-sm text-ink" data-testid="chart-window-range">
+            Showing a plant-time range:{' '}
+            {search.from === undefined ? 'from the first reading' : timeOf(search.from)} –{' '}
+            {search.to === undefined ? 'the latest reading' : timeOf(search.to)}.{' '}
+            <Link
+              to="/quality/spc/$characteristic"
+              params={{ characteristic: id }}
+              search={{}}
+              data-testid="chart-window-clear"
+              className="text-link underline underline-offset-2 hover:text-accent-hover"
+            >
+              Clear the range
+            </Link>
+          </p>
+        ) : null}
       </div>
       <form
         noValidate
@@ -465,25 +486,18 @@ function pointColumns(
   unit: string,
 ): readonly Column<SpcPointDto>[] {
   return [
-    { key: 'at', header: 'Plant time', width: '7rem', cell: (p) => timeOf(p.at) },
-    { key: 'part', header: 'Part', numeric: true, cell: (p) => p.partId },
+    { key: 'at', header: 'Plant time', nowrap: true, cell: (p) => timeOf(p.at) },
+    { key: 'part', header: 'Part', numeric: true, priority: 2, cell: (p) => p.partId },
     {
       key: 'value',
-      header: `Value (${unit})`,
+      // The unit on a line of its own, so the column is no wider than its figures.
+      header: (
+        <>
+          Value <span className="block font-normal">({unit})</span>
+        </>
+      ),
       numeric: true,
       cell: (p) => <span className="font-mono">{spcValueText(p.value, precision, places)}</span>,
-    },
-    {
-      key: 'limits',
-      header: 'Limits',
-      priority: 3,
-      nowrap: true,
-      cell: (p) =>
-        p.version === null ? (
-          <span className="text-ink-secondary">Not judged</span>
-        ) : (
-          `v${String(p.version)}`
-        ),
     },
     {
       key: 'rules',
@@ -497,6 +511,10 @@ function pointColumns(
         <>
           {p.final ? 'Final' : 'Provisional'}
           {p.baseline ? ', baseline' : ''}
+          {/* The limits that judged it: a column of its own did not fit beside the chart. */}
+          <span className="block text-xs whitespace-nowrap text-ink-secondary">
+            {p.version === null ? 'Not judged' : `Limits v${String(p.version)}`}
+          </span>
         </>
       ),
     },
@@ -803,7 +821,6 @@ const SIGNAL_COLUMNS: readonly Column<SpcSignalDto>[] = [
   {
     key: 'rule',
     header: 'Chart and rule',
-    width: '10rem',
     cell: (s) => (
       <>
         <span className="whitespace-nowrap">
@@ -816,7 +833,6 @@ const SIGNAL_COLUMNS: readonly Column<SpcSignalDto>[] = [
   {
     key: 'status',
     header: 'Status',
-    width: '12rem',
     cell: (s) => (
       <>
         <SignalStatusBadge signal={s} />
@@ -833,13 +849,25 @@ const SIGNAL_COLUMNS: readonly Column<SpcSignalDto>[] = [
             Withdrawn: {s.withdrawnReason}
           </span>
         ) : null}
+        {/* The acknowledgement as the status's last line, so the table fits at 768. */}
+        {s.acknowledged ? (
+          <span className="mt-1 block text-xs">
+            Acknowledged:{' '}
+            <span data-testid="signal-ack">
+              {s.acknowledged.by}, {wallTimeOf(s.acknowledged.at)}
+              {plantBeside(s.acknowledged.plantAt)}: “{s.acknowledged.comment}”
+              {s.orphaned ? ' (orphaned: the episode was withdrawn)' : ''}
+            </span>
+          </span>
+        ) : s.status === 'withdrawn' ? null : (
+          <span className="mt-1 block text-xs text-ink-secondary">Not acknowledged</span>
+        )}
       </>
     ),
   },
   {
     key: 'first',
     header: 'First point',
-    width: '11rem',
     cell: (s) => (
       <>
         <span className="whitespace-nowrap">{timeOf(s.first.at)}</span>{' '}
@@ -850,20 +878,6 @@ const SIGNAL_COLUMNS: readonly Column<SpcSignalDto>[] = [
         </span>
       </>
     ),
-  },
-  {
-    key: 'ack',
-    header: 'Acknowledged',
-    cell: (s) =>
-      s.acknowledged ? (
-        <span data-testid="signal-ack">
-          {s.acknowledged.by}, {wallTimeOf(s.acknowledged.at)}
-          {plantBeside(s.acknowledged.plantAt)}: “{s.acknowledged.comment}”
-          {s.orphaned ? ' (orphaned: the episode was withdrawn)' : ''}
-        </span>
-      ) : (
-        <Missing reason="Not acknowledged" />
-      ),
   },
 ];
 
@@ -1250,17 +1264,26 @@ function limitColumns(precision: SpcPrecision): readonly Column<LimitVersionDto>
   ): Column<LimitVersionDto> => ({ key, header, numeric: true, cell: (l) => stat(pick(l)) });
   return [
     {
-      // The version names its row; who made it, from which window and why go under it, so the
-      // values keep one column each and the table fits a desktop page (C-07).
+      // The version names its row; where it applies, who made it, from which window and why go
+      // under it, so the values keep one column each and the table fits from 1024 (C-07).
       key: 'version',
       header: 'Version',
       rowHeader: true,
-      width: '14rem',
+      width: '13rem',
       cell: (l) => (
         <>
           <span className="font-semibold">v{l.version}</span>
+          <span className="block text-xs" data-testid="limit-applies">
+            Applies {l.from === null ? 'from the first reading' : <>from {timeOf(l.from.at)}</>}
+            {l.until ? <> until {timeOf(l.until.at)}</> : null}
+          </span>
+          {l.endedAt ? (
+            <span className="block text-xs" data-testid="limit-ended">
+              Ended by {l.endedBy ?? <Missing reason="Not recorded" />}, {timeOf(l.endedAt)}
+            </span>
+          ) : null}
           <span className="block text-xs text-ink-secondary" data-testid="limit-created">
-            {l.createdBy}, {timeOf(l.createdAt)}
+            Created by {l.createdBy}, {timeOf(l.createdAt)}
           </span>
           <span className="block text-xs text-ink-secondary">
             From {timeOf(l.window.from.at)} – {timeOf(l.window.to.at)}: {l.counts.readings}{' '}
@@ -1268,22 +1291,6 @@ function limitColumns(precision: SpcPrecision): readonly Column<LimitVersionDto>
           </span>
           {l.comment ? (
             <span className="block text-xs text-ink-secondary">“{l.comment}”</span>
-          ) : null}
-        </>
-      ),
-    },
-    {
-      key: 'applies',
-      header: 'Applies',
-      width: '10rem',
-      cell: (l) => (
-        <>
-          {l.from === null ? 'from the first reading' : <>from {timeOf(l.from.at)}</>}
-          {l.until ? <> until {timeOf(l.until.at)}</> : null}
-          {l.endedAt ? (
-            <span className="block text-xs text-ink-secondary" data-testid="limit-ended">
-              ended by {l.endedBy ?? <Missing reason="Not recorded" />}, {timeOf(l.endedAt)}
-            </span>
           ) : null}
         </>
       ),

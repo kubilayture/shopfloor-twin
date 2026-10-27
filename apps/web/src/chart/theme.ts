@@ -9,9 +9,10 @@ import { colorValue, FONTS, type Theme } from '../components/ui/tokens.ts';
  * resolve every reference against the stylesheet when they draw (`getComputedStyle` on `<html>`),
  * so the canvases follow the tokens, and repaint when `data-theme` on `<html>` changes (UX-12).
  * That repaint runs after the change (a MutationObserver, then a React effect), so it is too late
- * for the print snapshot, which `EChartsView` takes synchronously on `beforeprint`: a print in the
- * dark theme needs the snapshot built from light-resolved tokens (left to UX-12, #336). Before
- * the stylesheet is in, or in jsdom, a token reads its value from `components/ui/tokens.ts`.
+ * for the print image, which `EChartsView` takes synchronously on `beforeprint`: it draws that
+ * image with a throwaway chart in the light values (`lightChart`, UX-12, #336), so print is light
+ * from any theme. Before the stylesheet is in, or in jsdom, a token reads its value from
+ * `components/ui/tokens.ts`.
  */
 
 /**

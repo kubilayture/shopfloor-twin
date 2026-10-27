@@ -1,9 +1,10 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import process from 'node:process';
-import type { HttpProxy } from 'vite';
+import type { HttpProxy, Plugin } from 'vite';
 import { defineConfig } from 'vitest/config';
 import { apiProxyListeners } from './src/dev-proxy.ts';
+import { bootTheme, DARK_QUERY, THEME_STORAGE_KEY } from './src/theme/theme-preference.ts';
 
 /** Where the dev server and `vite preview` send `/api` (HTTP and WebSocket). */
 const MES_URL = process.env.MES_URL ?? 'http://127.0.0.1:4700';
@@ -23,8 +24,52 @@ const api = {
   },
 };
 
+/** The boot script's file: `/theme-boot.js` from the dev server, hashed under `assets/` in a build. */
+const BOOT_NAME = 'theme-boot.js';
+
+/**
+ * The theme before the first paint (UX-12, #336): `bootTheme` as a classic script in
+ * `<head>`, so `data-theme` is set before the body is parsed. An external file, not inline: the
+ * CSP allows `script-src 'self'` only. A module script would run only after the document is
+ * parsed, too late to keep a stored "Dark" from showing a light page first.
+ */
+function themeBoot(): Plugin {
+  const source = `(${bootTheme.toString()})(${JSON.stringify(THEME_STORAGE_KEY)}, ${JSON.stringify(DARK_QUERY)});\n`;
+  let asset: string | undefined;
+  return {
+    name: 'shopfloor-theme-boot',
+    configureServer(server) {
+      server.middlewares.use(`/${BOOT_NAME}`, (_request, response) => {
+        response.setHeader('Content-Type', 'text/javascript; charset=utf-8');
+        response.end(source);
+      });
+    },
+    buildStart() {
+      if (this.meta.watchMode) return;
+      asset = this.emitFile({ type: 'asset', name: BOOT_NAME, source });
+    },
+    transformIndexHtml: {
+      order: 'post',
+      handler(_html, context) {
+        const src = asset && context.bundle ? fileNameOf(context.bundle, BOOT_NAME) : BOOT_NAME;
+        return [{ tag: 'script', attrs: { src: `/${src}` }, injectTo: 'head' }];
+      },
+    },
+  };
+}
+
+/** The emitted file name of the asset first named `name` in the bundle. */
+function fileNameOf(bundle: Record<string, { type: string; fileName: string }>, name: string) {
+  const found = Object.values(bundle).find(
+    (file) =>
+      file.type === 'asset' && ((file as { names?: readonly string[] }).names ?? []).includes(name),
+  );
+  if (!found) throw new Error(`the build emitted no ${name}`);
+  return found.fileName;
+}
+
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [themeBoot(), react(), tailwindcss()],
   server: { host: '127.0.0.1', port: 5173, strictPort: true, proxy: api },
   preview: { host: '127.0.0.1', port: 4173, strictPort: true, proxy: api },
   build: { outDir: 'dist', sourcemap: true },

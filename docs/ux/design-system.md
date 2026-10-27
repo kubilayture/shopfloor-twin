@@ -652,7 +652,7 @@ interface DisclosureProps {
 - `PageHeader`, `Section`, `SectionNav`, `DescriptionList`, `FilterBar` (3.3, 3.4).
 - `Callout({ tone, title, children })`: page-level messages (a refused write, the idle warning restyled, "Your role cannot change orders" as a one-line neutral callout instead of an empty "Actions" section, G-29, Q-08).
 - `Code`: an inline identifier in monospace; `Kbd` for the terminal's keyboard hints.
-- `Icon` (`icons.tsx`): about 20 inline SVG icons drawn in-house at 16 and 20 px with `currentColor` (menu, close, chevrons, check, alert, info, play, pause, stop, wrench, ban, arrow-left/right, external, download, print, search, user, logout, filter, clock); no icon package.
+- `Icon` (`icons.tsx`): about 20 inline SVG icons drawn in-house at 16 and 20 px with `currentColor` (menu, close, chevrons, check, alert, info, play, pause, stop, wrench, ban, arrow-left/right, external, download, print, search, user, logout, filter, clock; monitor, sun and moon for the theme switch, UX-12); no icon package.
 - `Duration`, `PlantTime`, `WallTime`, `Ratio`, `Percent`, `Quantity`: formatting components over `domain/time.ts` and `domain/numbers.ts` that render the text by the content rules (section 6) and keep the raw value in `data-value` / `data-fraction` / `data-decimal` and `<time dateTime>`.
 
 #### Menu (overflow actions)
@@ -668,10 +668,14 @@ interface MenuProps {
     tone?: 'default' | 'danger';
     disabled?: boolean;
     testId?: string; // keeps an action's id when it moves into the menu
+    checked?: boolean; // a choice of a set: menuitemradio (UX-12)
   }[];
   align?: 'start' | 'end';
+  surface?: 'light' | 'dark'; // 'dark': an icon trigger on the top bar (UX-12)
 }
 ```
+
+A menu of choices gives its items `checked` (UX-12): they are `menuitemradio` with `aria-checked` and a check on the chosen one. `surface: 'dark'` draws the icon trigger as a top-bar control; the open list is marked `data-surface="light"` so its focus ring is `focus` again.
 
 A button with `aria-haspopup="menu"` and `aria-expanded`, opening a `role="menu"` list in a popover (`popover="auto"`: light dismiss and Escape from the platform). Arrow keys move between `role="menuitem"` buttons, Home and End jump, typing a letter moves to the next item starting with it, Enter and Space select, focus returns to the trigger on close. Used when a page header or row has more than three actions. An action a spec clicks by test id stays a visible button unless the spec is updated in the same pull request.
 
@@ -805,8 +809,8 @@ The bar for every issue. The harness of UX-1g reports it with axe on every route
 **Decision: in scope, token-ready from UX-1a, shipped as its own issue after the screen migrations.**
 
 - UX-1a defines every colour token with a light and a dark value and a `data-theme` attribute on `<html>` (`light`, `dark`, or absent = follow `prefers-color-scheme`). From UX-1a on, a migrated screen that uses a raw colour (a Tailwind palette class like `bg-slate-50`, a hex in a chart option) fails review; a check script (UX-1a) lists the files still using raw colours, and UX-F3 turns it into a failing check.
-- The switch (System, Light, Dark) ships in UX-12, after every screen is on tokens, in the top bar's user area and on the account page, stored in `localStorage` per browser. Until then the app is light only, as now.
-- **Print is always light.** The existing `@media print` rules force white; charts print from the still image `EChartsView` takes on `beforeprint` (`getDataURL`), so in dark mode the chart is first re-themed light on `beforeprint`, the image taken, and the dark theme restored on `afterprint` (UX-12). **The terminal** follows the same switch; tablets in a bright hall will mostly stay light.
+- **The switch (UX-12, #336):** System, Light, Dark, as a menu of radio items behind an icon button in the top bar's user area (between the user name and "Log out"; `theme-menu`, named "Theme: <choice>", the icon a screen, a sun or a moon) and as a "Theme" radio group in an "Appearance" card on the account page; both show and set one choice, stored per browser in `localStorage` (`shopfloor-twin.theme`; absent = System; a blocked storage keeps the choice for the page) and followed by other tabs (`storage` event). `<html data-theme>` always carries the theme in use (`light` or `dark`): `bootTheme` (`src/theme/theme-preference.ts`) runs as a classic script in `<head>` before the body is parsed, an external hashed file `vite.config.ts` emits (the CSP allows no inline script; a module script would run after the first paint), and `startTheme` in `main.tsx` keeps it current with the system setting under System. Without scripts the stylesheet applies the same dark values under `@media screen and (prefers-color-scheme: dark)` while `data-theme` is absent (`tokens.test.ts` holds both blocks equal to the token map). `color-scheme` is `light` on `:root` and `dark` with the dark values, and `index.html` declares `light dark`.
+- **Print is always light.** `beforeprint` sets `data-theme="light"` (the style is recomputed before the page is laid out for paper) and `afterprint` restores the theme in use; the `@media print` rules force white. Charts print from the still image `EChartsView` takes on `beforeprint`; since the live chart's repaint after a theme change comes too late for it, the image is drawn by a throwaway chart in the light token values (`lightChart`) at the live chart's size, whatever the screen shows (UX-12). uPlot trends have no print image (their table carries the values). **The terminal** follows the same switch; tablets in a bright hall will mostly stay light.
 - Dark values (computed pairs, AA):
 
   | Token                    | Dark                                                      | Pair and ratio                              |

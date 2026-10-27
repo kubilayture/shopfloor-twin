@@ -16,6 +16,10 @@ import { positionPopover } from './overlay.ts';
  *
  * For a page header or row with more than three actions. An action a spec clicks by test id
  * stays a visible button unless the spec moves with it (`testId` keeps the id on the item).
+ *
+ * A menu of choices (the theme switch, UX-12): items with `checked` are `menuitemradio` with
+ * `aria-checked` and a check mark on the chosen one. `surface="dark"` draws the icon button for
+ * the dark top bar (light icon, `nav-hover` under the pointer, the `focus-on-dark` ring).
  */
 export interface MenuItem {
   readonly id: string;
@@ -24,6 +28,8 @@ export interface MenuItem {
   readonly tone?: 'default' | 'danger';
   readonly disabled?: boolean;
   readonly testId?: string | undefined;
+  /** A choice of a set (`menuitemradio`): whether it is the chosen one. */
+  readonly checked?: boolean | undefined;
 }
 
 export interface MenuProps {
@@ -34,13 +40,21 @@ export interface MenuProps {
   readonly items: readonly MenuItem[];
   readonly align?: 'start' | 'end';
   readonly testId?: string | undefined;
+  /** The trigger's ground: `dark` for the top bar (an icon trigger only). */
+  readonly surface?: 'light' | 'dark';
 }
+
+/** An icon trigger on the dark top bar: the shell's own control look (root-layout.tsx). */
+const DARK_TRIGGER =
+  'inline-flex size-9 shrink-0 items-center justify-center rounded-md text-topbar-ink hover:bg-nav-hover aria-expanded:bg-nav-hover motion-safe:transition-colors motion-safe:duration-fast';
 
 /** Hidden until placed and focused by its `toggle` event, which comes a task after it opens. */
 const UNPLACED = '[&:not([data-placed])]:invisible';
 
 function menuItems(menu: HTMLElement | null): HTMLElement[] {
-  return [...(menu?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])];
+  return [
+    ...(menu?.querySelectorAll<HTMLElement>('[role="menuitem"], [role="menuitemradio"]') ?? []),
+  ];
 }
 
 /** Focuses the item at `index`, wrapping: -1 is the last. */
@@ -50,7 +64,14 @@ function focusItem(menu: HTMLElement | null, index: number): void {
   all[(index + all.length) % all.length]?.focus();
 }
 
-export function Menu({ label, icon, items, align = 'start', testId }: MenuProps) {
+export function Menu({
+  label,
+  icon,
+  items,
+  align = 'start',
+  testId,
+  surface = 'light',
+}: MenuProps) {
   const menuId = useId();
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
@@ -162,6 +183,10 @@ export function Menu({ label, icon, items, align = 'start', testId }: MenuProps)
           {label}
           <Icon name="chevron-down" size={16} />
         </Button>
+      ) : surface === 'dark' ? (
+        <button type="button" aria-label={label} title={label} className={DARK_TRIGGER} {...common}>
+          <Icon name={icon} size={20} />
+        </button>
       ) : (
         <IconButton icon={icon} label={label} variant="ghost" {...common} />
       )}
@@ -171,6 +196,8 @@ export function Menu({ label, icon, items, align = 'start', testId }: MenuProps)
         popover="auto"
         role="menu"
         aria-label={label}
+        // A light surface even when the trigger sits on the dark top bar: the ring is `focus`.
+        data-surface="light"
         onKeyDown={onMenuKey}
         className={`${UNPLACED} m-0 inset-auto min-w-44 rounded-lg border border-line bg-surface p-1 text-sm text-ink shadow-elevation-2`}
       >
@@ -178,7 +205,8 @@ export function Menu({ label, icon, items, align = 'start', testId }: MenuProps)
           <button
             key={item.id}
             type="button"
-            role="menuitem"
+            role={item.checked === undefined ? 'menuitem' : 'menuitemradio'}
+            aria-checked={item.checked}
             tabIndex={-1}
             data-testid={item.testId}
             aria-disabled={item.disabled === true ? true : undefined}
@@ -191,7 +219,7 @@ export function Menu({ label, icon, items, align = 'start', testId }: MenuProps)
               item.onSelect();
             }}
             className={[
-              'flex min-h-8 w-full items-center rounded-md px-3 text-left',
+              'flex min-h-8 w-full items-center gap-2 rounded-md px-3 text-left',
               item.disabled
                 ? 'cursor-not-allowed text-disabled-ink'
                 : item.tone === 'danger'
@@ -199,6 +227,12 @@ export function Menu({ label, icon, items, align = 'start', testId }: MenuProps)
                   : 'hover:bg-surface-hover focus-visible:bg-surface-hover',
             ].join(' ')}
           >
+            {item.checked === undefined ? null : (
+              // The chosen one's check; the others keep its room, so the labels line up.
+              <span className="inline-flex size-4 shrink-0 text-accent">
+                {item.checked ? <Icon name="check" size={16} /> : null}
+              </span>
+            )}
             {item.label}
           </button>
         ))}

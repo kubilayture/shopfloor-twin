@@ -1,4 +1,4 @@
-import type { HoldRefDto, HoldState, LotRefDto, TraceUnitDto } from '@shopfloor/contracts/mes-api';
+import type { HoldRefDto, LotRefDto, TraceUnitDto } from '@shopfloor/contracts/mes-api';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import type { ReactNode } from 'react';
@@ -6,7 +6,8 @@ import { ApiError, listEquipment } from '../api/client.ts';
 import { queryKeys } from '../api/queries.ts';
 import { useCan } from '../auth/auth.tsx';
 import { FinalityBadge } from '../components/finality-badge.tsx';
-import { Badge, type BadgeVariant } from '../components/ui/badge.tsx';
+import { HOLD_LOOK } from '../components/quality-ui.tsx';
+import { Badge } from '../components/ui/badge.tsx';
 import { buttonClass } from '../components/ui/button.tsx';
 import { Callout } from '../components/ui/callout.tsx';
 import { Code } from '../components/ui/code.tsx';
@@ -17,7 +18,6 @@ import { NotFound } from '../components/ui/not-found.tsx';
 import { PageHeader, type PageHeaderBack } from '../components/ui/page-header.tsx';
 import { Section } from '../components/ui/section.tsx';
 import { Skeleton } from '../components/ui/skeleton.tsx';
-import type { Tone } from '../components/ui/tokens.ts';
 import {
   HOLD_STATE_TEXT,
   SUBJECT_TEXT,
@@ -443,15 +443,6 @@ export function SubjectLink({
       );
   }
 }
-
-/** A hold's state as the holds screens draw it (design system 2.6). */
-const HOLD_LOOK: Readonly<
-  Record<HoldState, { readonly tone: Tone; readonly variant: BadgeVariant }>
-> = {
-  open: { tone: 'alarm', variant: 'soft' },
-  released: { tone: 'ok', variant: 'soft' },
-  rejected: { tone: 'neutral', variant: 'solid' },
-};
 
 /** An abnormal state at the top of the page (a hold): a callout, announced politely. */
 export function HeldNotice({

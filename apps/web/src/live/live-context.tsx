@@ -8,7 +8,7 @@ import {
   type OrderOeeDto,
   type TerminalViewDto,
 } from '@shopfloor/contracts/mes-api';
-import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query';
+import { skipToken, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   createContext,
   use,
@@ -357,6 +357,14 @@ export function useLiveStates(): LiveStates | undefined {
 /** Pushed OEE buckets of `oee:<id>` (subscribe with `useLiveSubscription`). */
 export function useLiveOee(id: string): LiveOee | undefined {
   return useQuery<LiveOee>({ queryKey: liveKeys.oee(id), queryFn: skipToken }).data;
+}
+
+/** Pushed OEE buckets of several work centers or machines, in the order of `ids` (UX-3). */
+export function useLiveOees(ids: readonly string[]): readonly (LiveOee | undefined)[] {
+  return useQueries({
+    queries: ids.map((id) => ({ queryKey: liveKeys.oee(id), queryFn: skipToken })),
+    combine: (results) => results.map((result) => result.data as LiveOee | undefined),
+  });
 }
 
 /** Pushed downtime records (subscribe to `downtime` with `useLiveSubscription`). */

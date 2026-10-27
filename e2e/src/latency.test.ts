@@ -366,17 +366,20 @@ describe('values told apart by their bucket (#376)', () => {
     { at: 861, state: '0.5574', key: `0.5574 ${fresh}` },
     { at: 2_125, state: '0.5480', key: '0.5480 b10' },
   ];
-  const judge = (fresh: string, identify: boolean) => {
+  const judge = (fresh: string, identify: boolean, carried = pushes(fresh)) => {
     const pushed = pushes(fresh);
     const page = new Map([['cell-m1', pushed.map((p) => ({ at: p.at + 15, state: p.state }))]]);
     return judgeLatency(truth, page, 2_700, 2_000, {
       seenWithin: {
-        truth: identify ? keyed : new Map([['cell-m1', api]]),
+        truth: new Map([['cell-m1', api]]),
         windowMs: 5_000,
         ...(identify
           ? {
-              identify: (_: string, sample: Change) =>
-                pushed.filter((p) => p.state === sample.state && p.at <= sample.at).at(-1)?.key,
+              identify: {
+                truth: keyed,
+                key: (_: string, sample: Change) =>
+                  carried.filter((p) => p.state === sample.state && p.at <= sample.at).at(-1)?.key,
+              },
             }
           : {}),
       },
@@ -396,5 +399,14 @@ describe('values told apart by their bucket (#376)', () => {
 
   it('still refuses a stale push: the bucket the API held at -370 ms', () => {
     expect(judge('b5', true).violations.map((v) => v.at)).toEqual([0]);
+  });
+
+  it('judges a page value no push carried by its decimals, never as fresh for lacking a bucket', () => {
+    // The frames lost the push of 0.5574 (say the listener missed it): the page value has no
+    // bucket, so it is judged as before #376, against the decimals the API held, and is stale.
+    const lost = pushes('b12').filter((p) => p.state !== '0.5574');
+    expect(judge('b12', true, lost).violations.map((v) => [v.at, v.state])).toEqual([
+      [0, '0.5585'],
+    ]);
   });
 });

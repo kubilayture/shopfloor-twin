@@ -1,4 +1,13 @@
-import type { HoldRefDto, LotRefDto, TraceUnitDto } from '@shopfloor/contracts/mes-api';
+import type {
+  CartonDto,
+  HoldRefDto,
+  LotRefDto,
+  MaterialLotDto,
+  TraceUnitDto,
+} from '@shopfloor/contracts/mes-api';
+
+type LotStatus = MaterialLotDto['status'];
+type CartonStatus = CartonDto['status'];
 import { useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import type { ReactNode } from 'react';
@@ -239,6 +248,32 @@ export function UnitStatusBadge({ status }: { readonly status: TraceUnitDto['sta
   );
 }
 
+/** A lot's ERP status as a badge: listed (outline), or retired (`warn`). */
+export function LotErpBadge({ status }: { readonly status: LotStatus }) {
+  return status === 'active' ? (
+    <Badge tone="neutral" variant="outline" title="Listed by the ERP">
+      ERP listed
+    </Badge>
+  ) : (
+    <Badge tone="warn" title="No longer listed by the ERP">
+      ERP retired
+    </Badge>
+  );
+}
+
+/** A carton's state as a badge: closed (with a check), or open (outline, still filling). */
+export function CartonStateBadge({ status }: { readonly status: CartonStatus }) {
+  return status === 'closed' ? (
+    <Badge tone="neutral" icon="check">
+      Closed
+    </Badge>
+  ) : (
+    <Badge tone="neutral" variant="outline" title="Still filling">
+      Open
+    </Badge>
+  );
+}
+
 export const unitStatus = (status: keyof typeof UNIT_STATUS_TEXT): string =>
   UNIT_STATUS_TEXT[status];
 
@@ -347,14 +382,21 @@ export function CartonLink({ carton }: { readonly carton: string | null }) {
   );
 }
 
-export function OrderLink({ order }: { readonly order: string | null }) {
-  if (order === null) return <Missing reason={NO_ORDER} />;
+/** An order's link (`testId` where a page lists one order on several rows, default `trace-order-<id>`). */
+export function OrderLink({
+  order,
+  testId,
+}: {
+  readonly order: string | null;
+  readonly testId?: string;
+}) {
+  if (order === null) return <Missing reason={NO_ORDER} testId={testId} />;
   return (
     <Link
       to="/orders/$id"
       params={{ id: order }}
       className={idLinkClass}
-      data-testid={`trace-order-${order}`}
+      data-testid={testId ?? `trace-order-${order}`}
     >
       <Code>{order}</Code>
     </Link>

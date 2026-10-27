@@ -139,9 +139,14 @@ describe('trace search', () => {
     expect(order('serial-P-7').getAttribute('href')).toBe('/orders/PO-1001');
     expect(order('carton-PO-1001-C01').getAttribute('href')).toBe('/orders/PO-1001');
     expect(order('serial-P-8').getAttribute('href')).toBeNull();
-    expect(order('serial-P-8').textContent).toContain('no order known');
+    expect(order('serial-P-8').textContent).toContain('No order (schedule mode)');
     expect(order('lot-P-LOT').textContent).toContain('used by any number of orders');
     expect(order('order-PO-1001').textContent).toContain('the result is the order');
+    // A MES before #364: no order sent.
+    expect(order('carton-PO-1002-C01').textContent).toContain('no order known');
+    // Several rows may name one order: no row repeats the order pages' ids.
+    expect(screen.queryByTestId('trace-order-PO-1001')).toBeNull();
+    expect(screen.queryByTestId('order-status')).toBeNull();
   });
 
   it('takes a query of digits from the URL as text', async () => {

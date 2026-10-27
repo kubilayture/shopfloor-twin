@@ -2501,8 +2501,14 @@ describe('login throttling over HTTP (#242, S5)', () => {
         expect(p95(latencies), summary).toBeLessThanOrEqual(budget);
         // The hash times above include the wait for their callbacks, so a login path that blocked
         // the event loop would raise the budget with the latency (#365 review, 4). The loop's own
-        // delay is held to a few hashes measured on an idle loop: hashing off the loop, the
-        // requests' work is short; a hash on it, at the attack's rate, saturates it.
+        // delay is bounded apart, in hashes measured on an idle loop (so it follows the machine's
+        // load as the budget does, but not the loop's own delay). What it catches: work on the
+        // loop that, at the attack's rate (20 to 40 logins a second), costs a sizeable part of a
+        // hash per login: a synchronous hash (`scryptSync`, a whole hash each, about 4 to 8 s of
+        // loop time per second: the loop falls behind without bound), or any blocking step that
+        // holds the loop for 3 hash times (about 0.6 s on a quiet machine) at once. What it
+        // doesn't: a short block per login (a few ms) that only adds to the latency budget's
+        // headroom; the budget above still bounds the victim's latency.
         expect(loopP99Ms, summary).toBeLessThanOrEqual(3 * quietMs);
         expect(inFlight, summary).toBeLessThanOrEqual(LOGIN_HASH_SLOTS.total);
         // Every refusal of the victim is a 429 (a bucket, the ceiling or no hash slot).

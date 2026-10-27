@@ -267,7 +267,11 @@ test('the OEE dashboard shows the API’s shift values and each change within 2 
   // for the stale one of a second before (the page draws a push within about 20 ms).
   const identify = (id: string, sample: Change): string | undefined =>
     frames.filter((f) => f.id === id && f.state === sample.state && f.at <= sample.at).at(-1)?.key;
-  const seenWithin = { truth: apiBuckets, windowMs: SEEN_WITHIN_MS, identify };
+  const seenWithin = {
+    truth: api,
+    windowMs: SEEN_WITHIN_MS,
+    identify: { truth: apiBuckets, key: identify },
+  };
   const pageSamples = [...shown].flatMap(([id, samples]) =>
     samples.slice(1).map((sample) => ({ id, sample })),
   );
@@ -339,6 +343,7 @@ test('the OEE dashboard shows the API’s shift values and each change within 2 
     pageValues: values.transitions,
     unobservedPageValues: values.unobserved,
     identifiedPageValues: identified,
+    identifiablePageValues: pageSamples.length,
     snapshots: {
       count: snapshots.length,
       compared: agreement.compared,

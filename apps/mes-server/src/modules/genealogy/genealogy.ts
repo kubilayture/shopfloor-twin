@@ -88,7 +88,11 @@ export interface GenealogyOptions {
   readonly readDb?: Kysely<Database>;
   readonly ingest: GenealogyIngest;
   readonly execution: GenealogyExecution;
-  readonly orders: { order(id: string): Promise<OrderRecord | undefined> };
+  readonly orders: {
+    order(id: string): Promise<OrderRecord | undefined>;
+    /** Each order's status in one read (#364); absent when the module doesn't hold it. */
+    statuses(ids: readonly string[]): Promise<ReadonlyMap<string, OrderRecord['status']>>;
+  };
   readonly masterData: {
     equipment(): Promise<EquipmentInfo[]>;
     routings(): Promise<Routing[]>;
@@ -1215,7 +1219,8 @@ export class Genealogy {
    * most `limit` each, by id, with each one's status and order (#364). A range on the id in byte
    * order (`COLLATE "C"`), which the `*_prefix` indexes serve (review M6); the serials' newest
    * units are read after, by the serials found (index `serial_unit_serial`), and the orders'
-   * statuses from the orders module.
+   * statuses from the orders module in one read: three queries more than before #364, whatever
+   * the results.
    */
   async search(q: string, limit = 20): Promise<SearchResult[]> {
     // PostgreSQL text holds no U+0000: no id can start with it (the API refuses it with 400).
@@ -1260,7 +1265,7 @@ export class Genealogy {
     ]);
     const serialIds = serials.flatMap((s) => (s.serial === null ? [] : [s.serial]));
     const orderIds = orders.flatMap((o) => (o.order_id === null ? [] : [o.order_id]));
-    const [newest, orderRecords] = await Promise.all([
+    const [newest, orderStatus] = await Promise.all([
       serialIds.length === 0
         ? Promise.resolve([])
         : this.#readDb
@@ -1271,7 +1276,7 @@ export class Genealogy {
             .orderBy('serial')
             .orderBy('epoch', 'desc')
             .execute(),
-      Promise.all(orderIds.map((id) => this.#options.orders.order(id))),
+      this.#options.orders.statuses(orderIds),
     ]);
     const unitOf = new Map(newest.map((u) => [u.serial, u]));
     return [
@@ -1286,10 +1291,10 @@ export class Genealogy {
         status: c.status,
         order: c.order_id,
       })),
-      ...orderIds.map((id, i): SearchResult => ({
+      ...orderIds.map((id): SearchResult => ({
         kind: 'order',
         id,
-        status: orderRecords[i]?.status ?? null,
+        status: orderStatus.get(id) ?? null,
         order: null,
       })),
     ];

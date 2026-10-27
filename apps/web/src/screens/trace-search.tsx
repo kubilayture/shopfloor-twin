@@ -5,7 +5,7 @@ import { useState } from 'react';
 import { queryKeys } from '../api/queries.ts';
 import { searchTrace } from '../api/trace.ts';
 import { QueryError } from '../components/query-error.tsx';
-import { Badge } from '../components/ui/badge.tsx';
+import { OrderStatusBadge } from '../components/order-badges.tsx';
 import { Button } from '../components/ui/button.tsx';
 import { Callout } from '../components/ui/callout.tsx';
 import { Code } from '../components/ui/code.tsx';
@@ -16,9 +16,14 @@ import { Missing } from '../components/ui/format.tsx';
 import { PageHeader } from '../components/ui/page-header.tsx';
 import { Section } from '../components/ui/section.tsx';
 import { Skeleton } from '../components/ui/skeleton.tsx';
-import { ORDER_STATUS_TEXT, ORDER_STATUS_TONE } from '../domain/orders.ts';
 import { validQuery } from '../domain/trace.ts';
-import { linkClass, UnitStatusBadge } from './trace-common.tsx';
+import {
+  CartonStateBadge,
+  linkClass,
+  LotErpBadge,
+  OrderLink,
+  UnitStatusBadge,
+} from './trace-common.tsx';
 
 type Result = TraceSearchDto['results'][number];
 type Kind = Result['kind'];
@@ -77,54 +82,27 @@ function ResultLink({ result }: { readonly result: Result }) {
 }
 
 /**
- * A result's status (#364), in the words of the page it opens: a serial's newest unit, a lot's ERP
+ * A result's status (#364), as the page it opens shows it: a serial's newest unit, a lot's ERP
  * status, a carton closed or filling, an order's MES status. `data-status` keeps the raw value; a
  * dash where the MES sent none (an order it no longer holds, or a MES before #364).
  */
 function ResultStatus({ result }: { readonly result: Result }) {
+  const testId = `result-status-${result.kind}-${result.id}`;
   const badge = (() => {
+    if (result.status === undefined || result.status === null) return undefined;
     switch (result.kind) {
       case 'serial':
-        return result.status === undefined ? undefined : <UnitStatusBadge status={result.status} />;
+        return <UnitStatusBadge status={result.status} />;
       case 'lot':
-        if (result.status === undefined) return undefined;
-        return result.status === 'active' ? (
-          <Badge tone="neutral" variant="outline" title="Listed by the ERP">
-            ERP listed
-          </Badge>
-        ) : (
-          <Badge tone="warn" title="No longer listed by the ERP">
-            ERP retired
-          </Badge>
-        );
+        return <LotErpBadge status={result.status} />;
       case 'carton':
-        if (result.status === undefined) return undefined;
-        return result.status === 'closed' ? (
-          <Badge tone="neutral" icon="check">
-            Closed
-          </Badge>
-        ) : (
-          <Badge tone="neutral" variant="outline" title="Still filling">
-            Open
-          </Badge>
-        );
+        return <CartonStateBadge status={result.status} />;
       case 'order':
-        if (result.status === undefined || result.status === null) return undefined;
-        return (
-          <Badge
-            tone={ORDER_STATUS_TONE[result.status]}
-            icon={result.status === 'completed' ? 'check' : undefined}
-          >
-            {ORDER_STATUS_TEXT[result.status]}
-          </Badge>
-        );
+        return <OrderStatusBadge order={{ status: result.status }} testId={null} />;
     }
   })();
   return (
-    <span
-      data-testid={`result-status-${result.kind}-${result.id}`}
-      data-status={result.status ?? ''}
-    >
+    <span data-testid={testId} data-status={result.status ?? ''}>
       {badge ?? <Missing reason="status not known" />}
     </span>
   );
@@ -132,27 +110,13 @@ function ResultStatus({ result }: { readonly result: Result }) {
 
 /** The order a result belongs to (#364): a serial's unit's, a carton's; a lot or an order has none. */
 function ResultOrder({ result }: { readonly result: Result }) {
-  const order = result.kind === 'serial' || result.kind === 'carton' ? result.order : undefined;
   const testId = `result-order-${result.kind}-${result.id}`;
-  if (order === undefined || order === null) {
-    const reason =
-      result.kind === 'lot'
-        ? 'a lot is used by any number of orders'
-        : result.kind === 'order'
-          ? 'the result is the order'
-          : 'no order known';
-    return <Missing reason={reason} testId={testId} />;
+  if (result.kind === 'lot') {
+    return <Missing reason="a lot is used by any number of orders" testId={testId} />;
   }
-  return (
-    <Link
-      to="/orders/$id"
-      params={{ id: order }}
-      className={`${linkClass} whitespace-nowrap`}
-      data-testid={testId}
-    >
-      <Code>{order}</Code>
-    </Link>
-  );
+  if (result.kind === 'order') return <Missing reason="the result is the order" testId={testId} />;
+  if (result.order === undefined) return <Missing reason="no order known" testId={testId} />;
+  return <OrderLink order={result.order} testId={testId} />;
 }
 
 /** "4 results: 2 serials, 1 lot, 1 order", counted by kind in the table's order. */

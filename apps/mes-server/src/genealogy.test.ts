@@ -24,7 +24,7 @@ import type { EquipmentPath } from '@shopfloor/contracts';
 import { loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
 import type { Kysely } from 'kysely';
 import type { StartedTestContainer } from 'testcontainers';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Database } from './db/database.ts';
 import { buildMesHttp } from './http.ts';
 import {
@@ -586,10 +586,21 @@ describe('genealogy: lots, links, incidents and cartons (#199)', () => {
     expect(await h.genealogy.search('VB-100-0000')).toEqual([
       { kind: 'serial', id: 'VB-100-000001', status: 'packed', order: 'X-1' },
     ]);
+    // The orders' statuses in one read, never one order at a time (#364 review).
+    const statuses = vi.spyOn(h.orders, 'statuses');
+    const single = vi.spyOn(h.orders, 'order');
     expect(await h.genealogy.search('X-1')).toEqual([
       { kind: 'carton', id: 'X-1-C01', status: 'closed', order: 'X-1' },
       { kind: 'order', id: 'X-1', status: 'completed', order: null },
     ]);
+    expect([statuses.mock.calls, single.mock.calls.length]).toEqual([[[['X-1']]], 0]);
+    statuses.mockRestore();
+    single.mockRestore();
+    // An order the orders module doesn't hold is absent from the batch, its status null.
+    expect(await h.orders.statuses(['X-1', 'NOPE', 'X-1'])).toEqual(
+      new Map([['X-1', 'completed']]),
+    );
+    expect(await h.orders.statuses([])).toEqual(new Map());
     expect(await h.genealogy.search('K')).toEqual([
       { kind: 'lot', id: 'K1', status: 'active', order: null },
       { kind: 'lot', id: 'K2', status: 'active', order: null },

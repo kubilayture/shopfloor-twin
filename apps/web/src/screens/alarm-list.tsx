@@ -1082,7 +1082,7 @@ export function AlarmList() {
 
       <div
         className={
-          panelOpen && wide ? 'grid grid-cols-[minmax(0,1fr)_25rem] items-start gap-6' : undefined
+          panelOpen && wide ? 'grid grid-cols-[minmax(0,1fr)_25rem] items-start gap-4' : undefined
         }
       >
         <div className="min-w-0">

@@ -312,6 +312,7 @@ async function harness(name: string): Promise<Harness> {
         userId: change.crew.userId,
         workCenter: change.crew.workCenter,
         until: change.crew.to ?? new Date(),
+        crewId: change.crew.id,
       });
     }
   });
@@ -606,7 +607,7 @@ describe('operator activity and operation sign-off (#177)', () => {
       locked = resolve;
     });
     const holder = h.db.transaction().execute(async (trx) => {
-      expect(await lockCrew(trx, 'line-a1')).toBe(true);
+      expect(await lockCrew(trx, 'line-a1')).toBeTypeOf('number');
       locked();
       await held;
     });
@@ -730,7 +731,25 @@ describe('operator activity and operation sign-off (#177)', () => {
       from: workFrom,
       to: workFrom,
     });
-    expect(pause).toMatchObject({ kind: 'pause', to: null });
+    // The pause starts where the work ended, not at the clock an hour earlier: the two intervals
+    // never overlap (#366).
+    expect(pause).toMatchObject({ kind: 'pause', from: workFrom, to: null });
+    // A resume after the step: the same, the work again from the pause's end.
+    await h.orders.resumeWork('G-1', 'OP30', { activity: pause?.id ?? 0 }, olga);
+    const [resumed, closedPause] = await h.orders.activities({ orderId: 'G-1', operation: 'OP30' });
+    expect(closedPause).toMatchObject({ kind: 'pause', from: workFrom, to: workFrom });
+    expect(resumed).toMatchObject({ kind: 'work', from: workFrom, to: null });
+    // In the database too, at full precision: each interval starts where the one before ended.
+    const { rows: gaps } = await sql<{ chained: boolean }>`
+      SELECT a.from_at = b.to_at AS chained
+      FROM orders.operation_activity a
+      JOIN orders.operation_activity b ON b.id = (
+        SELECT max(id) FROM orders.operation_activity
+        WHERE order_id = a.order_id AND operation = a.operation AND user_id = a.user_id
+          AND id < a.id
+      )
+      WHERE a.order_id = 'G-1' AND a.operation = 'OP30'`.execute(h.db);
+    expect(gaps.map((g) => g.chained)).toEqual([true, true]);
     // A crew end (and so an orphan closure): the same.
     const crewFrom = await ahead('OP40');
     expect(
@@ -742,6 +761,93 @@ describe('operator activity and operation sign-off (#177)', () => {
     ).toBe(2);
     const [ended] = await h.orders.activities({ orderId: 'G-1', operation: 'OP40' });
     expect(ended).toMatchObject({ endReason: 'crew-ended', from: crewFrom, to: crewFrom });
+  });
+});
+
+describe('crew ends close the intervals of their crew row (#366)', () => {
+  it('closes by the crew row an interval was started under, whatever the clocks say, and never a newer sign-on’s', async () => {
+    const h = await harness('crew_row');
+    await started(h, 'J-1');
+    await h.shifts.tick();
+    const signedOn = async (session: string) => {
+      const crew = await h.shifts.signOn('line-a1', h.olga, session);
+      const lockCrew = (trx: Transaction<Database>, workCenter: string) =>
+        h.shifts.lockCrew(trx, { userId: h.olga.userId, workCenter, sessionId: session });
+      return { crew, olga: { by: h.olga, requestId: 'r', lockCrew } };
+    };
+    const open = (operation: string) =>
+      h.db
+        .selectFrom('orders.operation_activity')
+        .select(['id', 'crew_id', 'from_at', 'end_reason'])
+        .where('order_id', '=', 'J-1')
+        .where('operation', '=', operation)
+        .orderBy('id', 'desc')
+        .executeTakeFirstOrThrow();
+    // The clock steps by an hour after a start (moved here, as in the #344 test).
+    const step = (operation: string, by: string) =>
+      h.db
+        .updateTable('orders.operation_activity')
+        .set({ from_at: sql<Date>`clock_timestamp() + ${by}::interval` })
+        .where('order_id', '=', 'J-1')
+        .where('operation', '=', operation)
+        .where('to_at', 'is', null)
+        .execute();
+    const first = await signedOn('a'.repeat(64));
+    await h.orders.startWork('J-1', 'OP30', { activity: null }, first.olga);
+    // The interval carries the crew row it was started under.
+    expect((await open('OP30')).crew_id).toBe(first.crew.id);
+    // The clock steps back after the start: the crew row's end, by the clock, precedes it. A crew
+    // end still closes it, by the row (a time comparison left it open until the orphan sweep).
+    await step('OP30', '1 hour');
+    const end = await dbNow(h);
+    expect(
+      await h.orders.endActivities({
+        userId: h.olga.userId,
+        workCenter: 'line-a1',
+        until: end,
+        crewId: first.crew.id,
+      }),
+    ).toBe(1);
+    expect((await open('OP30')).end_reason).toBe('crew-ended');
+    // A new sign-on (it ends the first row), new work, and a clock that stepped forward before it:
+    // the new work's start lies before the first row's end. A late notice of the first row's end
+    // never closes it.
+    const second = await signedOn('b'.repeat(64));
+    expect(second.crew.id).not.toBe(first.crew.id);
+    await h.orders.startWork('J-1', 'OP40', { activity: null }, second.olga);
+    await step('OP40', '-1 hour');
+    expect(
+      await h.orders.endActivities({
+        userId: h.olga.userId,
+        workCenter: 'line-a1',
+        until: end,
+        crewId: first.crew.id,
+      }),
+    ).toBe(0);
+    expect(await open('OP40')).toMatchObject({ crew_id: second.crew.id, end_reason: null });
+  });
+
+  it('judges an interval without a crew row by time in whole milliseconds, as the crew end was read', async () => {
+    const h = await harness('crew_ms');
+    await started(h, 'K-1');
+    // Without the crew check (as before #366): no crew row on the interval.
+    await h.orders.startWork('K-1', 'OP30', { activity: null }, { by: h.olga, requestId: 'r' });
+    // Started in the crew end's millisecond, half a millisecond after it: the end read back as a
+    // Date (milliseconds) is earlier than the start (microseconds).
+    const { rows } = await sql<{ at: Date }>`
+      UPDATE orders.operation_activity
+      SET from_at = date_trunc('milliseconds', clock_timestamp()) + interval '500 microseconds'
+      WHERE order_id = 'K-1' AND operation = 'OP30'
+      RETURNING date_trunc('milliseconds', from_at) AS at`.execute(h.db);
+    const until = rows[0]?.at ?? new Date();
+    expect(
+      await h.orders.endActivities({
+        userId: h.olga.userId,
+        workCenter: 'line-a1',
+        until,
+        crewId: 999_999,
+      }),
+    ).toBe(1);
   });
 });
 
@@ -1031,6 +1137,15 @@ describe('the terminal view after a change (#190 re-review)', () => {
     const before = cell.filter((d) => d.at <= changed && d !== scrapped).at(-1)?.at;
     const allowed = Math.max(changed, before === undefined ? 0 : before + PACE_MS);
     expect((scrapped?.at ?? Infinity) - allowed).toBeLessThan(1_500 + maxLagMs);
+    // What the client ends up showing (#366): quiet again for more than a pace, so anything still
+    // computed has gone out, and the last Cell M1 view it received has the scrap. A view computed
+    // before the change and sent after the scrap would leave it stale.
+    for (let seen = -1; seen !== cellM1At();) {
+      seen = cellM1At();
+      await new Promise((r) => setTimeout(r, 2_100));
+    }
+    const last = sent.filter((m) => 'view' in m && m.topic === 'terminal:cell-m1').at(-1);
+    expect(last !== undefined && scrapAtCell(last)).toBe(true);
   }, 180_000);
 
   it('drops the kept execution on every change of the execution module (no clock involved)', async () => {

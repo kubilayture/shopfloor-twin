@@ -38,6 +38,7 @@ import {
   IdText,
   InvalidId,
   LotList,
+  LotErpBadge,
   OrderLink,
   SerialLink,
   TRACE_BACK,
@@ -65,15 +66,7 @@ function ErpStatus({ master }: { readonly master: LotTraceDto['master'] }) {
       </Badge>
     );
   }
-  return master.status === 'active' ? (
-    <Badge tone="neutral" variant="outline" title="Listed by the ERP">
-      ERP listed
-    </Badge>
-  ) : (
-    <Badge tone="warn" title="No longer listed by the ERP">
-      ERP retired
-    </Badge>
-  );
+  return <LotErpBadge status={master.status} />;
 }
 
 /** The lot's key facts, in the header (`lot-master` keeps the ERP's raw status and quantity). */

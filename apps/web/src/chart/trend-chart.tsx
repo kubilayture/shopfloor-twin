@@ -35,11 +35,18 @@ export function trendReading(label: string, data: ChartData, unit: string): stri
 /**
  * A metric's trend: a min/max band with the average line. uPlot is loaded with the first chart,
  * so the overview doesn't download it. The latest values are in the metrics table as text.
+ *
+ * Not printed (UX-12, #336): the canvas would print as drawn on screen, so from the dark theme
+ * with dark-theme strokes (its repaint after `beforeprint` comes too late); the metrics table
+ * carries the numbers on paper.
  */
 export function TrendChart({ label, ...props }: TrendChartProps & { readonly label: string }) {
   const points = props.data[0].length;
   return (
-    <figure className="min-w-0 rounded-lg border border-line bg-surface p-3">
+    <figure
+      className="min-w-0 rounded-lg border border-line bg-surface p-3 print:hidden"
+      data-print="hidden"
+    >
       <figcaption className="mb-2 font-semibold text-ink">
         {label} <span className="font-normal text-ink-secondary">({props.unit})</span>
         <span className="sr-only">

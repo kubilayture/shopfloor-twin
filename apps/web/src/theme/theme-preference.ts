@@ -55,6 +55,15 @@ export function bootTheme(key: string, query: string): void {
   document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
 }
 
+/**
+ * The boot script exactly as it ships: `bootTheme`'s own source called with the key and the query.
+ * `vite.config.ts` emits it (and runs it once in a bare context, so a helper the transpiler adds
+ * fails the build), and `theme-preference.test.ts` runs the same string.
+ */
+export function bootScriptSource(): string {
+  return `(${bootTheme.toString()})(${JSON.stringify(THEME_STORAGE_KEY)}, ${JSON.stringify(DARK_QUERY)});\n`;
+}
+
 const isPreference = (value: unknown): value is ThemePreference =>
   value === 'system' || value === 'light' || value === 'dark';
 

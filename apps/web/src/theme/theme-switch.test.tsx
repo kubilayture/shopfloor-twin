@@ -33,6 +33,8 @@ describe('ThemeMenu (top bar)', () => {
     expect(trigger.getAttribute('aria-haspopup')).toBe('menu');
     expect(trigger.getAttribute('title')).toBe('Theme: System');
     expect(trigger.querySelector('[data-icon="monitor"]')).not.toBeNull();
+    // The list has a stable name; the choice is in its checked item and the button's name.
+    expect(screen.getByRole('menu').getAttribute('aria-label')).toBe('Theme');
     fireEvent.click(trigger);
     await flushOverlayEvents();
     const choices = screen.getAllByRole('menuitemradio');

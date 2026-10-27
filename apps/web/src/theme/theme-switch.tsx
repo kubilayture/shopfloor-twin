@@ -39,6 +39,7 @@ export function ThemeMenu() {
   return (
     <Menu
       label={`Theme: ${LABELS[preference]}`}
+      menuLabel="Theme"
       icon={ICONS[preference]}
       surface="dark"
       align="end"

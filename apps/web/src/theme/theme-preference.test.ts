@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  bootScriptSource,
   bootTheme,
   currentTheme,
   DARK_QUERY,
@@ -93,10 +94,9 @@ function runScript(source: string): void {
 
 describe('bootTheme, the script in <head>', () => {
   /** Runs it as the build emits it: its own source, called with the key and the query. */
+  /** Runs the script exactly as `vite.config.ts` emits it. */
   const boot = () => {
-    runScript(
-      `(${bootTheme.toString()})(${JSON.stringify(THEME_STORAGE_KEY)}, ${JSON.stringify(DARK_QUERY)});`,
-    );
+    runScript(bootScriptSource());
   };
 
   it.each([

@@ -248,6 +248,8 @@ describe('Menu', () => {
     expect(trigger.querySelector('svg[data-icon="sun"]')).not.toBeNull();
     // The list is a light surface, so its ring is `focus`, not `focus-on-dark`.
     expect(screen.getByRole('menu').getAttribute('data-surface')).toBe('light');
+    // Without `menuLabel` the list takes the button's label.
+    expect(screen.getByRole('menu').getAttribute('aria-label')).toBe('Theme');
     fireEvent.click(trigger);
     await flushOverlayEvents();
     expect(screen.queryAllByRole('menuitem')).toHaveLength(0);

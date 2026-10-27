@@ -40,6 +40,11 @@ export interface MenuProps {
   readonly items: readonly MenuItem[];
   readonly align?: 'start' | 'end';
   readonly testId?: string | undefined;
+  /**
+   * The open list's name when the button's label carries a state ("Theme: Dark" names the button,
+   * "Theme" the list, whose checked item says the state). By default the button's label.
+   */
+  readonly menuLabel?: string;
   /** The trigger's ground: `dark` for the top bar (an icon trigger only). */
   readonly surface?: 'light' | 'dark';
 }
@@ -71,6 +76,7 @@ export function Menu({
   align = 'start',
   testId,
   surface = 'light',
+  menuLabel,
 }: MenuProps) {
   const menuId = useId();
   const trigger = useRef<HTMLButtonElement>(null);
@@ -195,7 +201,7 @@ export function Menu({
         id={menuId}
         popover="auto"
         role="menu"
-        aria-label={label}
+        aria-label={menuLabel ?? label}
         // A light surface even when the trigger sits on the dark top bar: the ring is `focus`.
         data-surface="light"
         onKeyDown={onMenuKey}

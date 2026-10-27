@@ -44,6 +44,12 @@ const FILES = [
   // Order actions and order OEE (UX-6b, #329).
   'screens/order-actions.tsx',
   'screens/order-oee.tsx',
+  // The traceability screens (UX-8, #331).
+  'screens/trace-common.tsx',
+  'screens/trace-search.tsx',
+  'screens/trace-serial.tsx',
+  'screens/trace-lot.tsx',
+  'screens/trace-carton.tsx',
   // Quality holds (UX-9b, #333).
   'screens/holds.tsx',
 ];

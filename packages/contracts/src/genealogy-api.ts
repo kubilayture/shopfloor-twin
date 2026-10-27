@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { UNIT_STATUSES } from './execution-api.ts';
+import { ORDER_STATUSES } from './orders-api.ts';
 
 // The MES's `genealogy` API (#199, Phase 8 plan "Genealogy", ADR-0034): lots imported from the ERP,
 // units by serial, cartons formed by the packing rule, and the backward and forward trace queries,
@@ -124,7 +126,7 @@ export const traceUnitSchema = z
     serial: z.string().nullable(),
     product: z.string(),
     orderId: z.string().nullable(),
-    status: z.enum(['wip', 'packed', 'scrapped', 'lost']),
+    status: z.enum(UNIT_STATUSES),
     carton: z.string().nullable(),
     records: z.array(traceRecordSchema),
     holds,
@@ -157,7 +159,7 @@ export const unitRefSchema = z.object({
   serial: z.string().nullable(),
   orderId: z.string().nullable(),
   carton: z.string().nullable(),
-  status: z.enum(['wip', 'packed', 'scrapped', 'lost']),
+  status: z.enum(UNIT_STATUSES),
 });
 
 export const lotTraceSchema = z
@@ -205,17 +207,61 @@ export const cartonTraceSchema = z
   })
   .describe('`GET /trace/cartons/{id}`: a carton and its members');
 
+/**
+ * One search result (#364): its kind and id, and since #364 its status and the order it belongs to,
+ * so a list of results can be told apart without opening each. Both are optional (additive to the
+ * answer of #199: a server before #364 sends neither) and null where the kind has none.
+ */
+const searchResult = <K extends (typeof TRACE_SEARCH_KINDS)[number], S extends z.ZodType>(
+  kind: K,
+  status: S,
+  order: z.ZodType<string | null>,
+) =>
+  z.object({
+    kind: z.literal(kind),
+    id: z.string(),
+    status: status.optional(),
+    order: order.optional(),
+  });
+
+export const traceSearchResultSchema = z.discriminatedUnion('kind', [
+  searchResult(
+    'serial',
+    z
+      .enum(UNIT_STATUSES)
+      .describe(
+        'The status of the newest unit with this serial (highest device epoch; serials repeat across runs)',
+      ),
+    z.string().nullable().describe('The order of that unit; null when its job named none'),
+  ),
+  searchResult(
+    'lot',
+    z.enum(LOT_STATUSES).describe('The lot’s status as imported from the ERP'),
+    z.null().describe('Null: a lot is used by any number of orders (its forward trace lists them)'),
+  ),
+  searchResult(
+    'carton',
+    z.enum(CARTON_STATUSES),
+    z.string().describe('The order the carton was formed for'),
+  ),
+  searchResult(
+    'order',
+    z
+      .enum(ORDER_STATUSES)
+      .nullable()
+      .describe('The order’s MES status; null when the orders module no longer holds it'),
+    z.null().describe('Null: the result is the order itself'),
+  ),
+]);
+
 export const traceSearchSchema = z
   .object({
     q: z.string(),
-    results: z.array(
-      z.object({
-        kind: z.enum(TRACE_SEARCH_KINDS),
-        id: z.string(),
-      }),
-    ),
+    results: z.array(traceSearchResultSchema),
   })
-  .describe('`GET /trace/search?q=`: serials, lots, cartons and orders starting with q');
+  .describe(
+    '`GET /trace/search?q=`: serials, lots, cartons and orders starting with q, each with its status and order (#364)',
+  );
 
 export const genealogyIncidentSchema = z.object({
   id: int,
@@ -244,4 +290,5 @@ export type CartonDto = z.infer<typeof cartonSchema>;
 export type HoldRefDto = z.infer<typeof holdRefSchema>;
 export type CartonTraceDto = z.infer<typeof cartonTraceSchema>;
 export type TraceSearchDto = z.infer<typeof traceSearchSchema>;
+export type TraceSearchResultDto = z.infer<typeof traceSearchResultSchema>;
 export type GenealogyIncidentDto = z.infer<typeof genealogyIncidentSchema>;

@@ -158,7 +158,7 @@ describe('DataTable markup', () => {
   });
 
   it('marks an abnormal row with its tone bar and the active row with aria-current and accent', () => {
-    render(
+    const { rerender } = render(
       table({
         rows: [alarm(1), alarm(2, 'acknowledged'), alarm(3)],
         rowTone: (row) => (row.state === 'unacknowledged' ? 'alarm' : undefined),
@@ -174,9 +174,49 @@ describe('DataTable markup', () => {
     const active = screen.getByTestId('alarm-row-a3');
     expect(active.getAttribute('aria-current')).toBe('true');
     expect(active.className).toMatch(/\bbg-accent-subtle\b/);
-    // The active bar wins over the tone bar.
-    expect(active.querySelector('td')?.className).toContain('var(--color-accent)');
-    expect(active.querySelector('td')?.className).not.toContain('alarm-border');
+    // An open abnormal row keeps its tone bar; the accent fill marks it open.
+    expect(active.querySelector('td')?.className).toContain('alarm-border');
+    expect(active.querySelector('td')?.className).not.toContain('var(--color-accent)');
+    // An open normal row takes the accent bar.
+    rerender(
+      table({
+        rows: [alarm(1), alarm(2, 'acknowledged'), alarm(3)],
+        rowTone: (row) => (row.state === 'unacknowledged' ? 'alarm' : undefined),
+        activeRowKey: 'a2',
+      }),
+    );
+    const open = screen.getByTestId('alarm-row-a2');
+    expect(open.className).toMatch(/\bbg-accent-subtle\b/);
+    expect(open.querySelector('td')?.className).toContain('var(--color-accent)');
+  });
+
+  it('makes an emphasised row bold in every cell, its row header included (rowEmphasis)', () => {
+    render(
+      table({
+        rows: [alarm(1), alarm(2, 'acknowledged')],
+        columns: [
+          { key: 'code', header: 'Alarm', rowHeader: true, cell: (row) => row.code },
+          ...COLUMNS.slice(1),
+        ],
+        rowEmphasis: (row) => row.state === 'unacknowledged',
+      }),
+    );
+    const cells = (id: string) => [
+      ...screen.getByTestId(`alarm-row-${id}`).querySelectorAll<HTMLElement>('th, td'),
+    ];
+    expect(cells('a1').map((cell) => /\bfont-semibold\b/.test(cell.className))).toEqual([
+      true,
+      true,
+      true,
+    ]);
+    expect(cells('a1')[0]?.className).not.toMatch(/\bfont-normal\b/);
+    // A plain row: the row header normal weight, the other cells inherit.
+    expect(cells('a2').map((cell) => /\bfont-semibold\b/.test(cell.className))).toEqual([
+      false,
+      false,
+      false,
+    ]);
+    expect(cells('a2')[0]?.className).toMatch(/\bfont-normal\b/);
   });
 
   it('keeps a sticky first column above the cells it scrolls over', () => {
@@ -873,6 +913,19 @@ describe('DataTable on narrow screens', () => {
     narrowScreen(false);
     render(table({ rows: rowsOf(2), narrow: 'stack' }));
     expect(screen.getByRole('table')).toBeTruthy();
+  });
+
+  it('makes an emphasised stacked card bold', () => {
+    narrowScreen(true);
+    render(
+      table({
+        rows: [alarm(1), alarm(2, 'acknowledged')],
+        narrow: 'stack',
+        rowEmphasis: (row) => row.state === 'unacknowledged',
+      }),
+    );
+    expect(screen.getByTestId('alarm-row-a1').className).toMatch(/\bfont-semibold\b/);
+    expect(screen.getByTestId('alarm-row-a2').className).not.toMatch(/\bfont-semibold\b/);
   });
 
   it('keeps selection in the stacked cards', () => {

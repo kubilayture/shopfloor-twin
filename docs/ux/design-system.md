@@ -87,7 +87,7 @@ Five tones serve every status in the app. Each has an ink (text on the soft back
 
 Borders are given on white; on the canvas (`#f1f5f9`) the lowest is `info` at 4.72:1, still above 3:1. `info` (royal blue) and the accent (sky, `#075985`) are different hues so a status never looks like a link or a button.
 
-`ok` (green) is used sparingly: "final" and "completed" are normal and stay `neutral`. Green appears where a person made something good happen (a hold released) or a limit check passed ("Acceptable").
+`ok` (green) is used sparingly: "final" and "completed" are normal and stay `neutral`. Green appears where a person made something good happen (a hold released). A benchmark met is normal, so it stays `neutral`: the EEMUA 191 alarm rate verdict is Acceptable `neutral`, Manageable `warn`, Over the benchmark `alarm` (`RATE_VERDICT` in `domain/alarms.ts`, UX-4b; the alarm KPIs and the shift report use it).
 
 ### 2.4 Machine states
 
@@ -120,7 +120,7 @@ The light solid fills (Starved, Blocked, and the medium alarm priority) carry a 
 | Medium   | solid `#fbbf24`, text `#451a03`, border `#b45309` | ▲     | 8.97     |
 | Low      | white, border `#2563eb`, text `#1e40af`           | ●     | 8.72     |
 
-The glyphs are today's (`PriorityBadge`). An unacknowledged alarm's row has a 4 px left bar in its priority's border colour and bold text; acknowledged rows are plain (A-03).
+The glyphs are today's (`PriorityBadge`). An unacknowledged alarm's row has a 3 px left bar in its priority's border colour (the `DataTable` tone bar: `alarm`, `warn`, `info` for high, medium, low) and bold text, also while its detail is open; acknowledged rows are plain (A-03).
 
 ### 2.6 Finality and other statuses
 
@@ -316,7 +316,7 @@ One-line description, max 90 characters.            (optional)
 
 - **Sections:** `Section` = `h2` (`text-lg`) + optional description + optional actions + content; 32 px apart. Nested sections take `level={3}` (`h3`, `text-base`, 24 px apart) or `level={4}` (`h4`, `text-sm`, 16 px). A section with a finality has its badge beside the title.
 - **Cards** for groups of facts and charts; **tables** (in a `DataTable`, which brings its own card frame) for lists. A page never mixes a bare table with carded ones (G-07, M-03).
-- **List and detail** (downtime coding, alarms): at `wide` (≥ 1440 px) the detail is a sticky side panel of 400 px (`top: 64px`, max height the viewport, scrolls itself), rendered only while an item is selected, which leaves the table about 740 px; with nothing selected the table takes the full width (G-26). Below `wide`, including 1280 (the Playwright and demo width, where a panel would leave the table about 520 px), the detail opens as a full-height side sheet (a `Dialog` with `variant="sheet"`, 440 px, full width below `md`) over the list. Decision: the sheet below 1440, not a narrower panel with an icon-rail nav, because an icon rail would hide the nav's words at the width the demo is recorded at. The URL parameter (`?record=`, `?alarm=`) and the panel's test ids (`coding-panel`, `alarm-panel`) are unchanged.
+- **List and detail** (downtime coding, alarms): at `wide` (≥ 1440 px) the detail is a sticky side panel of 400 px (`top: 64px`, max height the viewport, scrolls itself), rendered only while an item is selected, which leaves the table about 740 px; with nothing selected the table takes the full width (G-26). Below `wide`, including 1280 (the Playwright and demo width, where a panel would leave the table about 520 px), the detail opens as a full-height side sheet (a `Dialog` with `variant="sheet"`, 440 px, full width below `md`) over the list. Decision: the sheet below 1440, not a narrower panel with an icon-rail nav, because an icon rail would hide the nav's words at the width the demo is recorded at. The URL parameter (`?record=`, `?alarm=`) and the panel's test ids (`coding-panel`, `alarm-panel`) are unchanged. Both are one component, `DetailPanel` (`components/ui/detail-panel.tsx`, UX-4a): named by its `h2`, which takes the focus when it opens (the sheet's `Dialog` with `focusTitle`, so a phone's keyboard does not open on the first field), closed by Escape or its close button with the focus back on the opener (else the list's heading), and carrying the same `data-*` and test ids at every width.
 - **Long detail pages** (order, shift report, serial, lot, SPC chart): an in-page section index (`SectionNav`) under the header, sticky at `xl` as a row of anchor links; each section keeps its id and test id (Q-01, R-01).
 - **Key facts** (order, serial, carton, hold headers): a `DescriptionList` in a fixed number of columns per breakpoint (1 / 2 / 4) that flows by column, so the reading order never changes with the width; fields with no value are left out unless their absence is the information (Q-02).
 
@@ -418,7 +418,7 @@ interface StatProps {
   emphasis?: 'headline' | 'default' | 'compact'; // text-3xl / text-2xl / text-lg
   hint?: React.ReactNode; // below: the raw fraction, a comparison, "of 18"
   tone?: Tone; // colours the value only when abnormal (above a limit)
-  verdict?: { tone: Tone; text: string }; // e.g. Acceptable / Overloaded, as a Badge
+  verdict?: { tone: Tone; text: string }; // e.g. Acceptable / Over the benchmark, as a Badge
   testId?: string;
   valueTestId?: string; // keeps today's ids on the figure itself (e.g. `${id}-percent`)
   dataValue?: string; // raw value for tests (#295)
@@ -478,7 +478,7 @@ interface DataTableProps<Row> {
 ```
 
 - Header row: `surface-sunken`, `text-xs` 600 uppercase-free (sentence case), `ink-secondary`, a 1 px `line` bottom border; `th scope="col"`; right-aligned headers over right-aligned columns.
-- Rows: 1 px `line-subtle` dividers, no zebra (the dividers carry the rows; zebra fights the tone bars), hover `neutral-50`, the active row `accent-subtle` with a 3 px `accent` left bar (D-03).
+- Rows: 1 px `line-subtle` dividers, no zebra (the dividers carry the rows; zebra fights the tone bars), hover `neutral-50`, the active row `accent-subtle` with a 3 px `accent` left bar, or its tone bar when it has one (an open unacknowledged alarm stays marked; D-03).
 - Numbers right-aligned in tabular figures. Units: durations keep their unit in every cell ("30.0 min", as the demo walkthrough asserts on the Pareto table, and because durations mix scales); a column of measured values or counts with one unit puts it in the header ("Leak rate (Pa/min)") and the cells hold numbers only.
 - **Sticky header** (G-14): `position: sticky` works only when no ancestor between the header and the scrolling viewport clips overflow. So the frame has two modes, chosen by measuring (a `ResizeObserver` on the table against its frame):
   - the table fits its frame: the frame uses `overflow: clip` (not `auto` or `hidden`: clip makes no scroll box, and it keeps the header's fill inside the rounded corners), the header sticks to the page under the top bar (`top: 48px`);

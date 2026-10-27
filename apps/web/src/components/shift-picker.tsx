@@ -3,7 +3,8 @@ import { useQuery } from '@tanstack/react-query';
 import { useId } from 'react';
 import { getCurrentShift, getShifts } from '../api/client.ts';
 import { queryKeys } from '../api/queries.ts';
-import { PLANT_TIME_ZONE } from '../domain/time.ts';
+import { PLANT_TIME_ZONE, formatClockTime, formatPlantTime, plantDayOf } from '../domain/time.ts';
+import { PlantTime } from './ui/format.tsx';
 
 const HOUR = 3_600_000;
 /** How far back the shift picker reaches. */
@@ -40,6 +41,26 @@ export function shiftKeyLabel(key: string): string {
 export function shiftLabel(shift: ShiftInstanceDto): string {
   const day = shiftDay.format(new Date(`${shift.date}T00:00:00.000Z`));
   return `${day}, shift ${shift.shift} (${clock.format(new Date(shift.start))}–${clock.format(new Date(shift.end))})`;
+}
+
+/**
+ * A shift's span (design system 6.2): `Mon 12 Oct, 06:00 – 14:00` within one plant day, the date
+ * on both sides only across midnight (`Mon 12 Oct, 22:00 – Tue 13 Oct, 06:00`).
+ */
+export function ShiftSpan({ start, end }: { readonly start: string; readonly end: string }) {
+  const oneDay = plantDayOf(start) === plantDayOf(end);
+  return (
+    <>
+      <PlantTime at={start} seconds={false} /> –{' '}
+      {oneDay ? (
+        <time dateTime={end} title={formatPlantTime(end)} className="tabular-nums">
+          {formatClockTime(end)}
+        </time>
+      ) : (
+        <PlantTime at={end} seconds={false} />
+      )}
+    </>
+  );
 }
 
 export interface ShiftSelection {

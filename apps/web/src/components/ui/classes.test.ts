@@ -56,6 +56,12 @@ const FILES = [
   'screens/oee-dashboard.tsx',
   'screens/line-oee.tsx',
   'components/oee-ui.tsx',
+  // The alarm KPIs (UX-4b, #325).
+  'screens/alarm-kpi.tsx',
+  // SPC (UX-9a, #332).
+  'screens/spc.tsx',
+  // The alarm list (UX-4a, #324).
+  'screens/alarm-list.tsx',
 ];
 
 /** Utility prefixes: a literal with one of these is a class list. */
@@ -183,6 +189,9 @@ for (const id of [
 ]) {
   NOT_CLASSES.add(id);
 }
+
+/** UX-4b (#325): the alarm KPIs' `data-measure` name, which starts like a `max-*` class. */
+NOT_CLASSES.add('max-time-to-ack');
 
 const CLASSES = [...new Set([...FILES.flatMap(harvest), ...PASSED_IN])]
   .filter((c) => !NOT_CLASSES.has(c))

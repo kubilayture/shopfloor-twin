@@ -1,5 +1,5 @@
 import { useId, useRef, type KeyboardEvent, type ReactNode } from 'react';
-import { Badge } from './badge.tsx';
+import { Badge, type DataAttributes } from './badge.tsx';
 
 /**
  * Tabs (UX-1d1, #318; design system 4.6): a switch between views of one screen that keeps its
@@ -136,7 +136,7 @@ export function Tabs({ label, tabs, value, onChange, idPrefix, panelId, testId }
   );
 }
 
-export interface TabPanelProps {
+export interface TabPanelProps extends DataAttributes {
   /** The panel's id: `tabPanelId(idPrefix)` unless the tabs were given another `panelId`. */
   readonly id: string;
   /** The selected tab's id: `tabElementId(idPrefix, value)`. */
@@ -146,10 +146,14 @@ export interface TabPanelProps {
   readonly children: ReactNode;
 }
 
-/** The panel under `Tabs`: focusable (`tabindex="0"`) so the keyboard reaches a panel with no control. */
-export function TabPanel({ id, labelledBy, testId, className, children }: TabPanelProps) {
+/**
+ * The panel under `Tabs`: focusable (`tabindex="0"`) so the keyboard reaches a panel with no
+ * control. `data-*` pass through (the alarm list's `data-view` and `data-count`).
+ */
+export function TabPanel({ id, labelledBy, testId, className, children, ...data }: TabPanelProps) {
   return (
     <div
+      {...data}
       role="tabpanel"
       id={id}
       aria-labelledby={labelledBy}

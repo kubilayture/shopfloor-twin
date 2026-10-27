@@ -8,6 +8,7 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react';
+import type { DataAttributes } from './badge.tsx';
 import { Button, IconButton } from './button.tsx';
 import { focusableIn } from './overlay.ts';
 
@@ -30,8 +31,13 @@ import { focusableIn } from './overlay.ts';
  *   owner's own close is not taken for the browser's (H1).
  *
  * `variant="sheet"` is the full-height side sheet of list-and-detail screens below 1440 px
- * (design system 3.4): 440 px from the right, the full width below `md`. `size="touch"` is the
- * operator terminal's (UX-7, #330): a 20 px title, 16 px text and a 56 px close button.
+ * (design system 3.4): 440 px from the right, the full width below `md`. A detail sheet with no
+ * form to start in passes `focusTitle`: the focus starts on its title (a static element at the
+ * top, as the WAI-ARIA dialog pattern advises for a dialog of mostly content), not on the first
+ * field, which would open a phone's keyboard. `data-*` pass through to the `<dialog>`, and
+ * `closeTestId` names the close button, so a sheet keeps the test ids of the panel it stands in
+ * for (`alarm-panel`, `data-alarm`, `close-alarm`). `size="touch"` is the operator terminal's
+ * (UX-7, #330): a 20 px title, 16 px text and a 56 px close button.
  */
 export type DialogSize = 'md' | 'touch';
 
@@ -41,7 +47,7 @@ const SIZE = {
   touch: { title: 'text-xl', text: 'text-base', close: 'touch' },
 } as const;
 
-export interface DialogProps {
+export interface DialogProps extends DataAttributes {
   readonly open: boolean;
   readonly onClose: () => void;
   readonly title: ReactNode;
@@ -49,6 +55,10 @@ export interface DialogProps {
   readonly variant?: 'modal' | 'sheet' | undefined;
   readonly size?: DialogSize | undefined;
   readonly initialFocus?: RefObject<HTMLElement | null>;
+  /** The focus starts on the title (made focusable by script only) instead of the first control. */
+  readonly focusTitle?: boolean | undefined;
+  /** The close button's test id. */
+  readonly closeTestId?: string | undefined;
   /** Buttons, the primary last. */
   readonly footer?: ReactNode;
   readonly testId?: string | undefined;
@@ -85,13 +95,17 @@ export function Dialog({
   variant = 'modal',
   size = 'md',
   initialFocus,
+  focusTitle = false,
+  closeTestId,
   footer,
   testId,
   children,
+  ...data
 }: DialogProps) {
   const look = SIZE[size];
   const dialog = useRef<HTMLDialogElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const opener = useRef<HTMLElement | null>(null);
   const typed = useRef(false);
@@ -111,6 +125,7 @@ export function Dialog({
   const focusOnOpen = useEffectEvent(() => {
     const first =
       initialFocus?.current ??
+      (focusTitle ? heading.current : null) ??
       (content.current ? focusableIn(content.current)[0] : undefined) ??
       closeButton.current;
     first?.focus();
@@ -170,6 +185,7 @@ export function Dialog({
 
   return (
     <dialog
+      {...data}
       ref={dialog}
       data-testid={testId}
       data-variant={variant}
@@ -197,7 +213,12 @@ export function Dialog({
         <div className={`flex max-h-[inherit] flex-col${variant === 'sheet' ? ' h-full' : ''}`}>
           <header className="flex items-start justify-between gap-3 border-b border-line-subtle px-5 py-4">
             <div className="min-w-0">
-              <h2 id={titleId} className={`${look.title} font-semibold`}>
+              <h2
+                ref={heading}
+                id={titleId}
+                {...(focusTitle ? { tabIndex: -1 } : {})}
+                className={`${look.title} font-semibold`}
+              >
                 {title}
               </h2>
               {description === undefined ? null : (
@@ -212,6 +233,7 @@ export function Dialog({
               label="Close"
               variant="ghost"
               size={look.close}
+              data-testid={closeTestId}
               onClick={onClose}
             />
           </header>

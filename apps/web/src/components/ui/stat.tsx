@@ -44,6 +44,8 @@ export interface StatProps {
   readonly valueTestId?: string | undefined;
   /** The raw value for tests (#295). */
   readonly dataValue?: string | undefined;
+  /** `data-*` on the value's `dd` (the figure and its verdict), the markers a test reads (#295). */
+  readonly detailData?: DataAttributes | undefined;
 }
 
 export function Stat({
@@ -58,12 +60,13 @@ export function Stat({
   testId,
   valueTestId,
   dataValue,
+  detailData,
 }: StatProps) {
   const absent = missing !== undefined;
   return (
     <dl data-testid={testId} className="flex min-w-0 flex-col gap-0.5">
       <dt className="text-xs font-medium text-ink-secondary">{label}</dt>
-      <dd className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+      <dd {...detailData} className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
         <span
           data-testid={valueTestId}
           data-value={dataValue}

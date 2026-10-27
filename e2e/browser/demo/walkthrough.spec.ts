@@ -684,9 +684,19 @@ test('the demo walkthrough: eight scenes, each asserting what it shows', async (
         timeout: 30_000,
       });
       await expect(page.getByTestId('hold-orders')).toHaveText(order);
-      await expect(
-        page.getByTestId(`hold-unit-${String(episode.epoch)}-${String(episode.lastPart)}`),
-      ).toBeVisible({ timeout: 30_000 });
+      // The units are paged by 50 (#333): step the pager until the episode's last unit shows.
+      const unitRow = page.getByTestId(
+        `hold-unit-${String(episode.epoch)}-${String(episode.lastPart)}`,
+      );
+      const nextUnits = page
+        .getByRole('navigation', { name: "Units in the hold's scope: pages" })
+        .getByRole('button', { name: 'Next' });
+      await expect(async () => {
+        if (!(await unitRow.isVisible()) && (await nextUnits.count()) > 0) {
+          if (await nextUnits.isEnabled()) await nextUnits.click();
+        }
+        await expect(unitRow).toBeVisible({ timeout: 1_000 });
+      }).toPass({ timeout: 30_000 });
       const counts = page.getByTestId('hold-scope-counts');
       await expect(counts).toHaveAttribute('data-orders', '1');
       const units = Number(await counts.getAttribute('data-units'));

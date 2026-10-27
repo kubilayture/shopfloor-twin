@@ -3,11 +3,10 @@ import {
   type EquipmentDto,
   type OeeBucketDto,
   type Pareto,
-  type Ratio,
 } from '@shopfloor/contracts/mes-api';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearch } from '@tanstack/react-router';
-import { useEffect, useId, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { getOee, getPareto, getShiftOee, listEquipment, type OeeScope } from '../api/client.ts';
 import { queryKeys } from '../api/queries.ts';
 import { EChart } from '../chart/echart.tsx';
@@ -19,28 +18,57 @@ import {
   waterfallOption,
   waterfallReading,
 } from '../chart/oee-options.ts';
-import { useHeadingFocus } from '../components/heading-focus.ts';
+import { LossBadge } from '../components/loss-badge.tsx';
+import {
+  FlagBadges,
+  NA_REASON,
+  SectionFinality,
+  groupFinality,
+  itemFlags,
+  ratioStat,
+  type GroupFinality,
+} from '../components/oee-ui.tsx';
 import { QueryError } from '../components/query-error.tsx';
 import { ShiftPicker, useShiftSelection } from '../components/shift-picker.tsx';
+import { Badge } from '../components/ui/badge.tsx';
+import { Callout } from '../components/ui/callout.tsx';
+import { Card } from '../components/ui/card.tsx';
+import { Code } from '../components/ui/code.tsx';
+import { Select } from '../components/ui/controls.tsx';
+import { DataTable, type Column } from '../components/ui/data-table.tsx';
+import { Disclosure } from '../components/ui/disclosure.tsx';
+import { EmptyState } from '../components/ui/empty-state.tsx';
+import { Missing, Percent, PlantTime } from '../components/ui/format.tsx';
+import { PageHeader } from '../components/ui/page-header.tsx';
+import { Section } from '../components/ui/section.tsx';
+import { Skeleton } from '../components/ui/skeleton.tsx';
+import { KpiTile } from '../components/ui/stat.tsx';
 import {
   NOT_APPLICABLE,
   bottleneckMachines,
   bucketFlags,
   minutesText,
-  percentText,
   pickBucket,
   ratioText,
   secondsText,
   stepSign,
   waterfall,
+  type WaterfallStep,
 } from '../domain/oee.ts';
-import { formatClockTime, formatPlantTime } from '../domain/time.ts';
-import { useLiveDowntime, useLiveOee, useLiveSubscriptions } from '../live/live-context.tsx';
+import { formatClockTime, formatPlantTime, plantDayOf } from '../domain/time.ts';
+import {
+  useLiveDowntime,
+  useLiveOee,
+  useLiveOees,
+  useLiveSubscriptions,
+} from '../live/live-context.tsx';
 import { LineOeeCard, useLineOee } from './line-oee.tsx';
 
 const LIVE_REFRESH_MS = 30_000;
 /** A downtime push (a new record, a recode) rereads the Pareto, at most this often. */
 const PARETO_THROTTLE_MS = 2_000;
+
+type BottleneckState = 'known' | 'loading' | 'unknown';
 
 interface Names {
   readonly equipment: ReadonlyMap<string, EquipmentDto>;
@@ -72,224 +100,245 @@ function useShiftBucket(
   return pickBucket(rest, pushed?.key === shiftKey ? pushed : undefined);
 }
 
-function Flags({ bucket }: { readonly bucket: OeeBucketDto }) {
+/**
+ * `useShiftBucket` for a whole section at once, in the order of `ids`: the section says its
+ * finality once over the buckets it shows (E-03), and a table row's `data-oee` follows the push.
+ */
+function useShiftBuckets(
+  ids: readonly string[],
+  rest: readonly OeeBucketDto[],
+  shiftKey: string,
+): readonly (OeeBucketDto | undefined)[] {
+  const pushed = useLiveOees(ids);
+  return ids.map((id, index) => {
+    const shift = pushed[index]?.shift;
+    return pickBucket(
+      rest.find((bucket) => bucket.id === id),
+      shift?.key === shiftKey ? shift : undefined,
+    );
+  });
+}
+
+/** An availability loss in minutes (the dashboard's unit, as the waterfall and the Pareto). */
+function LossMinutes({
+  bucket,
+  kind,
+  testId,
+}: {
+  readonly bucket: OeeBucketDto;
+  readonly kind: 'own' | 'external';
+  readonly testId?: string;
+}) {
+  const losses = bucket.result.losses;
+  if (!losses) return <Missing reason="No planned busy time, so no losses" testId={testId} />;
   return (
-    <ul className="flex flex-wrap gap-1" aria-label="Status">
-      {bucketFlags(bucket).map((flag) => (
-        <li
-          key={flag.key}
-          title={flag.title}
-          data-flag={flag.key}
-          className={`rounded border px-1.5 text-xs font-medium ${
-            flag.key === 'final'
-              ? 'border-emerald-800 text-emerald-900'
-              : 'border-amber-700 text-amber-950'
-          }`}
-        >
-          {flag.text}
-        </li>
+    <span data-testid={testId} className="tabular-nums">
+      {minutesText(losses.availability[kind].total)}
+    </span>
+  );
+}
+
+interface CenterBottleneck {
+  readonly equipment: EquipmentDto | undefined;
+  readonly id: string;
+  readonly products: readonly string[];
+}
+
+/** The MES's bottleneck in a work center, or that it is not known yet (#233 review). */
+function CenterBottleneckNote({
+  id,
+  state,
+  bottlenecks,
+}: {
+  readonly id: string;
+  readonly state: BottleneckState;
+  readonly bottlenecks: readonly CenterBottleneck[];
+}) {
+  const frame = 'rounded-md bg-surface-sunken px-3 py-2 text-sm text-ink';
+  if (state !== 'known') {
+    return (
+      <p data-testid={`bottleneck-${id}`} data-state={state} className={frame}>
+        <span className="font-semibold">Bottleneck:</span>{' '}
+        {state === 'loading' ? 'loading…' : 'unknown (line OEE unavailable)'}
+      </p>
+    );
+  }
+  if (bottlenecks.length === 0) return null;
+  return (
+    <p
+      data-testid={`bottleneck-${id}`}
+      data-state="known"
+      data-equipment={bottlenecks.map((b) => b.id).join(',')}
+      className={frame}
+    >
+      <span className="font-semibold">Bottleneck:</span>{' '}
+      {bottlenecks.map((b, index) => (
+        <span key={b.id}>
+          {index > 0 ? '; ' : ''}
+          {b.equipment?.name ?? b.id} <Code className="whitespace-nowrap">{b.id}</Code> for{' '}
+          {b.products.join(', ')}
+        </span>
       ))}
-    </ul>
+      <span className="mt-0.5 block text-xs text-ink-secondary">
+        As the MES derives it. A work center’s OEE is time-weighted over its machines, not line
+        throughput: that is the line card.
+      </span>
+    </p>
   );
 }
 
-/** A ratio cell of the machine table: the four decimals, raw in `data-decimal` too (UX-1c). */
-function RatioTd({ ratio }: { readonly ratio: Ratio | null }) {
-  return (
-    <td className="px-2 py-1 text-right font-mono tabular-nums" data-decimal={ratioText(ratio)}>
-      {ratioText(ratio)}
-    </td>
-  );
-}
-
-function RatioRow({ label, ratio }: { readonly label: string; readonly ratio: Ratio | null }) {
-  return (
-    <>
-      <dt className="text-slate-700">{label}</dt>
-      <dd
-        className="text-right font-mono tabular-nums"
-        title={ratio?.fraction}
-        data-decimal={ratioText(ratio)}
-      >
-        {ratioText(ratio)}
-      </dd>
-    </>
-  );
-}
-
-function WorkCenterCard({
+function WorkCenterTile({
   id,
   name,
-  rest,
-  shiftKey,
+  bucket,
+  finality,
   bottlenecks,
   bottleneckState,
 }: {
   readonly id: string;
   readonly name: string;
-  readonly rest: OeeBucketDto | undefined;
-  readonly shiftKey: string;
+  readonly bucket: OeeBucketDto | undefined;
+  readonly finality: GroupFinality | undefined;
   /** Whether the MES's bottleneck is known yet (#233 review). */
-  readonly bottleneckState: 'known' | 'loading' | 'unknown';
+  readonly bottleneckState: BottleneckState;
   /** The MES's bottleneck machines in this work center, with their products (#233). */
-  readonly bottlenecks: readonly {
-    equipment: EquipmentDto | undefined;
-    id: string;
-    products: readonly string[];
-  }[];
+  readonly bottlenecks: readonly CenterBottleneck[];
 }) {
-  const bucket = useShiftBucket(id, rest, shiftKey);
   const result = bucket?.result;
-  const titleId = useId();
+  const flags = bucket ? itemFlags(bucketFlags(bucket), finality) : [];
   return (
-    <li>
-      <article
-        aria-labelledby={titleId}
-        data-testid={`oee-card-${id}`}
-        data-oee={result ? ratioText(result.oee) : NOT_APPLICABLE}
-        data-final={bucket ? String(bucket.final) : undefined}
-        className="flex h-full flex-col gap-3 rounded-lg border border-slate-300 bg-white p-4 shadow-sm"
-      >
-        <h3 id={titleId} className="font-semibold">
-          {name}
-        </h3>
-        {result ? (
-          <>
-            <p>
-              <span className="text-sm text-slate-700">OEE </span>
-              <span
-                className="text-3xl font-bold tabular-nums"
-                data-testid={`oee-value-${id}`}
-                data-decimal={ratioText(result.oee)}
-              >
-                {percentText(result.oee)}
-              </span>
-              <span
-                className="ml-2 font-mono text-sm text-slate-700"
-                data-decimal={ratioText(result.oee)}
-              >
-                {ratioText(result.oee)}
-              </span>
-            </p>
-            <dl className="grid grid-cols-[1fr_auto] gap-x-4 text-sm">
-              <RatioRow label="Availability" ratio={result.availability} />
-              <RatioRow label="Performance" ratio={result.performance} />
-              <RatioRow label="Quality" ratio={result.quality} />
-              <dt className="text-slate-700">Availability loss, own</dt>
-              <dd className="text-right tabular-nums" data-testid={`oee-own-${id}`}>
-                {result.losses ? minutesText(result.losses.availability.own.total) : NOT_APPLICABLE}
-              </dd>
-              <dt className="text-slate-700">Availability loss, external</dt>
-              <dd className="text-right tabular-nums" data-testid={`oee-external-${id}`}>
-                {result.losses
-                  ? minutesText(result.losses.availability.external.total)
-                  : NOT_APPLICABLE}
-              </dd>
-            </dl>
-            <Flags bucket={bucket} />
-          </>
-        ) : (
-          <p className="text-sm text-slate-700">No data for this shift.</p>
-        )}
-        {bottleneckState !== 'known' ? (
-          <p
-            data-testid={`bottleneck-${id}`}
-            data-state={bottleneckState}
-            className="rounded bg-slate-100 px-2 py-1 text-sm text-slate-900"
-          >
-            <span className="font-semibold">Bottleneck:</span>{' '}
-            {bottleneckState === 'loading' ? 'loading…' : 'unknown (line OEE unavailable)'}
-          </p>
-        ) : bottlenecks.length > 0 ? (
-          <p
-            data-testid={`bottleneck-${id}`}
-            data-state="known"
-            data-equipment={bottlenecks.map((b) => b.id).join(',')}
-            className="rounded bg-slate-100 px-2 py-1 text-sm text-slate-900"
-          >
-            <span className="font-semibold">Bottleneck:</span>{' '}
-            {bottlenecks.map((b, index) => (
-              <span key={b.id}>
-                {index > 0 ? '; ' : ''}
-                {b.equipment?.name ?? b.id} (<span className="font-mono">{b.id}</span>) for{' '}
-                {b.products.join(', ')}
-              </span>
-            ))}
-            , as the MES derives it. A work center&apos;s OEE is time-weighted over its machines,
-            not line throughput: that is the line card.
-          </p>
-        ) : null}
-      </article>
-    </li>
+    <KpiTile
+      title={name}
+      testId={`oee-card-${id}`}
+      data-oee={result ? ratioText(result.oee) : NOT_APPLICABLE}
+      data-final={bucket ? String(bucket.final) : undefined}
+      status={flags.length > 0 ? <FlagBadges flags={flags} /> : undefined}
+      headline={
+        result
+          ? ratioStat('OEE', result.oee, NA_REASON.oee, `oee-value-${id}`)
+          : { label: 'OEE', missing: 'No data for this shift' }
+      }
+      details={
+        result
+          ? [
+              ratioStat('Availability', result.availability, NA_REASON.availability),
+              ratioStat('Performance', result.performance, NA_REASON.performance),
+              ratioStat('Quality', result.quality, NA_REASON.quality),
+            ]
+          : []
+      }
+    >
+      {bucket && result ? (
+        <p className="text-sm text-ink-secondary">
+          Availability loss:{' '}
+          <span className="text-ink">
+            <LossMinutes bucket={bucket} kind="own" testId={`oee-own-${id}`} />
+          </span>{' '}
+          own ·{' '}
+          <span className="text-ink">
+            <LossMinutes bucket={bucket} kind="external" testId={`oee-external-${id}`} />
+          </span>{' '}
+          external
+        </p>
+      ) : null}
+      <CenterBottleneckNote id={id} state={bottleneckState} bottlenecks={bottlenecks} />
+    </KpiTile>
   );
 }
 
-function MachineRow({
-  id,
-  equipment,
-  rest,
-  shiftKey,
-  bottleneck,
-}: {
+interface MachineRow {
   readonly id: string;
+  readonly bucket: OeeBucketDto;
   readonly equipment: EquipmentDto | undefined;
-  readonly rest: OeeBucketDto;
-  readonly shiftKey: string;
   readonly bottleneck: boolean;
-}) {
-  const bucket = useShiftBucket(id, rest, shiftKey) ?? rest;
-  const { result } = bucket;
-  return (
-    <tr
-      data-testid={`oee-machine-${id}`}
-      data-oee={ratioText(result.oee)}
-      className="border-t border-slate-200"
-    >
-      <th scope="row" className="px-2 py-1 text-left font-medium">
-        {equipment?.name ?? id}{' '}
-        <span className="font-mono text-xs font-normal text-slate-700">{id}</span>
-        {bottleneck ? (
-          <span className="ml-1 rounded border border-slate-600 px-1 text-xs font-normal">
-            Bottleneck
-          </span>
-        ) : null}
-      </th>
-      <RatioTd ratio={result.oee} />
-      <RatioTd ratio={result.availability} />
-      <RatioTd ratio={result.performance} />
-      <RatioTd ratio={result.quality} />
-      <td className="px-2 py-1 text-right tabular-nums">
-        {result.losses ? minutesText(result.losses.availability.own.total) : NOT_APPLICABLE}
-      </td>
-      <td className="px-2 py-1 text-right tabular-nums">
-        {result.losses ? minutesText(result.losses.availability.external.total) : NOT_APPLICABLE}
-      </td>
-      <td className="px-2 py-1">
-        <Flags bucket={bucket} />
-      </td>
-    </tr>
-  );
+}
+
+/**
+ * The machine table's columns (design system 4.5): the name names the row (`th`), so the
+ * ratios are `td` 0 to 3 (the demo walkthrough reads `td` 1, the availability, by its
+ * `data-decimal`); the status column only when a row has something of its own to say (E-03).
+ */
+function machineColumns(
+  finality: GroupFinality | undefined,
+  withStatus: boolean,
+): readonly Column<MachineRow>[] {
+  const ratio = (
+    key: 'oee' | 'availability' | 'performance' | 'quality',
+    header: string,
+  ): Column<MachineRow> => ({
+    key,
+    header,
+    numeric: true,
+    cell: (row) => <Percent ratio={row.bucket.result[key]} na={NA_REASON[key]} />,
+  });
+  return [
+    {
+      key: 'machine',
+      header: 'Machine',
+      rowHeader: true,
+      cell: (row) => (
+        <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+          <span className="font-medium">{row.equipment?.name ?? row.id}</span>
+          <Code className="whitespace-nowrap text-ink-secondary">{row.id}</Code>
+          {row.bottleneck ? (
+            <Badge tone="neutral" variant="outline">
+              Bottleneck
+            </Badge>
+          ) : null}
+        </span>
+      ),
+    },
+    ratio('oee', 'OEE'),
+    ratio('availability', 'Availability'),
+    ratio('performance', 'Performance'),
+    ratio('quality', 'Quality'),
+    {
+      key: 'own',
+      header: 'Own loss',
+      numeric: true,
+      cell: (row) => <LossMinutes bucket={row.bucket} kind="own" />,
+    },
+    {
+      key: 'external',
+      header: 'External loss',
+      numeric: true,
+      cell: (row) => <LossMinutes bucket={row.bucket} kind="external" />,
+    },
+    ...(withStatus
+      ? [
+          {
+            key: 'status',
+            header: 'Status',
+            cell: (row: MachineRow) => {
+              const flags = itemFlags(bucketFlags(row.bucket), finality);
+              return flags.length > 0 ? (
+                <FlagBadges flags={flags} />
+              ) : (
+                <Missing reason="Nothing beyond the section’s status" />
+              );
+            },
+          },
+        ]
+      : []),
+  ];
 }
 
 function MachineTable({
-  buckets,
-  names: known,
-  shiftKey,
-  bottlenecks,
+  rows,
+  finality,
   bottleneckState,
 }: {
-  readonly buckets: readonly OeeBucketDto[];
-  readonly names: Names;
-  readonly shiftKey: string;
-  readonly bottlenecks: ReadonlyMap<string, readonly string[]>;
-  readonly bottleneckState: 'known' | 'loading' | 'unknown';
+  readonly rows: readonly MachineRow[];
+  readonly finality: GroupFinality | undefined;
+  readonly bottleneckState: BottleneckState;
 }) {
-  if (buckets.length === 0) return <p className="mt-2 text-sm">No machine has data yet.</p>;
+  const withStatus = rows.some((row) => itemFlags(bucketFlags(row.bucket), finality).length > 0);
+  const columns = useMemo(() => machineColumns(finality, withStatus), [finality, withStatus]);
   return (
-    <>
+    <div className="flex flex-col gap-2">
       {bottleneckState !== 'known' ? (
         <p
-          className="mt-2 text-sm"
+          className="text-sm text-ink-secondary"
           data-testid="machine-bottleneck-state"
           data-state={bottleneckState}
         >
@@ -297,53 +346,65 @@ function MachineTable({
           {bottleneckState === 'loading' ? 'loading…' : 'unknown (line OEE unavailable)'}
         </p>
       ) : null}
-      <div className="relative mt-2 overflow-x-auto rounded-lg border border-slate-300 bg-white">
-        <table className="w-full min-w-[44rem] text-sm">
-          <caption className="sr-only">OEE per machine for the selected shift</caption>
-          <thead className="bg-slate-100 text-left">
-            <tr>
-              <th scope="col" className="px-2 py-1">
-                Machine
-              </th>
-              <th scope="col" className="px-2 py-1 text-right">
-                OEE
-              </th>
-              <th scope="col" className="px-2 py-1 text-right">
-                A
-              </th>
-              <th scope="col" className="px-2 py-1 text-right">
-                P
-              </th>
-              <th scope="col" className="px-2 py-1 text-right">
-                Q
-              </th>
-              <th scope="col" className="px-2 py-1 text-right">
-                Own loss
-              </th>
-              <th scope="col" className="px-2 py-1 text-right">
-                External loss
-              </th>
-              <th scope="col" className="px-2 py-1">
-                Status
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {buckets.map((bucket) => (
-              <MachineRow
-                key={bucket.id}
-                id={bucket.id}
-                equipment={known.equipment.get(bucket.id)}
-                rest={bucket}
-                shiftKey={shiftKey}
-                bottleneck={bottlenecks.has(bucket.id)}
-              />
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </>
+      <DataTable
+        caption="OEE per machine for the selected shift"
+        testId="machine-oee-table"
+        columns={columns}
+        rows={rows}
+        rowKey={(row) => row.id}
+        rowTestId={(row) => `oee-machine-${row.id}`}
+        rowProps={(row) => ({ 'data-oee': ratioText(row.bucket.result.oee) })}
+        narrow="stack"
+        empty={
+          <div className="px-4">
+            <EmptyState size="inline" icon="info" title="No machine has data for this shift yet" />
+          </div>
+        }
+      />
+    </div>
   );
+}
+
+/** The hourly values' columns: the status only when an hour has something of its own (E-03). */
+function hourColumns(
+  finality: GroupFinality | undefined,
+  withStatus: boolean,
+): readonly Column<OeeBucketDto>[] {
+  return [
+    {
+      key: 'hour',
+      header: 'Hour',
+      rowHeader: true,
+      nowrap: true,
+      cell: (hour) => (
+        <time dateTime={hour.start} className="tabular-nums">
+          {formatClockTime(hour.start)}
+        </time>
+      ),
+    },
+    {
+      key: 'oee',
+      header: 'OEE',
+      numeric: true,
+      cell: (hour) => <Percent ratio={hour.result.oee} na={NA_REASON.oee} />,
+    },
+    ...(withStatus
+      ? [
+          {
+            key: 'status',
+            header: 'Status',
+            cell: (hour: OeeBucketDto) => {
+              const flags = itemFlags(bucketFlags(hour), finality);
+              return flags.length > 0 ? (
+                <FlagBadges flags={flags} />
+              ) : (
+                <Missing reason="Nothing beyond the table’s status" />
+              );
+            },
+          },
+        ]
+      : []),
+  ];
 }
 
 function HourlyChart({
@@ -384,6 +445,8 @@ function HourlyChart({
       option: sorted.some((hour) => hour.result.oee) ? hourlyOption(sorted) : null,
     };
   }, [hours.data, pushed, start, end]);
+  const finality = groupFinality(rows);
+  const withStatus = rows.some((hour) => itemFlags(bucketFlags(hour), finality).length > 0);
   return (
     <EChart
       testId="hourly"
@@ -405,52 +468,70 @@ function HourlyChart({
           onRetry={() => void hours.refetch()}
         />
       ) : null}
-      {hours.isPending ? <p className="text-sm">Loading hours…</p> : null}
+      {hours.isPending ? <Skeleton shape="chart" label="Loading hours…" /> : null}
       {rows.length > 0 ? (
-        <p className="flex flex-wrap gap-x-4 text-xs text-slate-700">
-          <span>
-            <span aria-hidden="true" className="mr-1 inline-block size-2.5 bg-sky-700" />
-            Final
-          </span>
-          <span>
-            <span aria-hidden="true" className="mr-1 inline-block size-2.5 bg-slate-500" />
-            Provisional
-          </span>
-          <span>Hours without planned time: n/a, no bar</span>
-        </p>
-      ) : null}
-      {rows.length > 0 ? (
-        <details className="mt-2 text-sm">
-          <summary className="cursor-pointer">Hourly values</summary>
-          <table className="mt-1 w-full">
-            <thead>
-              <tr className="text-left">
-                <th scope="col">Hour</th>
-                <th scope="col" className="text-right">
-                  OEE
-                </th>
-                <th scope="col" className="pl-2">
-                  Status
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((hour) => (
-                <tr key={hour.key} data-testid={`hour-${hour.key}`}>
-                  <td>{formatClockTime(hour.start)}</td>
-                  <td className="text-right font-mono" data-decimal={ratioText(hour.result.oee)}>
-                    {ratioText(hour.result.oee)}
-                  </td>
-                  <td className="pl-2">{hour.final ? 'Final' : 'Provisional'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </details>
+        <div className="mt-2 flex flex-col gap-2">
+          <p className="flex flex-wrap gap-x-4 text-xs text-ink-secondary">
+            <span>
+              <span aria-hidden="true" className="mr-1 inline-block size-2.5 bg-chart-1" />
+              Final
+            </span>
+            <span>
+              <span aria-hidden="true" className="mr-1 inline-block size-2.5 bg-line-strong" />
+              Provisional
+            </span>
+            <span>No bar: no planned time in that hour</span>
+          </p>
+          <Disclosure
+            summary={
+              <>
+                Hourly values <SectionFinality buckets={rows} testId="hourly-finality" />
+              </>
+            }
+          >
+            <DataTable
+              caption="OEE per hour of the shift"
+              testId="hourly-values"
+              columns={hourColumns(finality, withStatus)}
+              rows={rows}
+              rowKey={(hour) => hour.key}
+              rowTestId={(hour) => `hour-${hour.key}`}
+              density="compact"
+            />
+          </Disclosure>
+        </div>
       ) : null}
     </EChart>
   );
 }
+
+/** A step's minutes with its sign against the number, as the chart writes it: "−93.1 min" (E-06). */
+const stepText = (step: WaterfallStep): string => `${stepSign(step)}${minutesText(step.ms)}`;
+
+const WATERFALL_COLUMNS: readonly Column<WaterfallStep>[] = [
+  {
+    key: 'step',
+    header: 'Step',
+    rowHeader: true,
+    cell: (step) => (
+      <span className={step.kind === 'total' ? 'font-semibold' : undefined}>{step.label}</span>
+    ),
+  },
+  {
+    key: 'time',
+    header: 'Time',
+    numeric: true,
+    cell: (step) => (
+      <span
+        title={`${stepSign(step)}${secondsText(step.ms)} exactly`}
+        data-seconds={secondsText(step.ms)}
+        className={step.kind === 'total' ? 'font-semibold' : undefined}
+      >
+        {stepText(step)}
+      </span>
+    ),
+  },
+];
 
 function WaterfallChart({ bucket }: { readonly bucket: OeeBucketDto | undefined }) {
   // Memoised on the bucket (see HourlyChart): the same option across unrelated re-renders.
@@ -471,95 +552,90 @@ function WaterfallChart({ bucket }: { readonly bucket: OeeBucketDto | undefined 
       }
     >
       {steps ? (
-        <>
+        <div className="mt-2 flex flex-col gap-2">
           {!steps.consistent ? (
-            <p role="alert" className="text-sm text-red-900">
+            <Callout tone="warn" role="alert">
               The losses sent do not add up; showing them as sent.
-            </p>
+            </Callout>
           ) : null}
-          <table className="mt-2 w-full text-sm">
-            <caption className="sr-only">Loss waterfall steps</caption>
-            <tbody>
-              {steps.steps.map((step) => (
-                <tr
-                  key={step.key}
-                  data-testid={`waterfall-${step.key}`}
-                  data-kind={step.kind}
-                  className={step.kind === 'total' ? 'font-semibold' : 'font-normal'}
-                >
-                  <th scope="row" className="py-0.5 text-left font-[inherit]">
-                    {step.label}
-                  </th>
-                  <td
-                    className="text-right tabular-nums"
-                    title={`${stepSign(step)}${secondsText(step.ms)} exactly`}
-                    data-seconds={secondsText(step.ms)}
-                  >
-                    {stepSign(step)} {minutesText(step.ms)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <p className="mt-1 text-xs text-slate-700">
-            Minutes are rounded to 0.1 (half-up); the exact time of each step is in its tooltip. The
-            steps add up exactly.
+          <DataTable
+            caption="Loss waterfall steps"
+            testId="waterfall-steps"
+            columns={WATERFALL_COLUMNS}
+            rows={steps.steps}
+            rowKey={(step) => step.key}
+            rowTestId={(step) => `waterfall-${step.key}`}
+            rowProps={(step) => ({ 'data-kind': step.kind })}
+            density="compact"
+          />
+          <p className="text-xs text-ink-secondary">
+            Minutes rounded to 0.1 (half-up); each step’s exact time is in its tooltip. The steps
+            add up exactly.
           </p>
-        </>
+        </div>
       ) : null}
     </EChart>
   );
 }
 
+interface ParetoRow {
+  readonly row: Pareto['reasons'][number];
+  /** The cumulative share in whole per cent; undefined when the total is 0. */
+  readonly cumulative: number | undefined;
+}
+
+/**
+ * The Pareto's table. The reason is a plain `td`, not a row header: the demo walkthrough reads
+ * the time as `td` 2.
+ */
+const PARETO_COLUMNS: readonly Column<ParetoRow>[] = [
+  { key: 'reason', header: 'Reason', cell: ({ row }) => row.name },
+  { key: 'loss', header: 'Loss', cell: ({ row }) => <LossBadge kind={row.loss} /> },
+  { key: 'time', header: 'Time', numeric: true, cell: ({ row }) => minutesText(row.ms) },
+  {
+    key: 'cumulative',
+    header: 'Cumulative',
+    numeric: true,
+    cell: ({ cumulative }) =>
+      cumulative === undefined ? <Missing reason="No loss time" /> : `${String(cumulative)} %`,
+  },
+];
+
 function ParetoTable({ pareto }: { readonly pareto: Pareto }) {
   const total = pareto.reasons.reduce((sum, row) => sum + row.ms, 0);
-  const cumulative = pareto.reasons.map((_row, index) =>
-    pareto.reasons.slice(0, index + 1).reduce((sum, row) => sum + row.ms, 0),
-  );
+  const rows = pareto.reasons.map((row, index): ParetoRow => {
+    const running = pareto.reasons.slice(0, index + 1).reduce((sum, r) => sum + r.ms, 0);
+    return {
+      row,
+      cumulative: total > 0 ? Math.round((running * 100) / total) : undefined,
+    };
+  });
   return (
-    <>
-      <table className="mt-2 w-full text-sm">
-        <caption className="sr-only">Availability loss by reason</caption>
-        <thead>
-          <tr className="text-left">
-            <th scope="col">Reason</th>
-            <th scope="col">Loss</th>
-            <th scope="col" className="text-right">
-              Time
-            </th>
-            <th scope="col" className="text-right">
-              Cum.
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {pareto.reasons.map((row, index) => (
-            <tr key={`${row.reason}-${row.loss}`} data-testid={`pareto-${row.reason}`}>
-              <td>{row.name}</td>
-              <td>{row.loss === 'own' ? 'Own' : 'External'}</td>
-              <td className="text-right tabular-nums">{minutesText(row.ms)}</td>
-              <td className="text-right tabular-nums">
-                {total > 0
-                  ? `${String(Math.round(((cumulative[index] ?? 0) * 100) / total))} %`
-                  : '–'}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="flex flex-col gap-2">
+      <DataTable
+        caption="Availability loss by reason"
+        testId="pareto-table"
+        columns={PARETO_COLUMNS}
+        rows={rows}
+        rowKey={({ row }) => `${row.reason}-${row.loss}`}
+        rowTestId={({ row }) => `pareto-${row.reason}`}
+        density="compact"
+        narrow="stack"
+      />
       {pareto.microStops.length > 0 ? (
-        <details className="mt-2 text-sm">
-          <summary className="cursor-pointer">Micro-stops by cause (performance loss)</summary>
-          <ul className="mt-1">
+        <Disclosure summary="Micro-stops by cause (performance loss)">
+          <ul className="flex flex-col gap-0.5">
             {pareto.microStops.map((row) => (
               <li key={row.cause ?? 'none'}>
-                {row.cause ?? 'No cause'}: {minutesText(row.ms)} in {String(row.stops)} stops
+                {row.cause ?? 'No cause'}:{' '}
+                <span className="tabular-nums">{minutesText(row.ms)}</span> in{' '}
+                <span className="tabular-nums">{row.stops}</span> stops
               </li>
             ))}
           </ul>
-        </details>
+        </Disclosure>
       ) : null}
-    </>
+    </div>
   );
 }
 
@@ -615,18 +691,26 @@ function ParetoChart({
       height={chart?.height ?? 200}
       empty={pareto.data ? 'No availability loss in this shift.' : undefined}
     >
-      {pareto.isPending ? <p className="text-sm">Loading the Pareto…</p> : null}
+      {pareto.isPending ? <Skeleton shape="chart" label="Loading the Pareto…" /> : null}
       {pareto.isError ? (
         <QueryError what="the Pareto" error={pareto.error} onRetry={() => void pareto.refetch()} />
       ) : null}
-      {pareto.data ? (
-        <>
-          <p className="text-sm">
-            Own {minutesText(pareto.data.availability.own)} · external{' '}
-            {minutesText(pareto.data.availability.external)}
+      {/* Nothing lost: the chart's empty state says so, without a line of zeros under it. */}
+      {pareto.data && pareto.data.reasons.length > 0 ? (
+        <div className="mt-2 flex flex-col gap-2">
+          <p className="text-sm text-ink-secondary">
+            Availability loss:{' '}
+            <span className="tabular-nums text-ink">
+              {minutesText(pareto.data.availability.own)}
+            </span>{' '}
+            own ·{' '}
+            <span className="tabular-nums text-ink">
+              {minutesText(pareto.data.availability.external)}
+            </span>{' '}
+            external
           </p>
-          {pareto.data.reasons.length === 0 ? null : <ParetoTable pareto={pareto.data} />}
-        </>
+          <ParetoTable pareto={pareto.data} />
+        </div>
       ) : null}
     </EChart>
   );
@@ -641,33 +725,28 @@ function FocusPicker({
   readonly known: Names;
   readonly onChange: (id: string) => void;
 }) {
-  const id = useId();
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      <label htmlFor={id} className="text-sm font-medium">
-        Details for
-      </label>
-      <select
-        id={id}
-        data-testid="focus-select"
-        value={focus}
-        onChange={(event) => {
-          onChange(event.target.value);
-        }}
-        className="max-w-full rounded border border-slate-500 bg-white px-2 py-1 text-sm"
-      >
-        {[...known.workCenters].map(([center, { name, members }]) => (
-          <optgroup key={center} label={name}>
-            <option value={center}>{name} (work center)</option>
-            {members.map((member) => (
-              <option key={member} value={member}>
-                {known.equipment.get(member)?.name ?? member}
-              </option>
-            ))}
-          </optgroup>
-        ))}
-      </select>
-    </div>
+    <Select
+      label="Details for"
+      inline
+      name="focus"
+      data-testid="focus-select"
+      value={focus}
+      onChange={(event) => {
+        onChange(event.target.value);
+      }}
+    >
+      {[...known.workCenters].map(([center, { name, members }]) => (
+        <optgroup key={center} label={name}>
+          <option value={center}>{name} (work center)</option>
+          {members.map((member) => (
+            <option key={member} value={member}>
+              {known.equipment.get(member)?.name ?? member}
+            </option>
+          ))}
+        </optgroup>
+      ))}
+    </Select>
   );
 }
 
@@ -692,7 +771,7 @@ function FocusDetails({
   return (
     // Each chart card as tall as its own content (E-05: the hourly card was stretched to the
     // waterfall's height and stood half empty).
-    <div className="mt-3 grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
+    <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
       <HourlyChart
         scope={scope}
         id={focus}
@@ -716,8 +795,34 @@ function FocusDetails({
   );
 }
 
+/**
+ * A shift's span (design system 6.2): `Mon 12 Oct, 06:00 – 14:00` within one plant day, the date
+ * on both sides only across midnight (`Mon 12 Oct, 22:00 – Tue 13 Oct, 06:00`).
+ */
+export function ShiftSpan({ start, end }: { readonly start: string; readonly end: string }) {
+  const oneDay = plantDayOf(start) === plantDayOf(end);
+  return (
+    <>
+      <PlantTime at={start} seconds={false} /> –{' '}
+      {oneDay ? (
+        <time dateTime={end} title={formatPlantTime(end)} className="tabular-nums">
+          {formatClockTime(end)}
+        </time>
+      ) : (
+        <PlantTime at={end} seconds={false} />
+      )}
+    </>
+  );
+}
+
+/**
+ * The OEE dashboard (UX-3, #323; design system section 10): the line's throughput OEE, then each
+ * work center's OEE as a KPI tile, the machines in a table, and the hours, losses and downtime of
+ * one of them. Ratios are percentages; each keeps the MES's four decimals in `data-decimal` and
+ * the exact fraction in `data-fraction` and its tooltip (E-02). Finality is said once per
+ * section (E-03).
+ */
 export function OeeDashboard() {
-  const heading = useHeadingFocus<HTMLHeadingElement>();
   const search = useSearch({ from: '/oee' });
   const navigate = useNavigate({ from: '/oee' });
   const selection = useShiftSelection(search.shift);
@@ -736,10 +841,11 @@ export function OeeDashboard() {
 
   // Live: every work center and machine (8 of the MES's 16 OEE topics) and downtime records;
   // `oee:line` (useLineOee) counts against a budget of its own (#232).
-  const topics = [...known.workCenters.keys(), ...known.equipment.keys()].map((id) => `oee:${id}`);
+  const centerIds = [...known.workCenters.keys()];
+  const topics = [...centerIds, ...known.equipment.keys()].map((id) => `oee:${id}`);
   useLiveSubscriptions(topics.length > 0 ? [...topics, DOWNTIME_TOPIC] : []);
 
-  const firstCenter = known.workCenters.keys().next().value;
+  const firstCenter = centerIds[0];
   const focus =
     search.focus !== undefined &&
     (known.workCenters.has(search.focus) || known.equipment.has(search.focus))
@@ -758,106 +864,137 @@ export function OeeDashboard() {
     ? [...data.workCenters, ...data.equipment].find((bucket) => bucket.id === focus)
     : undefined;
 
+  const centerBuckets = useShiftBuckets(centerIds, data?.workCenters ?? [], shiftKey ?? '');
+  const machineIds = (data?.equipment ?? []).map((bucket) => bucket.id);
+  const machineBuckets = useShiftBuckets(machineIds, data?.equipment ?? [], shiftKey ?? '');
+  const shownCenters = centerBuckets.filter((bucket) => bucket !== undefined);
+  const centerFinality = groupFinality(shownCenters);
+  const machineRows: MachineRow[] = (data?.equipment ?? []).map((rest, index) => ({
+    id: rest.id,
+    bucket: machineBuckets[index] ?? rest,
+    equipment: known.equipment.get(rest.id),
+    bottleneck: bottlenecks.has(rest.id),
+  }));
+  const machineFinality = groupFinality(machineRows.map((row) => row.bucket));
+
   return (
     <section aria-labelledby="oee-title">
-      <h1 ref={heading} id="oee-title" tabIndex={-1} className="text-2xl font-bold">
-        OEE
-      </h1>
-      <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-6">
-        <ShiftPicker
-          selection={selection}
-          onChange={(shift) => {
-            void navigate({ search: (previous) => ({ ...previous, shift }) });
-          }}
-        />
-        {data ? (
-          <p className="text-sm text-slate-700">
-            <time dateTime={data.start}>{formatPlantTime(data.start)}</time> to{' '}
-            <time dateTime={data.end}>{formatPlantTime(data.end)}</time>
-            {selection.isCurrent ? ' · live' : ''}
-          </p>
-        ) : null}
-      </div>
-      {selection.pending ? <p className="mt-4">Loading shifts…</p> : null}
+      <PageHeader
+        id="oee-title"
+        title="OEE"
+        size="dashboard"
+        description="Overall equipment effectiveness of one shift: the line, its work centers and machines, and where the time went."
+        filters={
+          <ShiftPicker
+            selection={selection}
+            onChange={(shift) => {
+              void navigate({ search: (previous) => ({ ...previous, shift }) });
+            }}
+          />
+        }
+        summary={
+          data ? (
+            <span data-testid="oee-shift-span">
+              <ShiftSpan start={data.start} end={data.end} />
+              {selection.isCurrent ? ' · live' : ''}
+            </span>
+          ) : undefined
+        }
+      />
+      {selection.pending ? <Skeleton shape="card" label="Loading shifts…" /> : null}
       {selection.error ? (
-        <div className="mt-4">
-          <QueryError what="the shifts" error={selection.error} onRetry={selection.retry} />
-        </div>
+        <QueryError what="the shifts" error={selection.error} onRetry={selection.retry} />
       ) : null}
       {!selection.pending && shiftKey === undefined && !selection.error ? (
-        <p className="mt-4">No shift yet: the plant clock has not started.</p>
+        <Card padding="compact">
+          <EmptyState
+            icon="clock"
+            title="No shift yet"
+            body="No shift yet: the plant clock has not started."
+          />
+        </Card>
       ) : null}
       {equipment.isError ? (
-        <div className="mt-4">
-          <QueryError
-            what="the equipment"
-            error={equipment.error}
-            onRetry={() => void equipment.refetch()}
-          />
-        </div>
+        <QueryError
+          what="the equipment"
+          error={equipment.error}
+          onRetry={() => void equipment.refetch()}
+        />
       ) : null}
       {shiftOee.isError ? (
-        <div className="mt-4">
-          <QueryError
-            what="the shift's OEE"
-            error={shiftOee.error}
-            onRetry={() => void shiftOee.refetch()}
-          />
-        </div>
+        <QueryError
+          what="the shift's OEE"
+          error={shiftOee.error}
+          onRetry={() => void shiftOee.refetch()}
+        />
       ) : null}
-      {shiftOee.isPending && shiftKey !== undefined ? <p className="mt-4">Loading OEE…</p> : null}
+      {shiftOee.isPending && shiftKey !== undefined ? (
+        <Skeleton shape="card" label="Loading OEE…" />
+      ) : null}
 
       {data && shiftKey !== undefined ? (
         <>
-          <section aria-labelledby="line-title" className="mt-6">
-            <h2 id="line-title" className="text-xl font-semibold">
-              Line
-            </h2>
-            <div className="mt-2">
-              <LineOeeCard view={line} equipment={known.equipment} />
-            </div>
-          </section>
-          <section aria-labelledby="wc-title" className="mt-6">
-            <h2 id="wc-title" className="text-xl font-semibold">
-              Work centers
-            </h2>
-            <ul className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2">
-              {[...known.workCenters].map(([center, { name, members }]) => (
-                <WorkCenterCard
-                  key={center}
-                  id={center}
-                  name={name}
-                  rest={data.workCenters.find((bucket) => bucket.id === center)}
-                  shiftKey={shiftKey}
-                  bottleneckState={line.bottleneckState}
-                  bottlenecks={members.flatMap((member) => {
-                    const products = bottlenecks.get(member);
-                    return products
-                      ? [{ id: member, equipment: known.equipment.get(member), products }]
-                      : [];
-                  })}
+          <Section id="line-title" title="Line">
+            <LineOeeCard view={line} equipment={known.equipment} />
+          </Section>
+          <Section
+            id="wc-title"
+            title="Work centers"
+            status={<SectionFinality buckets={shownCenters} testId="wc-finality" />}
+            description="Each one’s OEE, time-weighted over its machines, with availability, performance and quality."
+          >
+            {centerIds.length === 0 ? (
+              <Card padding="compact">
+                <EmptyState
+                  icon="info"
+                  title="No work centers yet"
+                  body="No equipment is seeded."
                 />
-              ))}
-            </ul>
-          </section>
-          <section aria-labelledby="machines-title" className="mt-6">
-            <h2 id="machines-title" className="text-xl font-semibold">
-              Machines
-            </h2>
+              </Card>
+            ) : (
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                {[...known.workCenters].map(([center, { name, members }], index) => (
+                  <WorkCenterTile
+                    key={center}
+                    id={center}
+                    name={name}
+                    bucket={centerBuckets[index]}
+                    finality={centerFinality}
+                    bottleneckState={line.bottleneckState}
+                    bottlenecks={members.flatMap((member) => {
+                      const products = bottlenecks.get(member);
+                      return products
+                        ? [{ id: member, equipment: known.equipment.get(member), products }]
+                        : [];
+                    })}
+                  />
+                ))}
+              </div>
+            )}
+          </Section>
+          <Section
+            id="machines-title"
+            title="Machines"
+            status={
+              <SectionFinality
+                buckets={machineRows.map((row) => row.bucket)}
+                testId="machine-finality"
+              />
+            }
+            description="Each machine’s OEE for the shift; losses are availability losses."
+          >
             <MachineTable
-              buckets={data.equipment}
-              names={known}
-              shiftKey={shiftKey}
-              bottlenecks={bottlenecks}
+              rows={machineRows}
+              finality={machineFinality}
               bottleneckState={line.bottleneckState}
             />
-          </section>
+          </Section>
           {focus !== undefined ? (
-            <section aria-labelledby="details-title" className="mt-6">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 id="details-title" className="text-xl font-semibold">
-                  Hours, losses and downtime
-                </h2>
+            <Section
+              id="details-title"
+              title="Hours, losses and downtime"
+              description="Per hour, the loss waterfall and the downtime Pareto of one work center or machine."
+              actions={
                 <FocusPicker
                   focus={focus}
                   known={known}
@@ -865,7 +1002,8 @@ export function OeeDashboard() {
                     void navigate({ search: (previous) => ({ ...previous, focus: id }) });
                   }}
                 />
-              </div>
+              }
+            >
               <FocusDetails
                 key={`${focus}|${shiftKey}`}
                 focus={focus}
@@ -876,7 +1014,7 @@ export function OeeDashboard() {
                 live={selection.isCurrent}
                 rest={focusRest}
               />
-            </section>
+            </Section>
           ) : null}
         </>
       ) : null}

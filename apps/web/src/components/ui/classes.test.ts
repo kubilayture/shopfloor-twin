@@ -65,6 +65,12 @@ const FILES = [
   'screens/spc.tsx',
   // The alarm list (UX-4a, #324).
   'screens/alarm-list.tsx',
+  // Shift reports and handover notes (UX-5b, #327).
+  'components/shift-picker.tsx',
+  'components/shift-state-badge.tsx',
+  'screens/shift-list.tsx',
+  'screens/shift-report.tsx',
+  'screens/handover-notes.tsx',
 ];
 
 /** Utility prefixes: a literal with one of these is a class list. */
@@ -192,6 +198,11 @@ for (const id of [
 ]) {
   NOT_CLASSES.add(id);
 }
+/**
+ * UX-5b (#327): the print stylesheet's own section class (`report-section`, index.css) and the
+ * word of "1 break", which read like classes.
+ */
+for (const word of ['report-section', 'break']) NOT_CLASSES.add(word);
 
 /** UX-4b (#325): the alarm KPIs' `data-measure` name, which starts like a `max-*` class. */
 NOT_CLASSES.add('max-time-to-ack');

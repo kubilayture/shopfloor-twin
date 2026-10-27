@@ -386,11 +386,13 @@
 }
 
 /*
- * Print (#146): the shift report on A4. Navigation, forms and live widgets carry `print:hidden`
- * (Tailwind's print variant); what is left is laid out for paper here: no page background, wide
- * tables in full instead of in a scroll box, sections kept on one page where they fit, and a
- * chart as the still image `EChartsView` takes on `beforeprint` (none without one: the table
- * beside every chart carries its values).
+ * Print (#146; checked in UX-5b, #327, R-05): the shift report on A4. The shell, navigation,
+ * forms, the in-page index and live widgets carry `print:hidden` (Tailwind's print variant); what
+ * is left is laid out for paper here: no page background, every table in full (a `DataTable`'s
+ * scroll box and its height bound let go, its sticky header back in the flow), each section and
+ * card kept on one page where it fits, and a chart as the still image `EChartsView` takes on
+ * `beforeprint`. A chart without one (a print that did not fire `beforeprint`) leaves no empty
+ * frame: it is left out, and the table beside every chart carries its values.
  */
 @page {
   size: A4;
@@ -417,15 +419,32 @@
 
   .report-section,
   .shift-report tr,
-  .shift-report figure {
+  .shift-report figure,
+  .shift-report li {
     break-inside: avoid;
   }
 
-  .shift-report h2 {
+  .shift-report h2,
+  .shift-report h3,
+  .shift-report h4,
+  .shift-report section > div:first-child {
     break-after: avoid;
   }
 
+  .shift-report [data-frame] {
+    overflow: visible !important;
+    max-height: none !important;
+  }
+
+  .shift-report th {
+    position: static !important;
+  }
+
   img[data-print-snapshot]:not([src]) {
+    display: none !important;
+  }
+
+  .shift-report figure:has(img[data-print-snapshot]:not([src])) {
     display: none !important;
   }
 

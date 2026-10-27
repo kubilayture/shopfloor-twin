@@ -2,12 +2,21 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { kpiBucket } from '../test/alarm-fixtures.ts';
 import { EPOCH, problem } from '../test/fixtures.ts';
-import { PREVIOUS_SHIFT, SHIFT_KEY, bucket, record, result } from '../test/oee-fixtures.ts';
+import {
+  PREVIOUS_SHIFT,
+  SHIFT_END,
+  SHIFT_KEY,
+  SHIFT_START,
+  bucket,
+  record,
+  result,
+} from '../test/oee-fixtures.ts';
 import { renderApp } from '../test/render-app.tsx';
 import { auditEntry, note, report, shiftRecord } from '../test/shift-fixtures.ts';
 import { memoryStorage, shiftMes, shiftState } from '../test/shift-mes.ts';
 import { liveKeys, type LiveShifts } from '../live/live-cache.ts';
 import { expectDecimals } from '../test/decimals.ts';
+import { NA_REASON } from '../components/oee-ui.tsx';
 
 vi.mock('../chart/echarts-view.tsx', () => ({ EChartsView: () => null }));
 
@@ -30,7 +39,7 @@ const subscribed = (app: Awaited<ReturnType<typeof renderApp>>) =>
     .map((message) => message.topic);
 
 describe('shift report', () => {
-  it('shows every section exactly as served, with n/a where there is no value', async () => {
+  it('shows every section exactly as served, with a dash and its reason where there is no value', async () => {
     const state = shiftState({
       report: report({
         oee: {
@@ -52,7 +61,31 @@ describe('shift report', () => {
     expect(shown.dataset.status).toBe('running');
     expect(shown.dataset.final).toBe('false');
     expect(screen.getByTestId('report-status').textContent).toBe('Running');
+    expect(screen.getByTestId('report-status').dataset.status).toBe('running');
     expect(screen.getByTestId('report-finality').textContent).toContain('Provisional');
+    // R-05: the plant epoch is on screen, never printed.
+    expect(screen.getByTestId('report-epoch').closest('.print\\:hidden')).not.toBeNull();
+    // The filter bar's "Shift [select]" (design system 3.3), on the token Select.
+    expect(screen.getByRole('combobox', { name: 'Shift' })).toBe(
+      screen.getByTestId('shift-select'),
+    );
+    // R-01: the in-page index links to every section's heading.
+    const index = screen.getByRole('navigation', { name: 'On this page' });
+    expect(
+      within(index)
+        .getAllByRole('link')
+        .map((link) => link.getAttribute('href')),
+    ).toEqual([
+      '#report-oee-title',
+      '#report-production-title',
+      '#report-downtime-title',
+      '#report-alarms-title',
+      '#report-crew-title',
+      '#handover-title',
+    ]);
+    for (const link of within(index).getAllByRole('link')) {
+      expect(document.getElementById(link.getAttribute('href')?.slice(1) ?? '')).not.toBeNull();
+    }
     expect(screen.getByTestId('report-revision').textContent).toBe('inputs 0, content 0');
     expect(screen.getByTestId('report-as-of').querySelector('time')?.dateTime).toBe(
       '2026-10-15T06:10:00.000Z',
@@ -62,18 +95,23 @@ describe('shift report', () => {
     );
     expect(screen.queryByTestId('report-revised')).toBeNull();
 
-    // OEE: the API's four decimals; null is n/a; a machine without a bucket is n/a too.
+    // OEE: percentages, the API's four decimals in data-oee and data-decimal (R-02); null is a
+    // dash with its reason; a machine without a bucket says it has no data.
     expect(screen.getByTestId('report-oee-wc-cell-m1').dataset.oee).toBe('0.6300');
     const cnc = screen.getByTestId('report-oee-machine-cnc-01');
     expect(cnc.dataset.oee).toBe('0.6300');
     expect(within(cnc).getByText('63.00 %')).toBeTruthy();
     const wsh = screen.getByTestId('report-oee-machine-wsh-01');
     expect(wsh.dataset.oee).toBe('n/a');
-    expect(within(wsh).getAllByText('n/a').length).toBeGreaterThanOrEqual(2);
+    expect(wsh.textContent).not.toContain('n/a');
+    expect(wsh.querySelectorAll('[data-missing]').length).toBeGreaterThanOrEqual(2);
+    expect(wsh.textContent).toContain(NA_REASON.oee);
     await waitFor(() => {
       expect(screen.getByTestId('report-oee-machine-asm-01').dataset.oee).toBe('n/a');
     });
-    expect(screen.getByTestId('report-oee-wc-line-a1').textContent).toContain('n/a');
+    expect(screen.getByTestId('report-oee-wc-line-a1').textContent).toContain(
+      'No data for this shift',
+    );
 
     // Downtime.
     expect(screen.getByTestId('report-loss-own').textContent).toBe('2.5 min');
@@ -96,16 +134,35 @@ describe('shift report', () => {
     // Alarms: KPIs, bad actors and operator figures; Line A1 has no bucket: n/a, never 0.
     const plant = screen.getByTestId('report-alarm-scope-plant');
     expect(plant.dataset.raises).toBe('14');
-    expect(measure(plant, 'raises')).toBe('14 (2 / 11 / 1)');
+    expect(measure(plant, 'raises')).toBe('14');
+    expect(plant.textContent).toContain('2 high · 11 medium · 1 low');
+    expect(measure(plant, 'active-time')).toBeTruthy();
     expect(measure(plant, 'average-rate')).toContain('0.2917');
-    // Banded with the benchmarks the MES serves (#160).
+    // The headline is a Ratio: its raw markers beside the figure, as on Alarm KPIs.
+    expect(
+      plant
+        .querySelector('[data-measure="average-rate"] [data-decimal]')
+        ?.getAttribute('data-decimal'),
+    ).toBe('0.2917');
+    // R-03: named as on Alarm KPIs.
+    expect(within(plant).getByRole('heading', { level: 3 }).textContent).toBe('Plant');
+    expect(
+      within(screen.getByTestId('report-alarm-scope-position-cell-m1')).getByRole('heading', {
+        level: 3,
+      }).textContent,
+    ).toBe('Cell M1');
+    // Banded with the benchmarks the MES serves (#160): the headline's verdict.
     await waitFor(() => {
       expect(measure(plant, 'average-rate')).toContain('Acceptable (≤ 1 per 10 min)');
     });
+    expect(plant.querySelector<HTMLElement>('[data-measure="average-rate"]')?.dataset.band).toBe(
+      'acceptable',
+    );
     // The labels name the served window (#147), 10 minutes here.
     expect(
       plant.querySelector('[data-measure="peak10"]')?.previousElementSibling?.textContent,
     ).toBe('Peak per 10 min');
+    expect(within(plant).getByText('Average per 10 min')).toBeTruthy();
     expect(
       within(plant).getByTestId('report-bad-actor-plant-cnc-01-COOLANT-PRESSURE').dataset.raises,
     ).toBe('12');
@@ -114,8 +171,9 @@ describe('shift report', () => {
     );
     const line = screen.getByTestId('report-alarm-scope-position-line-a1');
     expect(line.dataset.raises).toBe('n/a');
-    expect(measure(line, 'peak10')).toBe('n/a');
-    expect(measure(line, 'unacknowledged')).toBe('n/a');
+    expect(line.textContent).toContain('No alarm KPIs for this shift');
+    expect(measure(line, 'peak10')).toBeUndefined();
+    expect(measure(line, 'unacknowledged')).toBeUndefined();
     expect(screen.getByTestId('notes-empty')).toBeTruthy();
 
     // UX-1c (#315): every ratio element carries its raw four decimals, n/a included.
@@ -152,8 +210,11 @@ describe('shift report', () => {
     expect(shown.dataset.final).toBe('true');
     expect(shown.dataset.revisionInputs).toBe('1');
     expect(shown.dataset.revisionContent).toBe('2');
-    expect(screen.getByTestId('report-status').textContent).toBe('Final');
-    expect(screen.getByTestId('report-finality').textContent).toContain('Final');
+    // S-01: the state and the finality each said once, never "Final Final".
+    expect(screen.getByTestId('report-status').textContent).toBe('Ended');
+    expect(screen.getByTestId('report-status').dataset.status).toBe('final');
+    expect(screen.getByTestId('report-finality').textContent).toBe('Final');
+    expect(screen.getByTestId('report-final-at').textContent).toContain('(wall time)');
     const banner = screen.getByTestId('report-revised');
     expect(banner.dataset.inputs).toBe('1');
     // Content 2 less the content at final: one change after final.
@@ -303,9 +364,30 @@ describe('shift report', () => {
     });
     vi.stubGlobal('fetch', shiftMes(state).fetch);
     const view = await renderApp(PATH);
-    const failure = await screen.findByTestId('report-error');
-    expect(failure.textContent).toContain('no shift instance 2026-10-15/A');
+    // A shift the MES has no report of is a NotFound with the way back, not an alert.
+    const missing = await screen.findByTestId('report-missing');
+    expect(missing.textContent).toContain('No shift 2026-10-15/A');
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Shift 2026-10-15/A');
+    const page = missing.closest('section');
+    expect(
+      page && within(page).getByRole('link', { name: 'Shift reports' }).getAttribute('href'),
+    ).toBe('/shifts');
     view.unmount();
+
+    const failing = shiftState({
+      reportAnswer: () => problem(503, 'Service Unavailable', 'shifts are not available', '/x'),
+    });
+    vi.stubGlobal('fetch', shiftMes(failing).fetch);
+    const again = await renderApp(PATH);
+    const failure = await screen.findByTestId('report-error', {}, { timeout: 5_000 });
+    expect(failure.textContent).toContain('Could not load the shift report');
+    // The picker is a control: never printed, in this state too.
+    expect(screen.getByTestId('shift-select').closest('.print\\:hidden')).not.toBeNull();
+    // The page keeps its h1, named after the shift asked for.
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(
+      'Shift report: Thu 15 Oct, shift A',
+    );
+    again.unmount();
 
     await renderApp('/shifts/2026-13/A!');
     expect((await screen.findByTestId('report-invalid')).textContent).toContain('not a shift key');
@@ -401,5 +483,87 @@ describe('shift report', () => {
     expect(
       screen.getByTestId(`shift-link-${SHIFT_KEY.replace('/', '-')}`).getAttribute('href'),
     ).toBe(PATH);
+  });
+
+  it('lists the shifts as a table: state and finality said once, the revision only above 0 (S-01)', async () => {
+    const state = shiftState();
+    vi.stubGlobal('fetch', shiftMes(state).fetch);
+    const app = await renderApp('/shifts');
+    await app.open();
+    const table = await screen.findByRole('table', { name: /Shifts of the last 7 days/ });
+    expect(
+      within(table)
+        .getAllByRole('columnheader')
+        .map((cell) => cell.textContent),
+    ).toEqual(['Shift', 'Time', 'State', 'Report']);
+    const row = await screen.findByTestId('shift-row-2026-10-15-A');
+    // The shift names the row and links to its report; the current one says so.
+    const header = within(row).getByRole('rowheader');
+    expect(within(header).getByRole('link').textContent).toBe('Thu 15 Oct, shift A');
+    expect(header.textContent).toContain('Current');
+    await waitFor(() => {
+      expect(row.textContent).toContain('Running');
+    });
+    expect(row.textContent).toContain('Provisional');
+    expect(row.textContent).toContain('06:00 – 14:00');
+    expect(screen.getByTestId('shift-list-summary').textContent).toBe('2 shifts · 1 not final yet');
+
+    // Final: "Ended" and "Final", never "Final Final"; a revision adds its column.
+    await app.push({
+      type: 'shift',
+      event: 'revised',
+      shift: shiftRecord({
+        status: 'final',
+        final: true,
+        finalAt: '2026-10-16T09:00:00.000Z',
+        revision: { inputs: 1, content: 2, contentAtFinal: 1 },
+      }),
+    });
+    await waitFor(() => {
+      expect(row.textContent).toContain('inputs 1, content 2');
+    });
+    expect(row.textContent).toContain('Ended');
+    expect(row.textContent.match(/Final/g)).toHaveLength(1);
+    expect(
+      within(table)
+        .getAllByRole('columnheader')
+        .map((cell) => cell.textContent),
+    ).toEqual(['Shift', 'Time', 'State', 'Report', 'Revision']);
+    // The row without a record says so, and why, in words.
+    expect(screen.getByTestId('shift-row-2026-10-14-C').textContent).toContain('No record');
+  });
+
+  it('says when there is no shift yet', async () => {
+    const state = shiftState();
+    const server = shiftMes(state);
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input instanceof Request ? input.url : input), 'http://localhost');
+      if (url.pathname === '/api/v1/shifts') {
+        return Promise.resolve(
+          new Response(JSON.stringify({ from: SHIFT_START, to: SHIFT_END, shifts: [] }), {
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.pathname === '/api/v1/shifts/current') {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              clock: { epoch: EPOCH, watermark: SHIFT_START },
+              shiftKey: null,
+              shift: null,
+            }),
+            {
+              headers: { 'content-type': 'application/json' },
+            },
+          ),
+        );
+      }
+      return server.fetch(input, init);
+    });
+    await renderApp('/shifts');
+    const empty = await screen.findByTestId('shift-list-empty');
+    expect(empty.textContent).toContain('No shift yet');
+    expect(screen.queryByRole('table')).toBeNull();
   });
 });

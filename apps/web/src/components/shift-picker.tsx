@@ -1,10 +1,10 @@
 import type { CurrentShift, ShiftInstanceDto } from '@shopfloor/contracts/mes-api';
 import { useQuery } from '@tanstack/react-query';
-import { useId } from 'react';
 import { getCurrentShift, getShifts } from '../api/client.ts';
 import { queryKeys } from '../api/queries.ts';
 import { PLANT_TIME_ZONE, formatClockTime, formatPlantTime, plantDayOf } from '../domain/time.ts';
 import { PlantTime } from './ui/format.tsx';
+import { Select } from './ui/controls.tsx';
 
 const HOUR = 3_600_000;
 /** How far back the shift picker reaches. */
@@ -111,7 +111,10 @@ export function useShiftSelection(requested: string | undefined): ShiftSelection
   };
 }
 
-/** A shift `<select>`: the current shift first (marked), then earlier ones. */
+/**
+ * A shift `<select>`: the current shift first (marked), then earlier ones. The filter bar's
+ * "Shift [select]" (design system 3.3 and 4.7, UX-5b): the token `Select` with its label inline.
+ */
 export function ShiftPicker({
   selection,
   onChange,
@@ -119,7 +122,6 @@ export function ShiftPicker({
   readonly selection: ShiftSelection;
   readonly onChange: (shiftKey: string) => void;
 }) {
-  const id = useId();
   const currentKey = selection.current?.shift?.key;
   const options = [...selection.shifts];
   if (
@@ -130,18 +132,16 @@ export function ShiftPicker({
     if (fallback?.key === selection.selected) options.unshift(fallback);
   }
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      <label htmlFor={id} className="text-sm font-medium">
-        Shift
-      </label>
-      <select
-        id={id}
+    <div className="flex max-w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+      <Select
+        label="Shift"
+        inline
+        name="shift"
         data-testid="shift-select"
         value={selection.selected ?? ''}
         onChange={(event) => {
           onChange(event.target.value);
         }}
-        className="max-w-full rounded border border-slate-500 bg-white px-2 py-1 text-sm"
       >
         {selection.selected !== undefined &&
         !options.some((shift) => shift.key === selection.selected) ? (
@@ -153,9 +153,9 @@ export function ShiftPicker({
             {shift.key === currentKey ? ' – current' : ''}
           </option>
         ))}
-      </select>
+      </Select>
       {selection.current?.shiftKey === 'no-shift' ? (
-        <span className="text-sm text-slate-700">The plant is between shifts.</span>
+        <span className="text-sm text-ink-secondary">The plant is between shifts.</span>
       ) : null}
     </div>
   );

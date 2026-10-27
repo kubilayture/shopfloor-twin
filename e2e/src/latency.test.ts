@@ -333,3 +333,68 @@ describe('values seen around their moment (#147)', () => {
     ]);
   });
 });
+
+describe('values told apart by their bucket (#376)', () => {
+  // The run of #376 (UX-3 on 1a4b151, reconcile orders pass): cell-m1's shift OEE as the API
+  // polls saw it and as the push carried it, ms from the API's change to 0.5585. Every pushed
+  // value equals the API's at its arrival but one: 0.5574 at 861 ms, a value the API held at
+  // -370 ms and the polls at 697 and 927 ms did not see. Each API value is a bucket of its own
+  // (its inputs, here `bN`); the push at 861 ms carried a new one, `b9`.
+  const api: Change[] = [
+    { at: -2_376, state: '0.5320' },
+    { at: -1_548, state: '0.5258' },
+    { at: -1_196, state: '0.5414' },
+    { at: -1_081, state: '0.5407' },
+    { at: -486, state: '0.5621' },
+    { at: -370, state: '0.5574' },
+    { at: -121, state: '0.5612' },
+    { at: 0, state: '0.5585' },
+    { at: 697, state: '0.5536' },
+    { at: 927, state: '0.5560' },
+    { at: 1_988, state: '0.5480' },
+    { at: 2_728, state: '0.5615' },
+  ];
+  const keyed = new Map([
+    ['cell-m1', api.map((c, i) => ({ at: c.at, state: `${c.state} b${String(i)}` }))],
+  ]);
+  const truth = new Map([['cell-m1', api.slice(7)]]);
+  /** The pushes: when each arrived, the value and its bucket; the page drew each within 22 ms. */
+  const pushes = (fresh: string) => [
+    { at: -2_136, state: '0.5320', key: '0.5320 b0' },
+    { at: -1_137, state: '0.5407', key: '0.5407 b3' },
+    { at: -137, state: '0.5612', key: '0.5612 b6' },
+    { at: 861, state: '0.5574', key: `0.5574 ${fresh}` },
+    { at: 2_125, state: '0.5480', key: '0.5480 b10' },
+  ];
+  const judge = (fresh: string, identify: boolean) => {
+    const pushed = pushes(fresh);
+    const page = new Map([['cell-m1', pushed.map((p) => ({ at: p.at + 15, state: p.state }))]]);
+    return judgeLatency(truth, page, 2_700, 2_000, {
+      seenWithin: {
+        truth: identify ? keyed : new Map([['cell-m1', api]]),
+        windowMs: 5_000,
+        ...(identify
+          ? {
+              identify: (_: string, sample: Change) =>
+                pushed.filter((p) => p.state === sample.state && p.at <= sample.at).at(-1)?.key,
+            }
+          : {}),
+      },
+    });
+  };
+
+  it('takes a fresh value whose four decimals the API showed a second before for the stale one, by its decimals alone', () => {
+    // The flake: no acceptable value from 0 until the push at 2,125 ms, past the 2 s.
+    expect(judge('b12', false).violations.map((v) => [v.at, v.state])).toEqual([[0, '0.5585']]);
+  });
+
+  it('counts it as the fresh value it was when its bucket was never polled, and after the change', () => {
+    const result = judge('b12', true);
+    expect(result.violations).toEqual([]);
+    expect(result.measured.find((m) => m.at === 0)?.latencyMs).toBe(876);
+  });
+
+  it('still refuses a stale push: the bucket the API held at -370 ms', () => {
+    expect(judge('b5', true).violations.map((v) => v.at)).toEqual([0]);
+  });
+});

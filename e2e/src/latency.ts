@@ -64,6 +64,15 @@ export interface JudgeOptions {
   readonly seenWithin?: {
     readonly truth: ReadonlyMap<string, readonly Change[]>;
     readonly windowMs: number;
+    /**
+     * What a page sample was, in `truth`'s states (#376), when those say more than the page shows:
+     * the OEE dashboard shows four decimals, and a value can repeat within the window as OEE moves
+     * down and up, so a fresh value the polls missed was taken for the stale one of a second
+     * before. With the bucket the push carried (its inputs) beside the decimal, a value counts as
+     * seen only when the truth held that bucket. Undefined (or no function): the sample's own
+     * state, which then must be a `truth` state to count as seen.
+     */
+    readonly identify?: (machine: string, sample: Change) => string | undefined;
   };
 }
 
@@ -105,7 +114,12 @@ export function judgeLatency(
     /** Undefined: no notion of unseen values (every value must be a later truth state). */
     const seen = (sample: Change): boolean | undefined =>
       window
-        ? heldWithin(held, sample.state, sample.at, window.windowMs)
+        ? heldWithin(
+            held,
+            window.identify?.(machine, sample) ?? sample.state,
+            sample.at,
+            window.windowMs,
+          )
         : observed === undefined
           ? undefined
           : observed.has(sample.state);

@@ -60,6 +60,8 @@ const FILES = [
   'screens/alarm-kpi.tsx',
   // SPC (UX-9a, #332).
   'screens/spc.tsx',
+  // The alarm list (UX-4a, #324).
+  'screens/alarm-list.tsx',
 ];
 
 /** Utility prefixes: a literal with one of these is a class list. */

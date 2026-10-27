@@ -96,6 +96,59 @@ describe('Dialog', () => {
     expect(document.activeElement).toBe(opener);
   });
 
+  it('starts on its title with focusTitle, and passes data-* and the close button test id', () => {
+    function Sheet() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(true);
+            }}
+          >
+            Details
+          </button>
+          <Dialog
+            open={open}
+            onClose={() => {
+              setOpen(false);
+            }}
+            title="Coolant pressure low"
+            variant="sheet"
+            focusTitle
+            testId="note-dialog"
+            closeTestId="close-alarm"
+            data-alarm="a1"
+          >
+            <label>
+              Comment <input />
+            </label>
+          </Dialog>
+        </>
+      );
+    }
+    render(<Sheet />);
+    const opener = screen.getByRole('button', { name: 'Details' });
+    opener.focus();
+    fireEvent.click(opener);
+    const title = screen.getByRole('heading', { level: 2, name: 'Coolant pressure low' });
+    expect(document.activeElement).toBe(title);
+    expect(title.getAttribute('tabindex')).toBe('-1');
+    expect(dialogEl().dataset.alarm).toBe('a1');
+    fireEvent.click(screen.getByTestId('close-alarm'));
+    expect(dialogEl().open).toBe(false);
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it('leaves the title out of the Tab order without focusTitle', () => {
+    render(<Harness />);
+    openIt();
+    expect(
+      screen.getByRole('heading', { level: 2, name: 'Edit the note' }).hasAttribute('tabindex'),
+    ).toBe(false);
+  });
+
   it('asks the owner to close on Escape instead of closing by itself', () => {
     const onClose = vi.fn();
     function Stubborn() {

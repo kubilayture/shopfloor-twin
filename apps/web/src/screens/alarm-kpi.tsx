@@ -171,6 +171,7 @@ function ScopeTile({
   read,
   finality,
   config,
+  live,
 }: {
   readonly scope: Scope;
   readonly bucket: AlarmKpiBucketDto | undefined;
@@ -182,6 +183,8 @@ function ScopeTile({
   };
   readonly finality: GroupFinality | undefined;
   readonly config: AlarmConfig | undefined;
+  /** The shift is running: the average is over the whole shift, which is not over. */
+  readonly live: boolean;
 }) {
   const key = testKey(scopeKey(scope));
   // The window as served (#160, #147): `10 min` by default, `window` until the answer arrived.
@@ -208,7 +211,9 @@ function ScopeTile({
                   ? { tone: BAND_TONE[band], text: rateBandText(band, config) }
                   : undefined,
               tone: band === 'over' ? 'alarm' : undefined,
-              hint: 'Verdict against the EEMUA 191 benchmarks',
+              hint: live
+                ? 'Over the whole shift; the shift is not over'
+                : 'Verdict against the EEMUA 191 benchmarks',
               detailData: { 'data-measure': 'average-rate', 'data-band': band },
             }
           : {
@@ -423,14 +428,14 @@ function BucketTable({
   scope,
   bucket,
   range,
-  until,
+  clockHour,
   live,
 }: {
   readonly scope: AlarmScopeRef;
   readonly bucket: 'hour' | 'shift';
   readonly range: Range;
-  /** The plant clock's hour (its start): hours after it have not begun. */
-  readonly until: number | undefined;
+  /** The plant clock's hour (its start): only the hours before it are filled in. */
+  readonly clockHour: number | undefined;
   readonly live: boolean;
 }) {
   const key = scopeKey(scope);
@@ -446,9 +451,9 @@ function BucketTable({
   const loaded = rest.data !== undefined;
   const rows = useMemo((): AlarmHourRow[] => {
     const buckets = withPushed(rest.data?.buckets ?? [], pushed, range);
-    if (bucket === 'hour') return loaded ? alarmShiftHours(buckets, range, until) : [];
+    if (bucket === 'hour') return loaded ? alarmShiftHours(buckets, range, clockHour) : [];
     return buckets.map((b) => ({ key: b.key, from: b.from, to: b.to, bucket: b }));
-  }, [rest.data, pushed, range, until, bucket, loaded]);
+  }, [rest.data, pushed, range, clockHour, bucket, loaded]);
   const listed = useMemo(() => rows.flatMap((row) => (row.bucket ? [row.bucket] : [])), [rows]);
   const finality = groupFinality(listed);
   const withStatus = rows.some(
@@ -755,6 +760,18 @@ function BadActorTable({
   );
 }
 
+const NO_ACK = 'No acknowledgement in this shift';
+
+/** A time to acknowledge without any: the dash with its reason as visible text, as a tile's. */
+function NoAck() {
+  return (
+    <span className="flex flex-col">
+      <Missing reason={NO_ACK} reasonShown />
+      <span className="text-xs text-ink-secondary">{NO_ACK}</span>
+    </span>
+  );
+}
+
 function OperatorMeasures({
   scope,
   range,
@@ -816,20 +833,12 @@ function OperatorMeasures({
               measure(
                 'mean-time-to-ack',
                 'Mean time to acknowledge',
-                bucket.timeToAck.count === 0 ? (
-                  <Missing reason="No acknowledgement in this shift" />
-                ) : (
-                  meanTimeToAck(bucket.timeToAck)
-                ),
+                bucket.timeToAck.count === 0 ? <NoAck /> : meanTimeToAck(bucket.timeToAck),
               ),
               measure(
                 'max-time-to-ack',
                 'Longest time to acknowledge',
-                bucket.timeToAck.maxMs === null ? (
-                  <Missing reason="No acknowledgement in this shift" />
-                ) : (
-                  msText(bucket.timeToAck.maxMs)
-                ),
+                bucket.timeToAck.maxMs === null ? <NoAck /> : msText(bucket.timeToAck.maxMs),
               ),
               measure(
                 'unacknowledged',
@@ -902,8 +911,7 @@ export function AlarmKpi() {
   const clockHour = watermark === undefined ? undefined : Math.floor(watermark / HOUR) * HOUR;
   const weekTo = clockHour === undefined ? undefined : clockHour + HOUR;
   const live = selection.isCurrent;
-  // A past shift has ended by the plant clock: all of it, even before the clock is known.
-  const until = clockHour ?? (live || to === undefined ? undefined : to);
+
   const week = useMemo(
     () => (weekTo === undefined ? undefined : { from: weekTo - SHIFT_BUCKETS_MS, to: weekTo }),
     [weekTo],
@@ -1029,6 +1037,7 @@ export function AlarmKpi() {
                     }}
                     finality={cardFinality}
                     config={config}
+                    live={live}
                   />
                 );
               })}
@@ -1084,7 +1093,13 @@ export function AlarmKpi() {
         >
           <div className="flex flex-col gap-6">
             {bucket === 'hour' ? (
-              <BucketTable scope={focus} bucket="hour" range={range} until={until} live={live} />
+              <BucketTable
+                scope={focus}
+                bucket="hour"
+                range={range}
+                clockHour={clockHour}
+                live={live}
+              />
             ) : week === undefined ? (
               <Card padding="compact">
                 <EmptyState
@@ -1098,7 +1113,7 @@ export function AlarmKpi() {
                 scope={focus}
                 bucket="shift"
                 range={week}
-                until={undefined}
+                clockHour={undefined}
                 live={live}
               />
             )}

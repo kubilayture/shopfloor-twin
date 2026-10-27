@@ -385,20 +385,22 @@ export interface AlarmHourRow {
 }
 
 /**
- * Every hour of `range` that has begun by `until` (the plant clock: the hour it is in counts, as
- * the MES lists the hour in progress), aligned on the hour as the MES's buckets are, each with the
- * bucket of the same start from `buckets` (REST with the pushed one over it). A bucket outside
- * those hours is kept in its place: the MES's list is never shortened.
+ * Every hour of `range` that ended by the plant clock's hour (`clock`), aligned on the hour as the
+ * MES's buckets are, each with the bucket of the same start from `buckets` (REST with the pushed
+ * one over it). The hour the clock is in is left to the MES, which always lists the hour in
+ * progress (ADR-0024), so a fresh hour never shows as "No alarm activity" before its bucket
+ * arrives. Without a clock nothing is filled. A bucket outside those hours is kept in its place:
+ * the MES's list is never shortened.
  */
 export function alarmShiftHours(
   buckets: readonly AlarmKpiBucketDto[],
   range: { readonly from: number; readonly to: number },
-  until: number | undefined,
+  clock: number | undefined,
 ): AlarmHourRow[] {
   const byFrom = new Map<number, AlarmKpiBucketDto | undefined>(
     buckets.map((bucket) => [Date.parse(bucket.from), bucket]),
   );
-  const end = until === undefined ? range.from : Math.min(range.to, hourStart(until) + HOUR);
+  const end = clock === undefined ? range.from : Math.min(range.to, hourStart(clock));
   for (let hour = hourStart(range.from); hour < end; hour += HOUR) {
     if (!byFrom.has(hour)) byFrom.set(hour, undefined);
   }

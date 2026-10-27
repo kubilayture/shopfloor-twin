@@ -286,7 +286,7 @@ describe('alarmShiftHours (UX-4b, #325)', () => {
   const keys = (rows: ReturnType<typeof alarmShiftHours>) =>
     rows.map((row) => `${row.key.slice(11, 16)}${row.bucket ? '' : ' quiet'}`);
 
-  it('lists every hour begun by the plant clock, the MES buckets in their place', () => {
+  it('lists every hour before the hour of the plant clock, the MES buckets in their place', () => {
     const rows = alarmShiftHours(
       [hourKpi('2026-10-15T04:00:00.000Z'), hourKpi('2026-10-15T06:00:00.000Z')],
       shift,
@@ -299,11 +299,16 @@ describe('alarmShiftHours (UX-4b, #325)', () => {
       to: '2026-10-15T04:00:00.000Z',
       bucket: undefined,
     });
-    // The hour the clock is in has begun, even exactly on its start; the next has not.
-    expect(keys(alarmShiftHours([], shift, at('2026-10-15T05:00:00.000Z')))).toEqual([
+    // The hour in progress is the MES's to list: not filled, even before its bucket arrived, and
+    // not when the clock is exactly on its start.
+    expect(keys(alarmShiftHours([], shift, at('2026-10-15T06:10:00.000Z')))).toEqual([
       '03:00 quiet',
       '04:00 quiet',
       '05:00 quiet',
+    ]);
+    expect(keys(alarmShiftHours([], shift, at('2026-10-15T05:00:00.000Z')))).toEqual([
+      '03:00 quiet',
+      '04:00 quiet',
     ]);
   });
 
@@ -318,13 +323,14 @@ describe('alarmShiftHours (UX-4b, #325)', () => {
         alarmShiftHours(
           [hourKpi('2026-10-15T09:00:00.000Z')],
           shift,
-          at('2026-10-15T03:30:00.000Z'),
+          at('2026-10-15T04:30:00.000Z'),
         ),
       ),
     ).toEqual(['03:00 quiet', '09:00']);
     expect(keys(alarmShiftHours([hourKpi('2026-10-15T04:00:00.000Z')], shift, undefined))).toEqual([
       '04:00',
     ]);
+    expect(alarmShiftHours([], shift, undefined)).toEqual([]);
     // A shift that starts off the hour: the hours are the MES's, aligned on the hour.
     const half = { from: at('2026-10-15T03:30:00.000Z'), to: at('2026-10-15T05:30:00.000Z') };
     expect(keys(alarmShiftHours([], half, at('2026-10-15T09:00:00.000Z')))).toEqual([
@@ -332,5 +338,27 @@ describe('alarmShiftHours (UX-4b, #325)', () => {
       '04:00 quiet',
       '05:00 quiet',
     ]);
+  });
+
+  it('fills a night shift across midnight, by the instant (UX-4b review)', () => {
+    // Shift C, 22:00–06:00 plant time (UTC+3): 19:00 to 03:00 UTC, across both midnights.
+    const night = { from: at('2026-10-21T19:00:00.000Z'), to: at('2026-10-22T03:00:00.000Z') };
+    const rows = alarmShiftHours(
+      [hourKpi('2026-10-21T22:00:00.000Z'), hourKpi('2026-10-22T01:00:00.000Z')],
+      night,
+      at('2026-10-22T01:20:00.000Z'),
+    );
+    expect(rows.map((row) => `${row.from}${row.bucket ? '' : ' quiet'}`)).toEqual([
+      '2026-10-21T19:00:00.000Z quiet',
+      '2026-10-21T20:00:00.000Z quiet',
+      '2026-10-21T21:00:00.000Z quiet',
+      '2026-10-21T22:00:00.000Z',
+      '2026-10-21T23:00:00.000Z quiet',
+      '2026-10-22T00:00:00.000Z quiet',
+      '2026-10-22T01:00:00.000Z',
+    ]);
+    expect(rows[5]?.to).toBe('2026-10-22T01:00:00.000Z');
+    // Once over, every one of its eight hours.
+    expect(alarmShiftHours([], night, at('2026-10-22T05:00:00.000Z'))).toHaveLength(8);
   });
 });

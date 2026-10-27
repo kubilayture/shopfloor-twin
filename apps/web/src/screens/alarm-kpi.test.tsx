@@ -143,6 +143,8 @@ describe('alarm KPI page', () => {
       expect(measure(plant, 'average-rate')).toContain('Acceptable (≤ 1 per 10 min)');
     });
     expect(measure(plant, 'peak10')).toBe('12');
+    // The shift is running: the average is over the whole shift, which is not over (review).
+    expect(plant.textContent).toContain('Over the whole shift; the shift is not over');
     expect(measure(plant, 'flood-windows')).toBe('1 of 48');
     expect(measure(plant, 'flood-episodes')).toBe('1 (4.0 min)');
     expect(measure(plant, 'chattering')).toBe('3 (1)');
@@ -430,6 +432,8 @@ describe('alarm KPI page', () => {
         'No acknowledgement in this shift',
       );
       expect(value?.textContent).not.toContain('n/a');
+      // The reason is visible text, as a tile's (review), and said once to a screen reader.
+      expect(value?.textContent).toBe('—No acknowledgement in this shift');
     }
   });
 

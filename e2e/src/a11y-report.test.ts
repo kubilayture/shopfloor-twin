@@ -10,6 +10,8 @@ import {
   fromAxe,
   gateVerdict,
   iosLockFinding,
+  aboveMainChange,
+  connectionSettled,
   longestTableRun,
   pagesPerItem,
   tableRuns,
@@ -523,6 +525,34 @@ describe('iosLockFinding', () => {
     expect(iosLockFinding({ ...base, backdropTouchAction: 'none' })).toEqual([]);
     expect(iosLockFinding({ ...base, bodyPosition: 'fixed' })).toEqual([]);
     expect(iosLockFinding({ ...base, htmlOverflowY: 'visible' })).toEqual([]);
+  });
+});
+
+describe('the drawer check’s settled page (#398)', () => {
+  it('waits until the live connection is open or shown as lost', () => {
+    expect(connectionSettled({ status: 'open', bar: false })).toBe(true);
+    expect(connectionSettled({ status: 'reconnecting', bar: true })).toBe(true);
+    expect(connectionSettled({ status: 'stopped', bar: true })).toBe(true);
+    expect(connectionSettled({ status: 'connecting', bar: false })).toBe(false);
+    expect(connectionSettled({ status: 'reconnecting', bar: false })).toBe(false);
+    expect(connectionSettled({ status: null, bar: false })).toBe(false);
+  });
+
+  it('names what changed above main between two measurements, nothing when nothing did', () => {
+    const shell = { bar: 0, topBar: 48 };
+    expect(aboveMainChange(shell, { ...shell }, 'opening')).toBeUndefined();
+    expect(aboveMainChange(shell, { bar: 78, topBar: 48 }, 'opening')).toBe(
+      'opening: the offline bar appeared (78 px)',
+    );
+    expect(aboveMainChange({ bar: 78, topBar: 48 }, shell, 'scrolling')).toBe(
+      'scrolling: the offline bar went',
+    );
+    expect(aboveMainChange({ bar: 37, topBar: 48 }, { bar: 78, topBar: 48 }, 'opening')).toBe(
+      "opening: the offline bar's height went from 37 to 78 px",
+    );
+    expect(aboveMainChange(shell, { bar: 78, topBar: 56 }, 'opening')).toBe(
+      "opening: the offline bar appeared (78 px); the top bar's height went from 48 to 56 px",
+    );
   });
 });
 

@@ -859,6 +859,52 @@ export function iosLockFinding(styles: Readonly<Record<string, string>>): string
     : [];
 }
 
+/**
+ * The live connection as a page shows it (#398): the header's status (`connection-status`'s
+ * `data-status`) and whether the offline bar is up. The drawer check measures only once it is
+ * settled, connected or already shown as lost: a bar that appears while the drawer is open lies
+ * above `main` in the locked page and moves it (WebKit's live socket is not routed, so there the
+ * bar comes a moment after the page loads).
+ */
+export interface ConnectionState {
+  readonly status: string | null;
+  readonly bar: boolean;
+}
+
+export function connectionSettled(state: ConnectionState): boolean {
+  return state.bar || state.status === 'open';
+}
+
+/** What sits above `main` (#398): the offline bar's height (0 without one) and the top bar's. */
+export interface AboveMain {
+  readonly bar: number;
+  readonly topBar: number;
+}
+
+/**
+ * What changed above `main` between two measurements of the drawer check, or `undefined`: then
+ * a change of `main`'s place is the drawer's own doing; otherwise it is measured once more.
+ */
+export function aboveMainChange(
+  from: AboveMain,
+  to: AboveMain,
+  between: string,
+): string | undefined {
+  const changes = [
+    from.bar === to.bar
+      ? undefined
+      : from.bar === 0
+        ? `the offline bar appeared (${String(to.bar)} px)`
+        : to.bar === 0
+          ? 'the offline bar went'
+          : `the offline bar's height went from ${String(from.bar)} to ${String(to.bar)} px`,
+    from.topBar === to.topBar
+      ? undefined
+      : `the top bar's height went from ${String(from.topBar)} to ${String(to.topBar)} px`,
+  ].filter((change) => change !== undefined);
+  return changes.length === 0 ? undefined : `${between}: ${changes.join('; ')}`;
+}
+
 /** The impacts that fail the gate; moderate and minor are listed. */
 export const FAILING_IMPACTS: readonly Impact[] = ['critical', 'serious'];
 

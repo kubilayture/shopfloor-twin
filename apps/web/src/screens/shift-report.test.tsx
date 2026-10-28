@@ -507,6 +507,14 @@ describe('shift report', () => {
     expect(row.textContent).toContain('Provisional');
     expect(row.textContent).toContain('06:00 – 14:00');
     expect(screen.getByTestId('shift-list-summary').textContent).toBe('2 shifts · 1 not final yet');
+    // G-33 (UX-F1): a link before the list past the shifts to the note under it.
+    const skip = screen.getByRole('link', { name: 'Skip past the shifts' });
+    expect(skip.getAttribute('href')).toBe('#shift-list-note');
+    expect(skip.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const note = screen.getByText(/A report is final once every input/);
+    expect(note.id).toBe('shift-list-note');
+    fireEvent.click(skip);
+    expect(document.activeElement).toBe(note);
 
     // Final: "Ended" and "Final", never "Final Final"; a revision adds its column.
     await app.push({

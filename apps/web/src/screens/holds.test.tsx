@@ -142,6 +142,16 @@ describe('opening a hold', () => {
     expect(within(result).getByTestId('open-message').textContent).toContain('no lot K9');
   });
 
+  it('says "1 reading" for a suggestion of one reading (#393 re-review)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      qualityMes(qualityState({ suggestions: { 2: suggestion({ readings: 1 }) } })).fetch,
+    );
+    await renderApp('/quality/holds/new?signal=2', { session: QUALITY });
+    const panel = await screen.findByTestId('hold-suggestion');
+    expect(panel.textContent).toContain('the 1 reading (every pass) from');
+  });
+
   it('holds subjects from a signal’s suggested scope, one hold each; a resubmit never holds one twice', async () => {
     const state = qualityState({ suggestions: { 2: suggestion() } });
     let n = 0;
@@ -168,6 +178,7 @@ describe('opening a hold', () => {
     expect(panel.dataset.final).toBe('false');
     expect(screen.getByTestId('hold-suggestion-provisional')).toBeTruthy();
     expect(screen.getByTestId('hold-suggestion-from').textContent).not.toBe('');
+    expect(panel.textContent).toContain('the 2 readings (every pass) from');
     // No subject chosen: nothing is sent.
     fireEvent.click(screen.getByTestId('open-submit'));
     expect(screen.getByTestId('open-invalid').textContent).toContain('at least one');

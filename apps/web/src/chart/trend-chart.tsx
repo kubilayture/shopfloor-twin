@@ -3,6 +3,7 @@ import { EmptyState } from '../components/ui/empty-state.tsx';
 import { plainText } from '../domain/numbers.ts';
 import type { ChartData } from '../domain/series.ts';
 import { CHART_SIZES } from './theme.ts';
+import { countOf } from '../domain/words.ts';
 
 export interface TrendChartProps {
   readonly data: ChartData;
@@ -56,7 +57,7 @@ export function TrendChart({
       <figcaption className="mb-2 font-semibold text-ink">
         {label} <span className="font-normal text-ink-secondary">({props.unit})</span>
         <span className="sr-only">
-          : chart of the minimum to maximum band and the average, {String(points)} points
+          : chart of the minimum to maximum band and the average, {countOf(points, 'point')}
         </span>
       </figcaption>
       {points === 0 ? (

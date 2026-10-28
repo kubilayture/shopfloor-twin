@@ -474,7 +474,7 @@ function Suggestion({
         </h2>
         <p className="mt-1 text-ink-secondary">
           {suggestion.chart}, rule {suggestion.rule}, on {suggestion.characteristic}: the{' '}
-          {suggestion.readings} readings (every pass) from{' '}
+          {countOf(suggestion.readings, 'reading')} (every pass) from{' '}
           <span data-testid="hold-suggestion-from">{timeOf(suggestion.from.at)}</span> (
           {suggestion.after ? (
             <>after the last in-control point at {timeOf(suggestion.after.at)}</>

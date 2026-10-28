@@ -159,7 +159,11 @@ describe('SPC chart page', () => {
     fireEvent.click(screen.getByTestId('spc-values-toggle-I'));
     expect(valueCell('spc-values-I', 0)).toBe('2.100');
     expect(valueCell('spc-values-I', 1)).toBe('3.381');
+    // One moving range: "Show the value", never "Show all 1 value" (#393 re-review).
+    expect(screen.getByTestId('spc-values-toggle-I').textContent).toBe('Hide the values');
+    expect(screen.getByTestId('spc-values-toggle-MR').textContent).toBe('Show the value');
     fireEvent.click(screen.getByTestId('spc-values-toggle-MR'));
+    expect(screen.getByTestId('spc-values-toggle-MR').textContent).toBe('Hide the value');
     expect(valueCell('spc-values-MR')).toBe('0.300');
     // X̄ points, centre lines and limits are statistics: one decimal more.
     fireEvent.click(screen.getByTestId('spc-values-toggle-Xbar'));

@@ -87,6 +87,15 @@ describe('TrendChart (UX-1f)', () => {
     expect(figure?.dataset.print).toBe('hidden');
   });
 
+  it('counts its samples for a screen reader, one in the singular (#393 re-review)', () => {
+    render(
+      <TrendChart label="Spindle load" unit="%" window={WINDOW} data={[[1], [18], [24], [21]]} />,
+    );
+    expect(document.querySelector('figcaption .sr-only')?.textContent).toBe(
+      ': chart of the minimum to maximum band and the average, 1 point',
+    );
+  });
+
   it('shows an empty state at the compact height without samples', () => {
     render(<TrendChart label="Spindle load" unit="%" window={WINDOW} data={[[], [], [], []]} />);
     const empty = screen.getByText('No samples in this range');

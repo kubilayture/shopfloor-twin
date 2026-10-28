@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   formatReport,
+  namedColoursIn,
   palettesFrom,
   rawColours,
   scan,
@@ -96,6 +97,29 @@ describe('rawColours', () => {
     expect(rawColours(source).hexes).toEqual(['#fff']);
   });
 
+  it('finds named colours in a stylesheet and in arbitrary classes, not in urls or templates (#393 re-review)', () => {
+    const css = `.x { color: red; border: 1px solid navy; background: var(--color-surface); }\n.y { background-image: url(red.png); fill: context-fill; }`;
+    expect(rawColours(css, undefined, { css: true }).values).toEqual([
+      'color: red',
+      'border: 1px solid navy',
+    ]);
+    // In code, an unquoted `color: red` is a variable, not a colour.
+    expect(rawColours(`const style = { color: red };`).values).toEqual([]);
+    expect(
+      rawColours(
+        `<p className="text-[red] bg-[color:blue] w-[calc(100%-1rem)] text-[length:12px]" />`,
+      ).values,
+    ).toEqual(['text-[red]', 'bg-[color:blue]']);
+    const notColours = [
+      `const a = { background: 'url(a.png)' };`,
+      'const b = { borderColor: `${tone}` };',
+      `const c = { fill: 'context-fill', stroke: 'context-stroke' };`,
+    ].join('\n');
+    expect(rawColours(notColours).values).toEqual([]);
+    expect(namedColoursIn('1px solid navy')).toEqual(['navy']);
+    expect(namedColoursIn('url(red.png) ${x}')).toEqual([]);
+  });
+
   it('drops comments but keeps strings that hold comment markers', () => {
     expect(withoutComments(`a // b\nc /* d */ e '//f' "/*g*/"`)).toBe(`a \nc  e '//f' "/*g*/"`);
   });
@@ -104,6 +128,7 @@ describe('rawColours', () => {
 describe('scan and formatReport', () => {
   it('reports each file with raw colours, most first, and skips the token files and tests', () => {
     const root = webTree({
+      'src/styles/extra.css': `.x { color: red; }`,
       'src/screens/a.tsx': `<p className="bg-slate-50 text-white">'#ffffff'</p>`,
       'src/screens/b.tsx': `<p className="bg-red-700" />`,
       'src/chart/c.ts': `const x = '#0369a1';`,
@@ -126,6 +151,7 @@ describe('scan and formatReport', () => {
       { file: 'src/chart/c.ts', classes: [], hexes: ['#0369a1'], values: [] },
       { file: 'src/legacy.jsx', classes: [], hexes: [], values: ["color: 'red'"] },
       { file: 'src/screens/b.tsx', classes: ['bg-red-700'], hexes: [], values: [] },
+      { file: 'src/styles/extra.css', classes: [], hexes: [], values: ['color: red'] },
     ]);
     expect(formatReport(reports).split('\n')).toEqual([
       'check-ui-tokens: raw colours in apps/web/src (none allowed; design system section 8)',
@@ -134,7 +160,8 @@ describe('scan and formatReport', () => {
       '      0     1      0  src/chart/c.ts',
       '      0     0      1  src/legacy.jsx',
       '      1     0      0  src/screens/b.tsx',
-      '      3     2      1  total in 4 files',
+      '      0     0      1  src/styles/extra.css',
+      '      3     2      2  total in 5 files',
     ]);
   });
 

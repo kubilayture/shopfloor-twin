@@ -11,8 +11,9 @@
  *
  * Also counted (#393 review F3): colour functions with literal arguments (`rgb(15 23 42)`,
  * `oklch(0.6 0.2 30)`, in an arbitrary value such as `text-[rgb(…)]` too) and colour properties
- * given a literal value (`style={{ color: 'red' }}`, `fill: 'teal'`) other than `transparent`,
- * `currentColor`, `none`, the CSS-wide keywords or a `var(…)`. The palettes are Tailwind's own,
+ * given a literal value that names a CSS colour (`style={{ color: 'red' }}`, `fill: 'teal'`), an
+ * arbitrary class with one (`text-[red]`, `bg-[color:blue]`) and, in a stylesheet, a declaration
+ * with one (`.x { color: red }`); `url(…)`, a template's `${…}` and `context-fill` are no colour. The palettes are Tailwind's own,
  * read from the installed `tailwindcss/theme.css`, so a palette a Tailwind release adds is caught.
  *
  * Comments are left out (an issue number such as `#145` would read as a colour). Known limits (a
@@ -98,8 +99,176 @@ const COLOUR_FUNCTION = /\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(\s*[\d
 const COLOUR_PROPERTY =
   /\b(?:color|[a-zA-Z]+Color|background|fill|stroke)\s*:\s*(['"`])([^'"`\n]*)\1/g;
 
-/** Values a colour property may hold without naming a colour. */
-const NOT_A_COLOUR = /^(?:transparent|currentcolor|none|inherit|initial|unset|revert|var\(.*\))$/i;
+/** The CSS named colours (`transparent` and `currentColor` name none and are left out). */
+const NAMED_COLOURS: ReadonlySet<string> = new Set([
+  'aliceblue',
+  'antiquewhite',
+  'aqua',
+  'aquamarine',
+  'azure',
+  'beige',
+  'bisque',
+  'black',
+  'blanchedalmond',
+  'blue',
+  'blueviolet',
+  'brown',
+  'burlywood',
+  'cadetblue',
+  'chartreuse',
+  'chocolate',
+  'coral',
+  'cornflowerblue',
+  'cornsilk',
+  'crimson',
+  'cyan',
+  'darkblue',
+  'darkcyan',
+  'darkgoldenrod',
+  'darkgray',
+  'darkgreen',
+  'darkgrey',
+  'darkkhaki',
+  'darkmagenta',
+  'darkolivegreen',
+  'darkorange',
+  'darkorchid',
+  'darkred',
+  'darksalmon',
+  'darkseagreen',
+  'darkslateblue',
+  'darkslategray',
+  'darkslategrey',
+  'darkturquoise',
+  'darkviolet',
+  'deeppink',
+  'deepskyblue',
+  'dimgray',
+  'dimgrey',
+  'dodgerblue',
+  'firebrick',
+  'floralwhite',
+  'forestgreen',
+  'fuchsia',
+  'gainsboro',
+  'ghostwhite',
+  'gold',
+  'goldenrod',
+  'gray',
+  'green',
+  'greenyellow',
+  'grey',
+  'honeydew',
+  'hotpink',
+  'indianred',
+  'indigo',
+  'ivory',
+  'khaki',
+  'lavender',
+  'lavenderblush',
+  'lawngreen',
+  'lemonchiffon',
+  'lightblue',
+  'lightcoral',
+  'lightcyan',
+  'lightgoldenrodyellow',
+  'lightgray',
+  'lightgreen',
+  'lightgrey',
+  'lightpink',
+  'lightsalmon',
+  'lightseagreen',
+  'lightskyblue',
+  'lightslategray',
+  'lightslategrey',
+  'lightsteelblue',
+  'lightyellow',
+  'lime',
+  'limegreen',
+  'linen',
+  'magenta',
+  'maroon',
+  'mediumaquamarine',
+  'mediumblue',
+  'mediumorchid',
+  'mediumpurple',
+  'mediumseagreen',
+  'mediumslateblue',
+  'mediumspringgreen',
+  'mediumturquoise',
+  'mediumvioletred',
+  'midnightblue',
+  'mintcream',
+  'mistyrose',
+  'moccasin',
+  'navajowhite',
+  'navy',
+  'oldlace',
+  'olive',
+  'olivedrab',
+  'orange',
+  'orangered',
+  'orchid',
+  'palegoldenrod',
+  'palegreen',
+  'paleturquoise',
+  'palevioletred',
+  'papayawhip',
+  'peachpuff',
+  'peru',
+  'pink',
+  'plum',
+  'powderblue',
+  'purple',
+  'rebeccapurple',
+  'red',
+  'rosybrown',
+  'royalblue',
+  'saddlebrown',
+  'salmon',
+  'sandybrown',
+  'seagreen',
+  'seashell',
+  'sienna',
+  'silver',
+  'skyblue',
+  'slateblue',
+  'slategray',
+  'slategrey',
+  'snow',
+  'springgreen',
+  'steelblue',
+  'tan',
+  'teal',
+  'thistle',
+  'tomato',
+  'turquoise',
+  'violet',
+  'wheat',
+  'white',
+  'whitesmoke',
+  'yellow',
+  'yellowgreen',
+]);
+
+/**
+ * The named colours a value names, as words: `url(…)` and `${…}` (a template's expression) are
+ * left out, so `url(red.png)` and `${tone}` are no colour, nor is `context-fill`.
+ */
+export function namedColoursIn(value: string): string[] {
+  const words = value
+    .replace(/url\([^)]*\)/gi, ' ')
+    .replace(/\$\{[^}]*\}/g, ' ')
+    .split(/[^a-zA-Z-]+/);
+  return words.filter((word) => NAMED_COLOURS.has(word.toLowerCase()));
+}
+
+/** A colour-taking declaration in a stylesheet (`color: red`, `border: 1px solid navy`). */
+const CSS_DECLARATION =
+  /(?<![\w-])((?:[a-z-]*-)?(?:color|background|border|outline|fill|stroke|shadow)(?:-[a-z-]+)?)\s*:\s*([^;{}]+)/g;
+
+/** An arbitrary value that is a named colour: `text-[red]`, `bg-[color:blue]`. */
+const ARBITRARY_NAMED = /(?<![\w-])(?:[\w-]+:)*[a-z][\w-]*-\[(?:color:)?([a-zA-Z]+)\](?![\w-])/g;
 
 /** `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`; not an HTML entity (`&#123;`) or a longer word. */
 const HEX = /(?<![&\w])#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})(?![\w-])/g;
@@ -130,6 +299,7 @@ export function withoutComments(source: string): string {
 export function rawColours(
   source: string,
   palettes: readonly string[] = repoPalettes(),
+  { css = false }: { readonly css?: boolean } = {},
 ): RawColours {
   const code = withoutComments(source);
   return {
@@ -138,10 +308,17 @@ export function rawColours(
     values: [
       ...[...code.matchAll(COLOUR_FUNCTION)].map((match) => match[0]),
       ...[...code.matchAll(COLOUR_PROPERTY)]
-        .filter(
-          (match) => !NOT_A_COLOUR.test((match[2] ?? '').trim()) && !(match[2] ?? '').includes('#'),
-        )
+        .filter((match) => namedColoursIn(match[2] ?? '').length > 0)
         .map((match) => match[0]),
+      ...[...code.matchAll(ARBITRARY_NAMED)]
+        .filter((match) => NAMED_COLOURS.has((match[1] ?? '').toLowerCase()))
+        .map((match) => match[0]),
+      // A stylesheet's own declarations, unquoted (in code, `color: red` would be a variable).
+      ...(css
+        ? [...code.matchAll(CSS_DECLARATION)]
+            .filter((match) => namedColoursIn(match[2] ?? '').length > 0)
+            .map((match) => match[0].trim())
+        : []),
     ],
   };
 }
@@ -170,7 +347,9 @@ export function scan(root: string, palettes: readonly string[] = repoPalettes())
       }
       const file = relative(web, path).split(sep).join('/');
       if (!entry.isFile() || !isScanned(file)) continue;
-      const found = rawColours(readFileSync(path, 'utf8'), palettes);
+      const found = rawColours(readFileSync(path, 'utf8'), palettes, {
+        css: file.endsWith('.css'),
+      });
       if (found.classes.length + found.hexes.length + found.values.length > 0) {
         reports.push({ file, ...found });
       }

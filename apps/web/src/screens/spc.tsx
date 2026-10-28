@@ -613,7 +613,13 @@ function ChartFigure({
               setShowAll((v) => !v);
             }}
           >
-            {showAll ? 'Hide the values' : `Show all ${countOf(points.length, 'value')}`}
+            {points.length === 1
+              ? showAll
+                ? 'Hide the value'
+                : 'Show the value'
+              : showAll
+                ? 'Hide the values'
+                : `Show all ${countOf(points.length, 'value')}`}
           </Button>
           {showAll ? (
             <div id={valuesId} className="mt-2">

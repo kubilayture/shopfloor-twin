@@ -12,13 +12,21 @@ import {
 import {
   budgetFromEnv,
   duplicateTitles,
+  DRAWER_WIDTHS,
+  KEYBOARD_WIDTHS,
+  OVERLAY_WIDTH,
+  TOUCH_ENGINES,
   entryKey,
   filterFromEnv,
+  gateVerdict,
   iosLockFinding,
+  pagesPerItem,
   rolesOf,
   routeSelected,
   statesOf,
   summarize,
+  themesOf,
+  themeWidths,
   validateRoutes,
   widthsOf,
   SHELL,
@@ -30,6 +38,7 @@ import {
   type OverlayCheck,
   type PageState,
   type Skipped,
+  type Theme,
   type TouchScrollCheck,
 } from '../../src/a11y-report.ts';
 import { account, logIn, type Account } from '../login.ts';
@@ -49,11 +58,13 @@ import {
 import { DISCOVERY, ROUTES, type RouteSpec } from './routes.ts';
 
 /**
- * The visual and accessibility harness (UX-1g, #321), report-only. The reconciliation runs it
+ * The visual and accessibility harness (UX-1g, #321) and gate (UX-F1, #337). The reconciliation runs it
  * after its passes when `RECONCILE_A11Y=1` (src/reconcile.ts), on the last pass's stack: data from
  * the shift, one user per role. Every route (routes.ts) in its data-rich, empty and not-found
- * state, as each role, at 1440, 1280, 1024, 768 and 390 px: axe with the WCAG 2.2 A and AA rules,
- * a screenshot, the title and whether the page scrolls sideways. Then, once the supervisor's data
+ * state, as each role, at 1440, 1280, 1024, 768 and 390 px in the light theme and at 1440 and
+ * 390 px in the dark one (`DARK_WIDTHS`; the device setting emulated, UX-12's System choice):
+ * axe with the WCAG 2.2 A and AA rules, a screenshot, the title and whether the page scrolls
+ * sideways. Then, once the supervisor's data
  * pages are in: each route's `document.title` distinct (G-05), Tab-order and focus-visibility
  * sampling at 1440 and 390 (G-33), the overlays the pages open and the nav drawer (containment,
  * `inert`, Escape, outside click), and touch scrolling behind the open drawer in Chromium's mobile
@@ -61,22 +72,21 @@ import { DISCOVERY, ROUTES, type RouteSpec } from './routes.ts';
  *
  * Order, so a budget cut leaves the most useful part: the supervisor's data pages (and the signed
  * out ones), the checks above, the supervisor's empty and not-found pages, then the other roles'.
- * Past `A11Y_BUDGET_MS` (15 minutes) it stops and the report lists what it did not reach.
+ * Past `A11Y_BUDGET_MS` (40 minutes) it stops and the report lists what it did not reach.
  *
- * Writes `report.json`, `summary.md` and `screens/` to `A11Y_RESULTS` (default e2e/results/a11y).
- * It never fails on a finding; it fails only when it cannot run (no stack, the supervisor's login).
- * Narrowed with `A11Y_ROUTES`, `A11Y_ROLES`, `A11Y_WIDTHS`, `A11Y_STATES` (src/a11y-report.ts);
- * `A11Y_IDS` (JSON) gives detail ids, the rest are found on the list pages.
+ * Writes `report.json`, `summary.md` and `screens/` to `A11Y_RESULTS` (default e2e/results/a11y),
+ * then fails on the gate's verdict (`gateVerdict`): any critical or serious rule, any page not
+ * measured (a budget cut is a failure, not a pass), a shared title, a failed overlay or drawer
+ * check, touch scrolling behind the drawer not proven stopped, a write. Moderate and minor rules
+ * are listed in `summary.md`. Narrowed with `A11Y_ROUTES`, `A11Y_ROLES`, `A11Y_WIDTHS`,
+ * `A11Y_STATES`, `A11Y_THEMES` (src/a11y-report.ts); `A11Y_IDS` (JSON) gives detail ids, the rest
+ * are found on the list pages.
  */
 const web = process.env.RECONCILE_WEB_URL ?? '';
 const RESULTS = process.env.A11Y_RESULTS
   ? resolve(process.env.INIT_CWD ?? process.cwd(), process.env.A11Y_RESULTS)
   : join(import.meta.dirname, '../../results/a11y');
 const SCREENS = 'screens';
-/** Keyboard sampling widths: the desktop and the phone (the drawer layout). */
-const KEYBOARD_WIDTHS = [1440, 390];
-/** The drawer is checked below the `xl` breakpoint (1280 px). */
-const DRAWER_WIDTHS = [1024, 390];
 
 interface Item {
   readonly route: RouteSpec;
@@ -108,7 +118,7 @@ function watchWrites(context: BrowserContext, writes: string[]): void {
   });
 }
 
-test('visual and accessibility harness (report-only)', async ({ browser }) => {
+test('visual and accessibility harness (gate)', async ({ browser }) => {
   test.skip(web === '', 'runs inside pnpm test:reconcile with RECONCILE_A11Y=1');
   // A typo in a variable throws here: the run cannot check what it was asked to.
   const BUDGET_MS = budgetFromEnv(process.env);
@@ -132,18 +142,22 @@ test('visual and accessibility harness (report-only)', async ({ browser }) => {
   const writes: string[] = [];
   const keyboard: KeyboardSample[] = [];
   const overlays: OverlayCheck[] = [];
+  const overlayScans: { route: string; width: number }[] = [];
   const touchScroll: TouchScrollCheck[] = [];
   const titles: Record<string, string> = {};
   let axeVersion = '';
   let planned = 0;
   let stoppedByBudget = false;
   const widths = widthsOf(filter);
+  const themes = themesOf(filter);
+  const perItem = pagesPerItem(filter);
   const roles = rolesOf(filter);
   const states = statesOf(filter);
   const routes = ROUTES.filter((r) => routeSelected(filter, r.id, r.path));
   const shell = filter.routes.length === 0 || filter.routes.includes(SHELL);
 
-  const write = async () => {
+  /** Writes the report and summary as they stand, and returns the report. */
+  const write = async (): Promise<A11yReport> => {
     const report: A11yReport = {
       version: 1,
       startedAt,
@@ -159,7 +173,7 @@ test('visual and accessibility harness (report-only)', async ({ browser }) => {
         failed: entries.filter((e) => e.error !== undefined).length,
         skipped,
         notReached,
-        notReachedPages: notReached.length * widths.length,
+        notReachedPages: notReached.length * perItem,
         loginFailed,
         loginFailedPages,
       },
@@ -167,11 +181,13 @@ test('visual and accessibility harness (report-only)', async ({ browser }) => {
       titles: { byRoute: titles, duplicates: duplicateTitles(titles) },
       keyboard,
       overlays,
+      overlayScans,
       touchScroll,
       writes,
     };
     await writeFile(join(RESULTS, 'report.json'), `${JSON.stringify(report, null, 1)}\n`);
-    await writeFile(join(RESULTS, 'summary.md'), summarize(report));
+    await writeFile(join(RESULTS, 'summary.md'), summarize(report, ROUTES));
+    return report;
   };
 
   // The run's users: the supervisor always (the run cannot go on without it), the others when the
@@ -260,81 +276,89 @@ test('visual and accessibility harness (report-only)', async ({ browser }) => {
     tier(others, ['data']),
     tier(others, ['empty', 'not-found']),
   ];
-  planned = tiers.flat().length * widths.length;
+  planned = tiers.flat().length * perItem;
 
-  /** Loads one item and measures it at every width; errors are recorded, never thrown. */
+  /**
+   * Loads one item and measures it at each width of each theme: light first, then the dark theme
+   * switched on the loaded page by the emulated device setting (UX-12's System choice follows it,
+   * as it does for a user who changes the setting). A page whose theme did not apply is a failed
+   * page, not a light one counted as dark. Errors are recorded, never thrown.
+   */
   const visit = async (page: Page, item: Item) => {
+    const base = (width: number, theme: Theme) => ({
+      route: item.route.id,
+      state: item.state,
+      role: item.role,
+      width,
+      theme,
+      url: item.url,
+    });
+    const failed = (width: number, theme: Theme, ready: boolean, error: unknown): Entry => ({
+      ...base(width, theme),
+      title: '',
+      screenshot: null,
+      ready,
+      overflowX: false,
+      counts: zeroCounts(),
+      violations: [],
+      error: message(error),
+    });
     let ready: boolean;
     try {
+      await page.emulateMedia({ colorScheme: 'light' });
       await page.setViewportSize({ width: 1440, height: 900 });
       await page.goto(item.url);
       ready = await settle(page);
     } catch (error) {
-      for (const width of widths) {
-        entries.push({
-          route: item.route.id,
-          state: item.state,
-          role: item.role,
-          width,
-          theme: 'light',
-          url: item.url,
-          title: '',
-          screenshot: null,
-          ready: false,
-          overflowX: false,
-          counts: zeroCounts(),
-          violations: [],
-          error: message(error),
-        });
-      }
+      for (const theme of themes)
+        for (const width of themeWidths(filter, theme))
+          entries.push(failed(width, theme, false, error));
       return;
     }
-    for (const width of widths) {
-      const base = {
-        route: item.route.id,
-        state: item.state,
-        role: item.role,
-        width,
-        theme: 'light' as const,
-        url: item.url,
-      };
+    for (const theme of themes) {
+      const themeWidthList = themeWidths(filter, theme);
       try {
-        await page.setViewportSize({ width, height: heightFor(width) });
-        await frames(page);
-        const m = await measure(page);
-        axeVersion ||= m.axeVersion;
-        const shot = join(
-          SCREENS,
-          fileSafe(item.role),
-          `${fileSafe(`${item.route.id}-${item.state}`)}-${String(width)}.jpg`,
-        );
-        await mkdir(join(RESULTS, SCREENS, fileSafe(item.role)), { recursive: true });
-        await screenshot(page, join(RESULTS, shot), width);
-        entries.push({
-          ...base,
-          title: m.title,
-          screenshot: shot,
-          ready,
-          overflowX: m.overflowX,
-          counts: m.counts,
-          violations: m.violations,
-        });
-        // Each route's title from the first page measured as the supervisor (signed out for the
-        // login): its data state where it has one, as the tiers come in that order.
-        if (width === widths[0] && (item.role === 'supervisor' || item.role === 'signed-out')) {
-          titles[item.route.id] ??= m.title;
-        }
+        await useTheme(page, theme);
       } catch (error) {
-        entries.push({
-          ...base,
-          title: '',
-          screenshot: null,
-          ready,
-          overflowX: false,
-          counts: zeroCounts(),
-          violations: [],
-          error: message(error),
-        });
+        for (const width of themeWidthList) entries.push(failed(width, theme, ready, error));
+        continue;
+      }
+      for (const width of themeWidthList) {
+        try {
+          await page.setViewportSize({ width, height: heightFor(width) });
+          await frames(page);
+          const m = await measure(page);
+          axeVersion ||= m.axeVersion;
+          // The light screenshots keep UX-1g's names, so before/after folders still line up.
+          const suffix = theme === 'light' ? '' : `-${theme}`;
+          const shot = join(
+            SCREENS,
+            fileSafe(item.role),
+            `${fileSafe(`${item.route.id}-${item.state}`)}-${String(width)}${suffix}.jpg`,
+          );
+          await mkdir(join(RESULTS, SCREENS, fileSafe(item.role)), { recursive: true });
+          await screenshot(page, join(RESULTS, shot), width);
+          entries.push({
+            ...base(width, theme),
+            title: m.title,
+            screenshot: shot,
+            ready,
+            overflowX: m.overflowX,
+            counts: m.counts,
+            violations: m.violations,
+          });
+          // Each route's title from the first page measured as the supervisor (signed out for
+          // the login): its data state where it has one, as the tiers come in that order.
+          if (
+            theme === themes[0] &&
+            width === themeWidthList[0] &&
+            (item.role === 'supervisor' || item.role === 'signed-out')
+          ) {
+            titles[item.route.id] ??= m.title;
+          }
+        } catch (error) {
+          entries.push(failed(width, theme, ready, error));
+        }
       }
     }
   };
@@ -359,7 +383,7 @@ test('visual and accessibility harness (report-only)', async ({ browser }) => {
         }
         // A role whose login failed once is not tried again: its pages count as lost to it.
         if (failedRoles.has(item.role)) {
-          loginFailedPages += widths.length;
+          loginFailedPages += perItem;
           continue;
         }
         let s = sessions.get(item.role);
@@ -374,7 +398,7 @@ test('visual and accessibility harness (report-only)', async ({ browser }) => {
               role: item.role,
               reason: `login failed: ${message(error)}`,
             });
-            loginFailedPages += widths.length;
+            loginFailedPages += perItem;
             await write();
             continue;
           }
@@ -391,22 +415,31 @@ test('visual and accessibility harness (report-only)', async ({ browser }) => {
   const [first = [], second = [], third = [], fourth = []] = tiers;
   await runTier(first);
 
-  // Keyboard sampling and the overlays each page opens, as the supervisor.
+  // Keyboard sampling and the overlays each page opens, as the supervisor, in the light theme
+  // (neither depends on colour). One the budget left is recorded as not taken: a gate failure.
   const page = supervisor.page;
+  await page.emulateMedia({ colorScheme: 'light' });
   for (const item of first.filter((i) => i.role === 'supervisor')) {
     for (const width of KEYBOARD_WIDTHS.filter((w) => widths.includes(w))) {
-      if (overBudget()) break;
+      if (overBudget()) {
+        stoppedByBudget = true;
+        keyboard.push({
+          route: item.route.id,
+          role: 'supervisor',
+          width,
+          stops: [],
+          longestTableRun: 0,
+          findings: [],
+          error: 'not reached within the budget',
+        });
+        continue;
+      }
       try {
         await page.setViewportSize({ width, height: heightFor(width) });
         await page.goto(item.url);
         await settle(page);
         const k = await sampleKeyboard(page);
         keyboard.push({ route: item.route.id, role: 'supervisor', width, ...k });
-        if (width === 1440) {
-          await page.goto(item.url);
-          await settle(page);
-          overlays.push(...(await checkOverlays(page, item.route.id, width)));
-        }
       } catch (error) {
         keyboard.push({
           route: item.route.id,
@@ -414,14 +447,46 @@ test('visual and accessibility harness (report-only)', async ({ browser }) => {
           width,
           stops: [],
           longestTableRun: 0,
-          findings: [`could not be sampled: ${message(error)}`],
+          findings: [],
+          error: `could not be sampled: ${message(error)}`,
         });
+      }
+      // The overlays the page opens, once, at the desktop width; a scan that fails is an overlay
+      // finding, and a scan left out is missing from `overlayScans` (both fail the gate).
+      if (width === OVERLAY_WIDTH) {
+        try {
+          await page.goto(item.url);
+          await settle(page);
+          overlays.push(...(await checkOverlays(page, item.route.id, width)));
+          overlayScans.push({ route: item.route.id, width });
+        } catch (error) {
+          overlays.push({
+            route: item.route.id,
+            width,
+            kind: 'page overlays',
+            trigger: '-',
+            checks: {},
+            findings: [`could not be checked: ${message(error)}`],
+          });
+        }
       }
     }
   }
 
-  // The nav drawer at each drawer width, and touch scrolling behind it.
-  if (shell && !overBudget()) {
+  // The nav drawer at each drawer width, and touch scrolling behind it. Left by the budget, each
+  // is recorded as not run (a gate failure).
+  if (shell && overBudget()) {
+    stoppedByBudget = true;
+    for (const engine of TOUCH_ENGINES) {
+      touchScroll.push({
+        engine,
+        route: '-',
+        ran: false,
+        detail: {},
+        findings: ['not reached within the budget'],
+      });
+    }
+  } else if (shell) {
     for (const width of DRAWER_WIDTHS.filter((w) => widths.includes(w))) {
       // A drawer that cannot be checked is a finding, never a failed run.
       try {
@@ -449,39 +514,138 @@ test('visual and accessibility harness (report-only)', async ({ browser }) => {
   await runTier(third);
   await runTier(fourth);
   await supervisor.context.close();
-  await write();
+  const report = await write();
   test.info().annotations.push({
     type: 'a11y',
     description: `${String(entries.length)} pages, report in ${RESULTS}`,
   });
-  // Every page measured is in the report; a page that failed to load is in it too (report-only).
   if (new Set(entries.map(entryKey)).size !== entries.length) {
     throw new Error('the report holds a page twice');
   }
+  // The gate (UX-F1): the report and summary are written first, so a red run has them.
+  const { failures } = gateVerdict(report, ROUTES);
+  if (failures.length > 0) {
+    throw new Error(
+      `the accessibility gate failed (${String(failures.length)}; ${join(RESULTS, 'summary.md')}):\n- ${failures.join('\n- ')}`,
+    );
+  }
 });
+
+/**
+ * Applies a theme to the loaded page by the emulated device setting and waits until the app shows
+ * it: `<html data-theme>` (UX-12) equal to it. A page without the attribute (an app from before
+ * UX-12) counts as light only.
+ */
+async function useTheme(page: Page, theme: Theme): Promise<void> {
+  await page.emulateMedia({ colorScheme: theme });
+  const applied = await page
+    .waitForFunction(
+      (want) => (document.documentElement.dataset.theme ?? 'light') === want,
+      theme,
+      { timeout: 5_000 },
+    )
+    .then(
+      () => true,
+      () => false,
+    );
+  if (!applied) throw new Error(`the ${theme} theme did not apply (html data-theme)`);
+  // Charts repaint in the new theme's colours.
+  await frames(page, 300);
+}
 
 /** A long page to scroll: the alarm history, else the orders. */
 const LONG_PAGES = ['/alarms?view=history', '/orders', '/'];
+/** Where the page is scrolled to before the drawer opens: the lock must hold it there. */
+const SCROLLED_TO = 300;
 
 async function longPage(page: Page): Promise<string | undefined> {
   for (const path of LONG_PAGES) {
     await page.goto(path);
     await settle(page);
     const long = await page.evaluate(
-      () => document.documentElement.scrollHeight > window.innerHeight + 200,
+      (by) => document.documentElement.scrollHeight > window.innerHeight + by + 200,
+      SCROLLED_TO,
     );
     if (long) return path;
   }
   return undefined;
 }
 
+/** Where the page behind is drawn: `main`'s top edge in the viewport, and the scroll position. */
+const position = (page: Page) =>
+  page.evaluate(() => ({
+    mainTop: Math.round(document.querySelector('main')?.getBoundingClientRect().top ?? 0),
+    scrollY: Math.round(window.scrollY),
+    // How far the viewport could still scroll: a touch scroll has nothing to move when it is 0.
+    range: Math.max(
+      0,
+      Math.round(document.documentElement.scrollHeight - document.documentElement.clientHeight),
+    ),
+  }));
+
 /**
- * Chromium's phone emulation (390 × 844, touch): a real touch scroll gesture
- * (`Input.synthesizeScrollGesture`) on the backdrop and inside the nav while the drawer is open;
- * the page behind must not move.
+ * The drawer's scroll lock, in any engine (UX-F1, #337): the page scrolled down `SCROLLED_TO`,
+ * the drawer opened by a tap; `act` then tries to scroll the page behind (a touch gesture or a
+ * wheel). The page must not move when the drawer opens or under `act`, must have nothing left to
+ * scroll while it is open (iOS Safari scrolls a root with `overflow: hidden` under a finger, but
+ * not a page with no scroll range), and must be back where it was once Escape closes it.
+ */
+async function lockProof(
+  page: Page,
+  act: () => Promise<Record<string, unknown>>,
+): Promise<{ ran: boolean; detail: Record<string, unknown>; findings: string[] }> {
+  await page.evaluate((y) => {
+    window.scrollTo({ top: y, behavior: 'instant' });
+  }, SCROLLED_TO);
+  await frames(page);
+  const before = await position(page);
+  if (before.scrollY < SCROLLED_TO - 1) {
+    return {
+      ran: false,
+      detail: { before },
+      findings: [`the page did not scroll to ${String(SCROLLED_TO)} px before the drawer opened`],
+    };
+  }
+  // A tap at the button's point: a locator's tap scrolls the button into view first, and with the
+  // root's scroll padding that scrolls the page up under the sticky top bar.
+  const box = await menuButton(page).boundingBox({ timeout: 3_000 });
+  if (!box) return { ran: false, detail: { before }, findings: ['no menu button to tap'] };
+  await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+  await frames(page, 400);
+  const open = await position(page);
+  const acted = await act();
+  const after = await position(page);
+  const styles = await scrollLockStyles(page);
+  await page.keyboard.press('Escape');
+  await frames(page, 400);
+  const closed = await position(page);
+  const findings: string[] = [];
+  if (Math.abs(open.mainTop - before.mainTop) > 1)
+    findings.push(
+      `opening the drawer moved the page behind by ${String(open.mainTop - before.mainTop)} px`,
+    );
+  if (open.range > 0)
+    findings.push(
+      `with the drawer open the page can still scroll ${String(open.range)} px (a touch scroll moves it)`,
+    );
+  if (Math.abs(after.mainTop - open.mainTop) > 1 || after.scrollY !== open.scrollY)
+    findings.push(
+      `a scroll over the open drawer moved the page behind by ${String(open.mainTop - after.mainTop)} px`,
+    );
+  if (Math.abs(closed.scrollY - before.scrollY) > 1)
+    findings.push(
+      `closing the drawer left the page at ${String(closed.scrollY)} px, not ${String(before.scrollY)} px`,
+    );
+  return { ran: true, detail: { before, open, after, closed, ...acted, ...styles }, findings };
+}
+
+/**
+ * Chromium's phone emulation (390 × 844, touch): real touch scroll gestures
+ * (`Input.synthesizeScrollGesture`) on the backdrop and inside the nav while the drawer is open
+ * (`lockProof`).
  */
 async function chromiumTouchScroll(browser: Browser, writes: string[]): Promise<TouchScrollCheck> {
-  const engine = 'Chromium, phone emulation';
+  const engine = TOUCH_ENGINES[0];
   const context = await browser.newContext({
     viewport: { width: 390, height: 844 },
     isMobile: true,
@@ -501,11 +665,6 @@ async function chromiumTouchScroll(browser: Browser, writes: string[]): Promise<
         detail: {},
         findings: ['no page long enough to scroll'],
       };
-    await page.evaluate(() => {
-      window.scrollTo(0, 0);
-    });
-    await menuButton(page).tap({ timeout: 3_000 });
-    await frames(page, 400);
     const cdp = await context.newCDPSession(page);
     const gesture = (x: number) =>
       cdp.send('Input.synthesizeScrollGesture', {
@@ -515,21 +674,13 @@ async function chromiumTouchScroll(browser: Browser, writes: string[]): Promise<
         gestureSourceType: 'touch',
         speed: 1500,
       });
-    await gesture(370);
-    const afterBackdrop = await page.evaluate(() => window.scrollY);
-    await gesture(120);
-    const afterNav = await page.evaluate(() => window.scrollY);
-    const styles = await scrollLockStyles(page);
-    const findings: string[] = [];
-    if (afterBackdrop > 0)
-      findings.push(
-        `a touch scroll on the backdrop scrolled the page by ${String(afterBackdrop)} px`,
-      );
-    if (afterNav > afterBackdrop)
-      findings.push(
-        `a touch scroll inside the nav scrolled the page behind by ${String(afterNav - afterBackdrop)} px`,
-      );
-    return { engine, route, ran: true, detail: { afterBackdrop, afterNav, ...styles }, findings };
+    const proof = await lockProof(page, async () => {
+      await gesture(370);
+      const afterBackdrop = await position(page);
+      await gesture(120);
+      return { afterBackdrop, gestures: 'backdrop at x 370, nav at x 120' };
+    });
+    return { engine, route, ...proof };
   } catch (error) {
     return { engine, route: '-', ran: false, detail: {}, findings: [message(error)] };
   } finally {
@@ -539,9 +690,10 @@ async function chromiumTouchScroll(browser: Browser, writes: string[]): Promise<
 
 /**
  * WebKit's iPhone profile, when WebKit is installed (`pnpm --filter @shopfloor/e2e exec playwright
- * install webkit`): the drawer opened by a tap, a wheel scroll over the backdrop, and the lock's
- * styles against the iOS rule of thumb (`iosLockFinding`). Playwright has no touch scroll gesture
- * for WebKit, so the rule of thumb carries the touch part.
+ * install webkit`): the drawer opened by a tap and `lockProof`, with a wheel scroll over the
+ * backdrop where WebKit takes one. Playwright has no touch scroll gesture for WebKit, so the proof
+ * that a finger cannot move the page is the scroll range (none left while open) with the page
+ * held in place, and the lock's styles against the iOS rule of thumb (`iosLockFinding`).
  *
  * TLS: WebKit takes no SPKI pin and the stack's dev CA is not in the system's trust store; rather
  * than `ignoreHTTPSErrors` (never, playwright.config.ts), every request is routed through the
@@ -551,7 +703,7 @@ async function chromiumTouchScroll(browser: Browser, writes: string[]): Promise<
  * itself offline; the drawer does not depend on it.
  */
 async function webkitTouchScroll(writes: string[]): Promise<TouchScrollCheck> {
-  const engine = 'WebKit, iPhone 15 profile';
+  const engine = TOUCH_ENGINES[1];
   let browser: Browser;
   try {
     browser = await webkit.launch();
@@ -596,25 +748,24 @@ async function webkitTouchScroll(writes: string[]): Promise<TouchScrollCheck> {
         detail: {},
         findings: ['no page long enough to scroll'],
       };
-    await page.evaluate(() => {
-      window.scrollTo(0, 0);
+    const proof = await lockProof(page, async () => {
+      try {
+        await page.mouse.move(370, 500);
+        await page.mouse.wheel(0, 600);
+        await frames(page, 300);
+        return { wheel: 'over the backdrop' };
+      } catch {
+        // Mobile WebKit has no wheel in Playwright: the range and position carry the check.
+        return { wheel: 'not supported' };
+      }
     });
-    await menuButton(page).tap({ timeout: 3_000 });
-    await frames(page, 400);
-    let wheel = 'not supported';
-    try {
-      await page.mouse.move(370, 500);
-      await page.mouse.wheel(0, 600);
-      await frames(page, 300);
-      wheel = String(await page.evaluate(() => window.scrollY));
-    } catch {
-      // Mobile WebKit has no wheel in Playwright: the styles below carry the check.
-    }
-    const styles = await scrollLockStyles(page);
-    const findings = iosLockFinding(styles);
-    if (wheel !== 'not supported' && Number(wheel) > 0)
-      findings.push(`a wheel scroll over the backdrop scrolled the page by ${wheel} px`);
-    return { engine, route, ran: true, detail: { wheelScrollY: wheel, ...styles }, findings };
+    const styles = proof.detail as Record<string, string>;
+    return {
+      engine,
+      route,
+      ...proof,
+      findings: [...proof.findings, ...(proof.ran ? iosLockFinding(styles) : [])],
+    };
   } catch (error) {
     return { engine, route: '-', ran: false, detail: {}, findings: [message(error)] };
   } finally {

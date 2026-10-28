@@ -1,6 +1,6 @@
 import { runInNewContext } from 'node:vm';
 import type { Plugin } from 'vite';
-import { bootScriptSource } from './src/theme/theme-preference.ts';
+import { bootScriptSource } from './theme-preference.ts';
 
 /**
  * The theme boot script's Vite plugin (UX-12, #336), apart from `vite.config.ts` so a unit test

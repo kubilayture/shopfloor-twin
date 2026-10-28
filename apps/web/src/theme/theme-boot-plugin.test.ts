@@ -1,7 +1,7 @@
 import type { ResolvedConfig, ViteDevServer } from 'vite';
 import { describe, expect, it } from 'vitest';
 import { themeBoot } from './theme-boot-plugin.ts';
-import { bootScriptSource } from './src/theme/theme-preference.ts';
+import { bootScriptSource } from './theme-preference.ts';
 
 type Handler = (
   request: unknown,

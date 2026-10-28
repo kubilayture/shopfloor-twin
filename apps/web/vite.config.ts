@@ -4,7 +4,7 @@ import process from 'node:process';
 import type { HttpProxy } from 'vite';
 import { defineConfig } from 'vitest/config';
 import { apiProxyListeners } from './src/dev-proxy.ts';
-import { themeBoot } from './theme-boot-plugin.ts';
+import { themeBoot } from './src/theme/theme-boot-plugin.ts';
 
 /** Where the dev server and `vite preview` send `/api` (HTTP and WebSocket). */
 const MES_URL = process.env.MES_URL ?? 'http://127.0.0.1:4700';

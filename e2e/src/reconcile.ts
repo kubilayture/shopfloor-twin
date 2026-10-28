@@ -98,15 +98,17 @@
  * 25 minutes), RECONCILE_SILENT_WAIT_MS (how long past the margin, in simulated time, the run may go
  * on for a silent machine's next fact; default 2 hours, 2 wall minutes at 60×). SIGINT and SIGTERM remove the stack and the env file before exiting.
  *
- * UX-1g (#321): with RECONCILE_A11Y=1 the last pass, once its checks are done and before its stack
- * goes, runs Playwright's `a11y` project, the visual and accessibility harness (browser/a11y):
- * report-only, reading pages only, within A11Y_BUDGET_MS (default 15 minutes, added to that pass's
- * deadline); its report goes to A11Y_RESULTS (default e2e/results/a11y/; a folder outside
+ * UX-1g (#321), UX-F1 (#337): with RECONCILE_A11Y=1 the last pass, once its checks are done and
+ * before its stack goes, runs Playwright's `a11y` project, the visual and accessibility harness
+ * (browser/a11y), reading pages only, within A11Y_BUDGET_MS (default 40 minutes, added to that
+ * pass's deadline); its report goes to A11Y_RESULTS (default e2e/results/a11y/; a folder outside
  * e2e/results survives the next run's cleanup, for a before/after pair). Off by default, so the
  * gate's run is unchanged. Its variables (A11Y_ROUTES, A11Y_ROLES, A11Y_WIDTHS, A11Y_STATES,
- * A11Y_BUDGET_MS) are checked before anything starts: a typo fails in seconds. The harness is left
- * out when the pass has already failed.
- * The pass fails only if the harness cannot run.
+ * A11Y_THEMES, A11Y_BUDGET_MS) are checked before anything starts: a typo fails in seconds. The
+ * harness is left out when the pass has already failed.
+ * The pass fails when the harness's gate does (`gateVerdict` in a11y-report.ts: a critical or
+ * serious rule, a page not measured, a shared title, a failed overlay check, the touch-scroll check
+ * not run or failing, a write) or when it cannot run.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -174,7 +176,13 @@ import {
 } from './shift-checks.ts';
 import { pruneBuildCache } from '@shopfloor/test-kit/heavy-lock';
 import { ROUTES as A11Y_ROUTES } from '../browser/a11y/routes.ts';
-import { budgetFromEnv, filterFromEnv, validateRoutes } from './a11y-report.ts';
+import {
+  budgetFromEnv,
+  filterFromEnv,
+  gateVerdict,
+  validateRoutes,
+  type A11yReport,
+} from './a11y-report.ts';
 import { REPO, Stack, removeImages } from './stack.ts';
 import { episodeIdentity, traceConfigOf, type TraceSectionJson } from './trace-shapes.ts';
 
@@ -1443,8 +1451,8 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
         }
         phase('coding');
 
-        // 7. UX-1g (#321): the visual and accessibility harness, report-only, on this stack with
-        //    its data and its users; it reads pages only. It fails the pass only if it cannot run.
+        // 7. UX-1g (#321), UX-F1 (#337): the visual and accessibility harness and gate, on this
+        //    stack with its data and its users; it reads pages only. Its verdict fails the pass.
         if (a11y && report.failures.length > 0) {
           log('the pass already failed: the accessibility harness is left out');
         } else if (a11y) {
@@ -1460,9 +1468,19 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
             }),
             ...browserLogin,
           });
-          report.a11y = { exitCode, report: join(A11Y_RESULTS, 'report.json') };
+          const a11yReport = join(A11Y_RESULTS, 'report.json');
+          report.a11y = { exitCode, report: a11yReport };
           if (exitCode !== 0) {
-            fail(`the accessibility harness could not run (Playwright exit ${String(exitCode)})`);
+            // The gate's reasons when the harness wrote its report; else it could not run.
+            const failures = await readFile(a11yReport, 'utf8').then(
+              (text) => gateVerdict(JSON.parse(text) as A11yReport).failures,
+              () => undefined,
+            );
+            fail(
+              failures === undefined || failures.length === 0
+                ? `the accessibility harness could not run (Playwright exit ${String(exitCode)})`
+                : `the accessibility gate failed (${join(A11Y_RESULTS, 'summary.md')}): ${failures.join('; ')}`,
+            );
           }
           phase('a11y');
         }
@@ -1685,7 +1703,7 @@ function summarize(report: Report): void {
   if (report.incidents) console.log(`  incidents: ${JSON.stringify(report.incidents)}`);
   if (report.browser) console.log(`  browser: ${JSON.stringify(report.browser)}`);
   if (report.coding) console.log(`  coding: ${JSON.stringify(report.coding)}`);
-  if (report.a11y) console.log(`  a11y (report-only): ${JSON.stringify(report.a11y)}`);
+  if (report.a11y) console.log(`  a11y (gate): ${JSON.stringify(report.a11y)}`);
   console.log(
     report.failures.length === 0
       ? 'RECONCILE-OK'

@@ -245,7 +245,8 @@ interface Overflow {
  *
  * It also sets the frame's scroll padding to the header row's height (plus 8 px), so a focused
  * row control clears a header of any number of lines; `scroll-pt-12` is the value until then.
- * Set through the CSSOM (`style.setProperty`), which `style-src 'self'` allows.
+ * Set through the CSSOM (`style.setProperty`), which `style-src 'self'` allows. In px, as measured
+ * (a rem would be off with a root font size other than 16 px).
  */
 function useOverflow(
   frame: RefObject<HTMLDivElement | null>,
@@ -263,7 +264,7 @@ function useOverflow(
       setTall(box.scrollHeight > box.clientHeight + 1);
       if (head) {
         const height = Math.ceil(head.getBoundingClientRect().height);
-        box.style.setProperty('scroll-padding-top', `${String((height + 8) / 16)}rem`);
+        box.style.setProperty('scroll-padding-top', `${String(height + 8)}px`);
       }
     };
     measure();

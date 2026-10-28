@@ -291,7 +291,7 @@ describe('DataTable sticky header', () => {
     } as DOMRect);
     render(table({ rows: rowsOf(40), bounded: true }));
     const frame = screen.getByRole('region', { name: 'Active alarms, newest first' });
-    expect(frame.style.getPropertyValue('scroll-padding-top')).toBe('4.5rem'); // 64 + 8 px
+    expect(frame.style.getPropertyValue('scroll-padding-top')).toBe('72px'); // 64 + 8 px, in px: a rem would follow a non-16 px root font
   });
 
   it('is a focusable region named by its caption once the bounded box overflows', () => {

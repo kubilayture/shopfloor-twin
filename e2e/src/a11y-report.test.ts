@@ -8,8 +8,14 @@ import {
   duplicateTitles,
   filterFromEnv,
   fromAxe,
+  gateVerdict,
   iosLockFinding,
   longestTableRun,
+  pagesPerItem,
+  tableRuns,
+  themeWidths,
+  themesOf,
+  DEFAULT_BUDGET_MS,
   routeSelected,
   validateRoutes,
   budgetFromEnv,
@@ -85,13 +91,27 @@ describe('filterFromEnv', () => {
       roles: ['operator'],
       widths: [390, 1440],
       states: [],
+      themes: [],
     });
-    expect(filterFromEnv({})).toEqual({ routes: [], roles: [], widths: [], states: [] });
-    expect(filterFromEnv({ A11Y_WIDTHS: '1440,1440,390', A11Y_ROUTES: 'orders,orders' })).toEqual({
+    expect(filterFromEnv({})).toEqual({
+      routes: [],
+      roles: [],
+      widths: [],
+      states: [],
+      themes: [],
+    });
+    expect(
+      filterFromEnv({
+        A11Y_WIDTHS: '1440,1440,390',
+        A11Y_ROUTES: 'orders,orders',
+        A11Y_THEMES: 'dark, dark',
+      }),
+    ).toEqual({
       routes: ['orders'],
       roles: [],
       widths: [1440, 390],
       states: [],
+      themes: ['dark'],
     });
   });
 
@@ -100,6 +120,27 @@ describe('filterFromEnv', () => {
     expect(() => filterFromEnv({ A11Y_WIDTHS: 'wide' })).toThrow(/not a width/);
     expect(() => filterFromEnv({ A11Y_WIDTHS: '200' })).toThrow(/not a width/);
     expect(() => filterFromEnv({ A11Y_STATES: 'loading' })).toThrow(/unknown state/);
+    expect(() => filterFromEnv({ A11Y_THEMES: 'light,dim' })).toThrow(/unknown theme dim/);
+  });
+});
+
+describe('the time plan', () => {
+  const none = { routes: [], roles: [], widths: [], states: [] };
+
+  it('is light at five widths and dark at 1440 and 390: seven pages a combination', () => {
+    expect(themesOf(none)).toEqual(['light', 'dark']);
+    expect(themesOf({ ...none, themes: [] })).toEqual(['light', 'dark']);
+    expect(themeWidths(none, 'light')).toEqual([1440, 1280, 1024, 768, 390]);
+    expect(themeWidths(none, 'dark')).toEqual([1440, 390]);
+    expect(pagesPerItem(none)).toBe(7);
+  });
+
+  it('narrows by A11Y_THEMES, and A11Y_WIDTHS sets the widths of both themes', () => {
+    expect(pagesPerItem({ ...none, themes: ['light'] })).toBe(5);
+    expect(pagesPerItem({ ...none, themes: ['dark'] })).toBe(2);
+    const five = { ...none, widths: [1440, 1280, 1024, 768, 390], themes: ['dark' as const] };
+    expect(themeWidths(five, 'dark')).toEqual([1440, 1280, 1024, 768, 390]);
+    expect(pagesPerItem({ ...none, widths: [768] })).toBe(2);
   });
 });
 
@@ -131,9 +172,10 @@ describe('validateRoutes', () => {
 });
 
 describe('budgetFromEnv', () => {
-  it('is 15 minutes by default and refuses anything but a positive whole number', () => {
-    expect(budgetFromEnv({})).toBe(900_000);
-    expect(budgetFromEnv({ A11Y_BUDGET_MS: '' })).toBe(900_000);
+  it("is the time plan's budget by default and refuses anything but a positive whole number", () => {
+    expect(DEFAULT_BUDGET_MS).toBe(40 * 60_000);
+    expect(budgetFromEnv({})).toBe(DEFAULT_BUDGET_MS);
+    expect(budgetFromEnv({ A11Y_BUDGET_MS: '' })).toBe(DEFAULT_BUDGET_MS);
     expect(budgetFromEnv({ A11Y_BUDGET_MS: '60000' })).toBe(60_000);
     for (const bad of ['15m', '0', '-1', '1.5']) {
       expect(() => budgetFromEnv({ A11Y_BUDGET_MS: bad })).toThrow(/A11Y_BUDGET_MS/);
@@ -218,6 +260,40 @@ describe('longestTableRun', () => {
     expect(longestTableRun([t(null), t(0), t(0), t(0), t(null), t(0)])).toBe(3);
     expect(longestTableRun([t(0), t(0), t(1), t(1), t(1), t(1)])).toBe(4);
     expect(longestTableRun([t(null), t(null)])).toBe(0);
+  });
+});
+
+describe('tableRuns (G-33)', () => {
+  const t = (inTable: number | null, skipsTable: number | null = null) => ({
+    inTable,
+    skipsTable,
+  });
+  const run = (n: number, table: number) => Array.from({ length: n }, () => t(table));
+
+  it('reports a run right after a skip link past its table apart, as skipped by link', () => {
+    expect(tableRuns([t(null, 0), ...run(12, 0), t(null)])).toEqual({
+      longest: 0,
+      skippedByLink: 12,
+    });
+  });
+
+  it('counts a run as usual when the link skips another table, or is not right before it', () => {
+    expect(tableRuns([t(null, 1), ...run(12, 0)])).toEqual({ longest: 12, skippedByLink: 0 });
+    expect(tableRuns([t(null, 0), t(null), ...run(12, 0)])).toEqual({
+      longest: 12,
+      skippedByLink: 0,
+    });
+    // Two tables: the first behind a skip link, the second not.
+    expect(tableRuns([t(null, 0), ...run(15, 0), t(null), ...run(11, 1)])).toEqual({
+      longest: 11,
+      skippedByLink: 15,
+    });
+    // Straight from one table into the next: the second run is not the skipped one.
+    expect(tableRuns([t(null, 0), ...run(3, 0), ...run(10, 1)])).toEqual({
+      longest: 10,
+      skippedByLink: 3,
+    });
+    expect(longestTableRun([t(null, 0), ...run(12, 0)])).toBe(0);
   });
 });
 
@@ -407,5 +483,265 @@ describe('the route catalogue', () => {
     expect(paths.length).toBeGreaterThan(20);
     expect([...listed].sort()).toEqual([...paths].sort());
     expect(new Set(ROUTES.map((r) => r.id)).size).toBe(ROUTES.length);
+  });
+});
+
+describe('gateVerdict', () => {
+  const ran = (engine: string) => ({
+    engine,
+    route: '/orders',
+    ran: true,
+    detail: {},
+    findings: [],
+  });
+  /** A run that passes: measured in full, no serious rule, both touch checks run clean. */
+  const green = (over: Partial<A11yReport> = {}, entries = [entry(), entry({ width: 390 })]) =>
+    report(entries, {
+      touchScroll: [ran('Chromium, phone emulation'), ran('WebKit, iPhone 15 profile')],
+      ...over,
+    });
+  const coverage = green().coverage;
+
+  it('passes a full clean run, and one with moderate and minor rules only, listing them', () => {
+    expect(gateVerdict(green())).toEqual({ failures: [], listed: [] });
+    const mild = gateVerdict(
+      green({}, [
+        entry({
+          counts: { ...zeroCounts(), moderate: 1, minor: 1 },
+          violations: [violation('region', 'moderate'), violation('empty-table-header', 'minor')],
+        }),
+      ]),
+    );
+    expect(mild.failures).toEqual([]);
+    expect(mild.listed).toEqual([
+      'empty-table-header (minor) on 1 pages',
+      'region (moderate) on 1 pages',
+    ]);
+  });
+
+  it('fails on a critical or a serious rule on any page, theme included', () => {
+    for (const impact of ['critical', 'serious'] as const) {
+      const { failures } = gateVerdict(
+        green({}, [
+          entry(),
+          entry({
+            width: 390,
+            theme: 'dark',
+            counts: { ...zeroCounts(), [impact]: 1 },
+            violations: [violation('color-contrast', impact)],
+          }),
+        ]),
+      );
+      expect(failures).toEqual([
+        `color-contrast (${impact}) on 1 pages: orders data supervisor 390 dark`,
+      ]);
+    }
+  });
+
+  it('fails a run that did not measure everything it planned', () => {
+    const cases: [Partial<A11yReport>, RegExp][] = [
+      [{ coverage: { ...coverage, planned: 0, measured: 0 } }, /nothing was planned/],
+      [{ coverage: { ...coverage, notReachedPages: 7, planned: 9 } }, /budget .* ran out: 7/],
+      [{ stoppedByBudget: true }, /budget .* ran out: 0/],
+      [
+        {
+          coverage: {
+            ...coverage,
+            planned: 9,
+            loginFailedPages: 7,
+            loginFailed: [{ route: '*', state: 'data', role: 'quality', reason: 'login failed' }],
+          },
+        },
+        /7 pages lost to a failed login \(quality\)/,
+      ],
+      [
+        {
+          coverage: {
+            ...coverage,
+            skipped: [{ route: 'lot', state: 'data', role: 'operator', reason: 'no id' }],
+          },
+        },
+        /1 route × state × role combinations skipped: lot data operator \(no id\)/,
+      ],
+      [{ coverage: { ...coverage, planned: 3 } }, /2 of 3 planned pages measured, and 1 not/],
+      [{ touchScroll: [] }, /touch scrolling behind the open nav drawer was not checked/],
+      [
+        { touchScroll: [{ ...ran('WebKit'), ran: false, findings: ['WebKit did not launch'] }] },
+        /touch scroll \(WebKit\) did not run: WebKit did not launch/,
+      ],
+      [
+        {
+          keyboard: [
+            {
+              route: 'orders',
+              role: 'supervisor',
+              width: 1440,
+              stops: [],
+              longestTableRun: 0,
+              findings: [],
+              error: 'not reached within the budget',
+            },
+          ],
+        },
+        /keyboard sample of orders at 1440 was not taken: not reached/,
+      ],
+    ];
+    for (const [over, failure] of cases) {
+      const { failures } = gateVerdict(green(over));
+      expect(failures, failure.source).toHaveLength(1);
+      expect(failures[0]).toMatch(failure);
+    }
+  });
+
+  it('fails on a page that failed to load or was measured before it settled', () => {
+    const failed = gateVerdict(
+      green({ coverage: { ...coverage, measured: 1, failed: 1 } }, [
+        entry(),
+        entry({ width: 390, theme: 'dark', error: 'the dark theme did not apply' }),
+      ]),
+    );
+    expect(failed.failures).toEqual([
+      '1 pages failed to load or measure: orders data supervisor 390 dark (the dark theme did not apply)',
+    ]);
+    const unsettled = gateVerdict(green({}, [entry(), entry({ width: 390, ready: false })]));
+    expect(unsettled.failures).toEqual([
+      '1 pages were measured before they settled (still loading): orders data supervisor 390 light',
+    ]);
+  });
+
+  it('fails on a shared title, an overlay check, a touch scroll that moved the page and a write', () => {
+    const { failures } = gateVerdict(
+      green({
+        titles: {
+          byRoute: { orders: 'Orders', order: 'Orders' },
+          duplicates: [{ title: 'Orders', routes: ['order', 'orders'] }],
+        },
+        overlays: [
+          {
+            route: 'alarms',
+            width: 1440,
+            kind: 'modal dialog',
+            trigger: 'Acknowledge',
+            checks: { escapeCloses: true, focusReturns: false },
+            findings: ['focusReturns: no'],
+          },
+          {
+            route: 'alarms',
+            width: 1440,
+            kind: 'menu',
+            trigger: 'More',
+            checks: { escapeCloses: true },
+            findings: [],
+          },
+        ],
+        touchScroll: [
+          ran('Chromium, phone emulation'),
+          {
+            ...ran('WebKit, iPhone 15 profile'),
+            findings: ['with the drawer open the page can still scroll 900 px'],
+          },
+        ],
+        writes: ['POST /api/v1/alarms/x/ack'],
+      }),
+    );
+    expect(failures).toEqual([
+      'the title "Orders" is shared by order, orders (G-05)',
+      'modal dialog "Acknowledge" on alarms at 1440: focusReturns: no',
+      'touch scroll (WebKit, iPhone 15 profile, /orders): with the drawer open the page can still scroll 900 px',
+      'the harness caused 1 writes: POST /api/v1/alarms/x/ack',
+    ]);
+  });
+
+  it('lists keyboard findings and sideways scrolling without failing; a run without the shell needs no touch check', () => {
+    const verdict = gateVerdict(
+      report([entry({ overflowX: true })], {
+        filter: { routes: ['orders'], roles: [], widths: [], states: [] },
+        keyboard: [
+          {
+            route: 'orders',
+            role: 'supervisor',
+            width: 390,
+            stops: [],
+            longestTableRun: 12,
+            skippedByLinkRun: 0,
+            findings: ['12 stops inside one table before leaving it (G-33)'],
+          },
+        ],
+      }),
+    );
+    expect(verdict.failures).toEqual([]);
+    expect(verdict.listed).toEqual([
+      'keyboard, orders at 390: 12 stops inside one table before leaving it (G-33)',
+      '1 pages wider than the viewport: orders data supervisor 1440 light',
+    ]);
+  });
+
+  it('shortens a long list of pages', () => {
+    const many = Array.from({ length: 8 }, (_, i) =>
+      entry({
+        width: 400 + i,
+        counts: { ...zeroCounts(), serious: 1 },
+        violations: [violation('color-contrast', 'serious')],
+      }),
+    );
+    const [failure] = gateVerdict(green({}, many)).failures;
+    expect(failure).toMatch(/^color-contrast \(serious\) on 8 pages: .*404 light, and 3 more$/);
+  });
+});
+
+describe('summarize, the verdict', () => {
+  it('opens with the gate: passed, or failed with each reason, then what is listed', () => {
+    const touch = (engine: string) => ({ engine, route: '/', ran: true, detail: {}, findings: [] });
+    const clean = report([entry()], { touchScroll: [touch('a'), touch('b')] });
+    expect(summarize(clean)).toContain('**Gate: passed.**');
+    const md = summarize(
+      report(
+        [
+          entry({
+            counts: { ...zeroCounts(), serious: 1, moderate: 1 },
+            violations: [violation('color-contrast', 'serious'), violation('region', 'moderate')],
+          }),
+        ],
+        { touchScroll: [touch('a')] },
+      ),
+    );
+    expect(md).toContain('**Gate: failed** (1):');
+    expect(md).toContain(
+      '- color-contrast (serious) on 1 pages: orders data supervisor 1440 light',
+    );
+    expect(md).toContain('Listed, not failed:\n\n- region (moderate) on 1 pages');
+  });
+
+  it('shows the run skipped by a link apart from the G-33 run', () => {
+    const md = summarize(
+      report([], {
+        keyboard: [
+          {
+            route: 'lot',
+            role: 'supervisor',
+            width: 390,
+            stops: [],
+            longestTableRun: 2,
+            skippedByLinkRun: 35,
+            findings: [],
+          },
+        ],
+      }),
+    );
+    expect(md).toContain('| lot | 390 | 0 | 2 | 35 | – |');
+  });
+});
+
+describe('diffReports, themes', () => {
+  it("narrows to the filter's themes; a page without a theme is light", () => {
+    const r = report([entry(), entry({ theme: 'dark', counts: { ...zeroCounts(), serious: 1 } })]);
+    const empty = report([]);
+    const keys = (themes: ('light' | 'dark')[]) =>
+      diffReports(empty, r, { routes: [], roles: [], widths: [], states: [], themes }).map(
+        (row) => row.key,
+      );
+    expect(keys(['dark'])).toEqual(['orders|data|supervisor|1440|dark']);
+    expect(keys(['light'])).toEqual(['orders|data|supervisor|1440|light']);
+    expect(keys([])).toHaveLength(2);
   });
 });

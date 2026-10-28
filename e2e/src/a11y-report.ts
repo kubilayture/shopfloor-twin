@@ -1,6 +1,6 @@
 /**
  * The visual and accessibility harness's report (UX-1g, #321): its shape, the filter a pull request
- * narrows it with, the human summary and the before/after diff. Pure: the Playwright project
+ * narrows it with, the gate's verdict (UX-F1, #337), the human summary and the before/after diff. Pure: the Playwright project
  * (`e2e/browser/a11y`) writes the report, `src/a11y-diff.ts` compares two of them.
  */
 
@@ -39,9 +39,16 @@ export interface Violation {
 
 export type ImpactCounts = Record<Impact, number>;
 
-/** The colour themes; only `light` until UX-12 ships the switch (UX-F1 adds `dark`). */
+/** The colour themes (UX-12's `data-theme`); a run checks both unless `A11Y_THEMES` narrows it. */
 export const THEMES = ['light', 'dark'] as const;
 export type Theme = (typeof THEMES)[number];
+
+/**
+ * The time plan (UX-F1, #337): light at every width, dark at the desktop and the phone only. The
+ * dark theme changes colours, not layout, so its contrast is checked at the widest and the
+ * narrowest layout; `A11Y_WIDTHS` overrides both lists (all five in dark for UX-F3's review).
+ */
+export const DARK_WIDTHS = [1440, 390] as const;
 
 /** One route in one state, as one role, at one width (in one theme). */
 export interface Entry {
@@ -80,6 +87,11 @@ export interface FocusStop {
   readonly region: 'nav' | 'header' | 'main' | 'other';
   readonly visible: boolean;
   readonly inTable: number | null;
+  /**
+   * A skip link ("Skip past the units") whose target lies past this table: the index of the first
+   * table between the link and its target, `null` (or absent) otherwise.
+   */
+  readonly skipsTable?: number | null;
 }
 
 export interface KeyboardSample {
@@ -87,9 +99,16 @@ export interface KeyboardSample {
   readonly role: A11yRole;
   readonly width: number;
   readonly stops: readonly FocusStop[];
-  /** Stops inside one table before the focus leaves it (G-33): the longest such run. */
+  /**
+   * Stops inside one table before the focus leaves it (G-33): the longest such run, leaving out a
+   * run that begins right after a skip link past that table.
+   */
   readonly longestTableRun: number;
+  /** The longest run that begins right after a skip link past its table (reported apart). */
+  readonly skippedByLinkRun?: number;
   readonly findings: readonly string[];
+  /** The page could not be sampled (or the budget left it): a run that did not happen. */
+  readonly error?: string;
 }
 
 export interface OverlayCheck {
@@ -157,6 +176,8 @@ export interface A11yFilter {
   readonly roles: readonly A11yRole[];
   readonly widths: readonly number[];
   readonly states: readonly PageState[];
+  /** Absent in a report from before UX-F1: every theme. */
+  readonly themes?: readonly Theme[];
 }
 
 const list = (value: string | undefined): string[] =>
@@ -167,24 +188,28 @@ const list = (value: string | undefined): string[] =>
 
 /**
  * The filter from the environment: `A11Y_ROUTES` (route ids or path prefixes, `shell` for the nav
- * drawer checks), `A11Y_ROLES`, `A11Y_WIDTHS`, `A11Y_STATES`, each a comma list. An unknown role,
- * width or state is an error: a typo must not silently check nothing.
+ * drawer checks), `A11Y_ROLES`, `A11Y_WIDTHS`, `A11Y_STATES`, `A11Y_THEMES`, each a comma list. An
+ * unknown role, width, state or theme is an error: a typo must not silently check nothing.
  */
 export function filterFromEnv(env: Readonly<Record<string, string | undefined>>): A11yFilter {
   const roles = [...new Set(list(env.A11Y_ROLES))];
   const widths = [...new Set(list(env.A11Y_WIDTHS).map(Number))];
   const states = [...new Set(list(env.A11Y_STATES))];
+  const themes = [...new Set(list(env.A11Y_THEMES))];
   const badRole = roles.find((r) => !(A11Y_ROLES as readonly string[]).includes(r));
   if (badRole !== undefined) throw new Error(`A11Y_ROLES: unknown role ${badRole}`);
   const badWidth = widths.find((w) => !Number.isInteger(w) || w < 320 || w > 3840);
   if (badWidth !== undefined) throw new Error(`A11Y_WIDTHS: not a width ${String(badWidth)}`);
   const badState = states.find((s) => !(STATES as readonly string[]).includes(s));
   if (badState !== undefined) throw new Error(`A11Y_STATES: unknown state ${badState}`);
+  const badTheme = themes.find((t) => !(THEMES as readonly string[]).includes(t));
+  if (badTheme !== undefined) throw new Error(`A11Y_THEMES: unknown theme ${badTheme}`);
   return {
     routes: [...new Set(list(env.A11Y_ROUTES))],
     roles: roles as A11yRole[],
     widths,
     states: states as PageState[],
+    themes: themes as Theme[],
   };
 }
 
@@ -212,10 +237,17 @@ export function validateRoutes(
   }
 }
 
-/** `A11Y_BUDGET_MS`: a positive whole number of milliseconds, 15 minutes by default. */
+/**
+ * The default budget (UX-F1, #337): the full plan (1421 pages: 203 route × state × role
+ * combinations, five widths in light and two in dark) took 1567 s on an M3 MacBook Air; 40
+ * minutes leaves half as much again for a slower run. A run the budget cuts fails the gate.
+ */
+export const DEFAULT_BUDGET_MS = 40 * 60_000;
+
+/** `A11Y_BUDGET_MS`: a positive whole number of milliseconds, `DEFAULT_BUDGET_MS` by default. */
 export function budgetFromEnv(env: Readonly<Record<string, string | undefined>>): number {
   const raw = env.A11Y_BUDGET_MS;
-  if (raw === undefined || raw === '') return 15 * 60_000;
+  if (raw === undefined || raw === '') return DEFAULT_BUDGET_MS;
   const ms = Number(raw);
   if (!Number.isSafeInteger(ms) || ms <= 0) {
     throw new Error(`A11Y_BUDGET_MS: not a positive whole number of milliseconds: ${raw}`);
@@ -244,6 +276,20 @@ export const rolesOf = (filter: A11yFilter): readonly A11yRole[] =>
 
 export const statesOf = (filter: A11yFilter): readonly PageState[] =>
   filter.states.length > 0 ? filter.states : STATES;
+
+export const themesOf = (filter: A11yFilter): readonly Theme[] =>
+  filter.themes !== undefined && filter.themes.length > 0 ? filter.themes : THEMES;
+
+/**
+ * The widths a theme is measured at: every width in light, `DARK_WIDTHS` in dark; `A11Y_WIDTHS`
+ * sets both.
+ */
+export const themeWidths = (filter: A11yFilter, theme: Theme): readonly number[] =>
+  filter.widths.length > 0 ? filter.widths : theme === 'light' ? WIDTHS : DARK_WIDTHS;
+
+/** The pages one route × state × role makes: its widths in each theme of the run. */
+export const pagesPerItem = (filter: A11yFilter): number =>
+  themesOf(filter).reduce((n, theme) => n + themeWidths(filter, theme).length, 0);
 
 /** The shape of axe's result this report keeps (a structural subset of axe-core's). */
 export interface AxeResultLike {
@@ -296,21 +342,42 @@ export function duplicateTitles(
 }
 
 /**
- * The longest run of consecutive focus stops inside one table (G-33): `inTable` is the table's
- * index on the page, `null` outside any table.
+ * The longest runs of consecutive focus stops inside one table (G-33): `inTable` is the table's
+ * index on the page, `null` outside any table. A run that begins right after a skip link past that
+ * table (`skipsTable`, the design system's remedy: "Skip past the units") counts apart, as
+ * `skippedByLink`, since a keyboard user had the way round it; every other run is `longest`.
  */
-export function longestTableRun(stops: readonly Pick<FocusStop, 'inTable'>[]): number {
+export function tableRuns(stops: readonly Pick<FocusStop, 'inTable' | 'skipsTable'>[]): {
+  longest: number;
+  skippedByLink: number;
+} {
   let longest = 0;
+  let skippedByLink = 0;
   let run = 0;
+  let skipped = false;
   let table: number | null = null;
+  let previous: Pick<FocusStop, 'inTable' | 'skipsTable'> | undefined;
   for (const stop of stops) {
     if (stop.inTable !== null && stop.inTable === table) run += 1;
-    else run = stop.inTable === null ? 0 : 1;
+    else if (stop.inTable === null) run = 0;
+    else {
+      run = 1;
+      skipped = previous?.skipsTable === stop.inTable;
+    }
     table = stop.inTable;
-    longest = Math.max(longest, run);
+    previous = stop;
+    if (skipped) skippedByLink = Math.max(skippedByLink, run);
+    else longest = Math.max(longest, run);
   }
-  return longest;
+  return { longest, skippedByLink };
 }
+
+/** The longest run inside one table that no skip link offers a way past (G-33). */
+export const longestTableRun = (stops: readonly Pick<FocusStop, 'inTable' | 'skipsTable'>[]) =>
+  tableRuns(stops).longest;
+
+/** A run of this many stops inside one table is a G-33 finding. */
+export const TABLE_RUN_LIMIT = 10;
 
 /** A page's key: a missing theme is `light`, so a report from before the field still matches. */
 export const entryKey = (e: Pick<Entry, 'route' | 'state' | 'role' | 'width' | 'theme'>): string =>
@@ -336,9 +403,25 @@ export function summarize(report: A11yReport): string {
   const measured = report.entries.filter((e) => e.error === undefined);
   const total = measured.reduce((acc, e) => sum(acc, e.counts), zeroCounts());
   const out: string[] = [];
-  out.push('# Visual and accessibility harness (UX-1g)', '');
+  const verdict = gateVerdict(report);
+  out.push('# Visual and accessibility harness (UX-1g, gate UX-F1)', '');
   out.push(
-    `Report-only. axe ${report.axe.version} (${report.axe.tags.join(', ')}), ${String(
+    verdict.failures.length === 0
+      ? '**Gate: passed.** Every planned page measured; no critical or serious rule; titles distinct; overlays, the drawer and touch scrolling behind it checked; no write.'
+      : `**Gate: failed** (${String(verdict.failures.length)}):`,
+    '',
+  );
+  if (verdict.failures.length > 0) {
+    for (const f of verdict.failures) out.push(`- ${f}`);
+    out.push('');
+  }
+  if (verdict.listed.length > 0) {
+    out.push('Listed, not failed:', '');
+    for (const l of verdict.listed) out.push(`- ${l}`);
+    out.push('');
+  }
+  out.push(
+    `axe ${report.axe.version} (${report.axe.tags.join(', ')}), ${String(
       Math.round(report.elapsedMs / 1000),
     )} s of a ${String(Math.round(report.budgetMs / 60_000))}-minute budget${
       report.stoppedByBudget ? ' (**stopped by the budget**)' : ''
@@ -351,9 +434,10 @@ export function summarize(report: A11yReport): string {
     f.roles.length > 0 ? `roles ${f.roles.join(', ')}` : '',
     f.widths.length > 0 ? `widths ${f.widths.join(', ')}` : '',
     f.states.length > 0 ? `states ${f.states.join(', ')}` : '',
+    f.themes !== undefined && f.themes.length > 0 ? `themes ${f.themes.join(', ')}` : '',
   ].filter((t) => t !== '');
   out.push(
-    `- **Coverage:** ${String(report.coverage.measured)} of ${String(report.coverage.planned)} pages measured (route × state × role × width), ${String(report.coverage.failed)} failed to load, ${String(report.coverage.notReachedPages)} not reached within the budget, ${String(report.coverage.loginFailedPages)} lost to a failed login${report.coverage.loginFailed.length > 0 ? ` (${report.coverage.loginFailed.map((l) => l.role).join(', ')})` : ''}; ${String(report.coverage.skipped.length)} route × state × role combinations skipped (no id).${filterText.length > 0 ? ` Filter: ${filterText.join('; ')}.` : ''}`,
+    `- **Coverage:** ${String(report.coverage.measured)} of ${String(report.coverage.planned)} pages measured (route × state × role × width × theme), ${String(report.coverage.failed)} failed to load, ${String(report.coverage.notReachedPages)} not reached within the budget, ${String(report.coverage.loginFailedPages)} lost to a failed login${report.coverage.loginFailed.length > 0 ? ` (${report.coverage.loginFailed.map((l) => l.role).join(', ')})` : ''}; ${String(report.coverage.skipped.length)} route × state × role combinations skipped (no id).${filterText.length > 0 ? ` Filter: ${filterText.join('; ')}.` : ''}`,
     `- **Rule violations (rule × page):** ${countsText(total)}.`,
     `- **Pages wider than the viewport:** ${String(measured.filter((e) => e.overflowX).length)}.`,
     '',
@@ -416,14 +500,19 @@ export function summarize(report: A11yReport): string {
   if (report.keyboard.length === 0) out.push('Not sampled.', '');
   else {
     out.push(
-      '| Route | Width | Stops | Longest run in one table | Findings |',
-      '| --- | --: | --: | --: | --- |',
+      '| Route | Width | Stops | Longest run in one table | Skipped by link | Findings |',
+      '| --- | --: | --: | --: | --: | --- |',
     );
     for (const k of report.keyboard) {
+      const findings = k.error === undefined ? k.findings : [`not sampled: ${k.error}`];
       out.push(
-        `| ${k.route} | ${String(k.width)} | ${String(k.stops.length)} | ${String(k.longestTableRun)} | ${cell(k.findings.join('; ')) || '–'} |`,
+        `| ${k.route} | ${String(k.width)} | ${String(k.stops.length)} | ${String(k.longestTableRun)} | ${String(k.skippedByLinkRun ?? 0)} | ${cell(findings.join('; ')) || '–'} |`,
       );
     }
+    out.push(
+      '',
+      `"Skipped by link": the longest run inside one table that begins right after a skip link past that table (the design system's remedy for G-33); not a finding.`,
+    );
     out.push('');
   }
 
@@ -475,7 +564,7 @@ export function summarize(report: A11yReport): string {
   return out.join('\n');
 }
 
-const NO_FILTER: A11yFilter = { routes: [], roles: [], widths: [], states: [] };
+const NO_FILTER: A11yFilter = { routes: [], roles: [], widths: [], states: [], themes: [] };
 
 /** A measured page inside the filter (its routes by id here: entries carry no path pattern). */
 const kept =
@@ -485,7 +574,10 @@ const kept =
     (filter.routes.length === 0 || filter.routes.includes(e.route)) &&
     (filter.roles.length === 0 || filter.roles.includes(e.role)) &&
     (filter.widths.length === 0 || filter.widths.includes(e.width)) &&
-    (filter.states.length === 0 || filter.states.includes(e.state));
+    (filter.states.length === 0 || filter.states.includes(e.state)) &&
+    (filter.themes === undefined ||
+      filter.themes.length === 0 ||
+      filter.themes.includes(e.theme ?? 'light'));
 
 export interface DiffRow {
   readonly key: string;
@@ -585,4 +677,140 @@ export function iosLockFinding(styles: Readonly<Record<string, string>>): string
         'the page behind the open drawer is locked by overflow: hidden alone, which iOS Safari does not honour for touch scrolling (touch-action: none on the backdrop or a position: fixed body would)',
       ]
     : [];
+}
+
+/** The impacts that fail the gate; moderate and minor are listed. */
+export const FAILING_IMPACTS: readonly Impact[] = ['critical', 'serious'];
+
+/** At most this many examples per line of the verdict. */
+const EXAMPLES = 5;
+
+const examples = (items: readonly string[]) =>
+  `${items.slice(0, EXAMPLES).join(', ')}${items.length > EXAMPLES ? `, and ${String(items.length - EXAMPLES)} more` : ''}`;
+
+/** A page as the verdict names it: route, state, role, width, theme. */
+const pageName = (e: Entry) =>
+  `${e.route} ${e.state} ${e.role} ${String(e.width)} ${e.theme ?? 'light'}`;
+
+export interface GateVerdict {
+  /** Each reason the gate fails; empty when it passes. */
+  readonly failures: readonly string[];
+  /** What is reported but does not fail it: moderate and minor rules, keyboard findings. */
+  readonly listed: readonly string[];
+}
+
+/**
+ * The accessibility gate (UX-F1, #337) over a harness report. It fails on:
+ * - a run that did not measure everything it planned: nothing planned, a page that failed to load
+ *   or measure, a page measured before it settled, a page the budget left, a role whose login
+ *   failed, a combination skipped for want of an id, or a count that does not add up;
+ * - any critical or serious axe rule on any page (every route, state, role, width and theme);
+ * - a title shared by two routes (G-05);
+ * - an overlay or nav drawer check that failed or could not run;
+ * - a touch-scroll check behind the open drawer that did not run, or found the page scrolling;
+ *   none at all on a run that includes the shell;
+ * - a keyboard sample that could not be taken;
+ * - any write the harness caused.
+ * Moderate and minor rules, keyboard findings and sideways scrolling are listed, not failed.
+ */
+export function gateVerdict(report: A11yReport): GateVerdict {
+  const failures: string[] = [];
+  const listed: string[] = [];
+  const c = report.coverage;
+  if (c.planned === 0) failures.push('nothing was planned: the run measured no page');
+  if (c.failed > 0) {
+    const failed = report.entries.filter((e) => e.error !== undefined);
+    failures.push(
+      `${String(c.failed)} pages failed to load or measure: ${examples(failed.map((e) => `${pageName(e)} (${e.error ?? ''})`))}`,
+    );
+  }
+  const unsettled = report.entries.filter((e) => e.error === undefined && !e.ready);
+  if (unsettled.length > 0) {
+    failures.push(
+      `${String(unsettled.length)} pages were measured before they settled (still loading): ${examples(unsettled.map(pageName))}`,
+    );
+  }
+  if (c.notReachedPages > 0 || report.stoppedByBudget) {
+    failures.push(
+      `the budget (${String(Math.round(report.budgetMs / 1000))} s) ran out: ${String(c.notReachedPages)} pages not reached`,
+    );
+  }
+  if (c.loginFailedPages > 0 || c.loginFailed.length > 0) {
+    failures.push(
+      `${String(c.loginFailedPages)} pages lost to a failed login (${c.loginFailed.map((l) => l.role).join(', ')})`,
+    );
+  }
+  if (c.skipped.length > 0) {
+    failures.push(
+      `${String(c.skipped.length)} route × state × role combinations skipped: ${examples(c.skipped.map((s) => `${s.route} ${s.state} ${s.role} (${s.reason})`))}`,
+    );
+  }
+  const accounted = c.measured + c.failed + c.notReachedPages + c.loginFailedPages;
+  if (c.planned > 0 && accounted !== c.planned) {
+    failures.push(
+      `${String(c.measured)} of ${String(c.planned)} planned pages measured, and ${String(c.planned - accounted)} not accounted for`,
+    );
+  }
+
+  const measured = report.entries.filter((e) => e.error === undefined);
+  const bad = new Map<string, { impact: Impact; pages: string[] }>();
+  const mild = new Map<string, { impact: Impact; pages: number }>();
+  for (const e of measured) {
+    for (const v of e.violations) {
+      if (FAILING_IMPACTS.includes(v.impact)) {
+        const r = bad.get(v.id) ?? { impact: v.impact, pages: [] };
+        bad.set(v.id, { ...r, pages: [...r.pages, pageName(e)] });
+      } else {
+        const r = mild.get(v.id) ?? { impact: v.impact, pages: 0 };
+        mild.set(v.id, { ...r, pages: r.pages + 1 });
+      }
+    }
+  }
+  for (const [id, r] of [...bad].sort(([a], [b]) => cmp(a, b))) {
+    failures.push(`${id} (${r.impact}) on ${String(r.pages.length)} pages: ${examples(r.pages)}`);
+  }
+  for (const [id, r] of [...mild].sort(([a], [b]) => cmp(a, b))) {
+    listed.push(`${id} (${r.impact}) on ${String(r.pages)} pages`);
+  }
+
+  for (const d of report.titles.duplicates) {
+    failures.push(`the title "${d.title}" is shared by ${d.routes.join(', ')} (G-05)`);
+  }
+  for (const o of report.overlays) {
+    if (o.findings.length > 0) {
+      failures.push(
+        `${o.kind} "${o.trigger}" on ${o.route} at ${String(o.width)}: ${o.findings.join('; ')}`,
+      );
+    }
+  }
+  const shell = report.filter.routes.length === 0 || report.filter.routes.includes(SHELL);
+  if (shell && report.touchScroll.length === 0) {
+    failures.push('touch scrolling behind the open nav drawer was not checked');
+  }
+  for (const t of report.touchScroll) {
+    if (!t.ran) failures.push(`touch scroll (${t.engine}) did not run: ${t.findings.join('; ')}`);
+    else if (t.findings.length > 0)
+      failures.push(`touch scroll (${t.engine}, ${t.route}): ${t.findings.join('; ')}`);
+  }
+  for (const k of report.keyboard) {
+    if (k.error !== undefined) {
+      failures.push(
+        `the keyboard sample of ${k.route} at ${String(k.width)} was not taken: ${k.error}`,
+      );
+    } else if (k.findings.length > 0) {
+      listed.push(`keyboard, ${k.route} at ${String(k.width)}: ${k.findings.join('; ')}`);
+    }
+  }
+  if (report.writes.length > 0) {
+    failures.push(
+      `the harness caused ${String(report.writes.length)} writes: ${examples(report.writes)}`,
+    );
+  }
+  const wide = measured.filter((e) => e.overflowX);
+  if (wide.length > 0) {
+    listed.push(
+      `${String(wide.length)} pages wider than the viewport: ${examples(wide.map(pageName))}`,
+    );
+  }
+  return { failures, listed };
 }

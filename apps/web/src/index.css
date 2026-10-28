@@ -379,9 +379,19 @@
     outline: none;
   }
 
-  /* The page behind the open nav drawer does not scroll (UX-1b, #316). */
+  /*
+   * The page behind the open nav drawer does not scroll (UX-1b, #316). `overflow: hidden` on the
+   * root alone does not stop a touch scroll in iOS Safari; a fixed body does, held where the page
+   * was (`--nav-lock-top`, set by the shell) so nothing moves (UX-F1, #337). The body itself does
+   * not clip: the sticky top bar keeps the viewport as its scroll box.
+   */
   html[data-nav-open] {
     overflow: hidden;
+  }
+  html[data-nav-open] body {
+    position: fixed;
+    inset-inline: 0;
+    top: var(--nav-lock-top, 0);
   }
 }
 

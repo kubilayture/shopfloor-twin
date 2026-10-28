@@ -2,7 +2,8 @@ import { AxeBuilder } from '@axe-core/playwright';
 import type { Locator, Page } from '@playwright/test';
 import {
   fromAxe,
-  longestTableRun,
+  tableRuns,
+  TABLE_RUN_LIMIT,
   type FocusStop,
   type ImpactCounts,
   type OverlayCheck,
@@ -110,6 +111,12 @@ function focusedNow(): (FocusStop & { onScreen: boolean; covered: boolean }) | n
   const cs = getComputedStyle(el);
   const outline = cs.outlineStyle !== 'none' && parseFloat(cs.outlineWidth) > 0;
   const ring = cs.boxShadow !== 'none' && el.matches(':focus-visible');
+  // A ring drawn by a pseudo-element around a larger hit area (the terminal picker's whole-tile
+  // link, UX-7): its `::after` (or `::before`) outline counts.
+  const pseudo = ['::after', '::before'].some((p) => {
+    const ps = getComputedStyle(el, p);
+    return ps.content !== 'none' && ps.outlineStyle !== 'none' && parseFloat(ps.outlineWidth) > 0;
+  });
   const r = el.getBoundingClientRect();
   const onScreen =
     r.width > 0 &&
@@ -124,6 +131,21 @@ function focusedNow(): (FocusStop & { onScreen: boolean; covered: boolean }) | n
   const top = onScreen ? document.elementFromPoint(x, y) : null;
   const covered = top !== null && top !== el && !el.contains(top) && !top.contains(el);
   const table = el.closest('table');
+  const tables = [...document.querySelectorAll('table')];
+  // A skip link ("Skip past the units", G-33): the first table between it and its target.
+  const href = el instanceof HTMLAnchorElement ? (el.getAttribute('href') ?? '') : '';
+  const target = href.startsWith('#')
+    ? document.getElementById(decodeURIComponent(href.slice(1)))
+    : null;
+  const past =
+    target === null
+      ? -1
+      : tables.findIndex(
+          (t) =>
+            (el.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0 &&
+            (t.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0 &&
+            !t.contains(target),
+        );
   const label =
     el instanceof HTMLInputElement ||
     el instanceof HTMLSelectElement ||
@@ -141,8 +163,9 @@ function focusedNow(): (FocusStop & { onScreen: boolean; covered: boolean }) | n
   return {
     element: `${el.getAttribute('role') ?? el.tagName.toLowerCase()} "${name}"`,
     region,
-    visible: outline || ring,
-    inTable: table ? [...document.querySelectorAll('table')].indexOf(table) : null,
+    visible: outline || ring || pseudo,
+    inTable: table ? tables.indexOf(table) : null,
+    skipsTable: past === -1 ? null : past,
     onScreen,
     covered,
   };
@@ -156,7 +179,12 @@ function focusedNow(): (FocusStop & { onScreen: boolean; covered: boolean }) | n
 export async function sampleKeyboard(
   page: Page,
   presses = 40,
-): Promise<{ stops: FocusStop[]; longestTableRun: number; findings: string[] }> {
+): Promise<{
+  stops: FocusStop[];
+  longestTableRun: number;
+  skippedByLinkRun: number;
+  findings: string[];
+}> {
   await page.evaluate(() => {
     (document.activeElement as HTMLElement | null)?.blur();
     window.scrollTo(0, 0);
@@ -194,9 +222,11 @@ export async function sampleKeyboard(
     );
   if (covered.length > 0)
     findings.push(`focused element covered by another (2.4.11): ${covered.slice(0, 5).join(', ')}`);
-  const run = longestTableRun(stops);
-  if (run >= 10) findings.push(`${String(run)} stops inside one table before leaving it (G-33)`);
-  return { stops, longestTableRun: run, findings };
+  // A run right after a skip link past its table is reported apart, not as a finding (G-33).
+  const runs = tableRuns(stops);
+  if (runs.longest >= TABLE_RUN_LIMIT)
+    findings.push(`${String(runs.longest)} stops inside one table before leaving it (G-33)`);
+  return { stops, longestTableRun: runs.longest, skippedByLinkRun: runs.skippedByLink, findings };
 }
 
 /** The visible overlay opened last, marked `data-a11y-overlay`; its kind and whether modal. */

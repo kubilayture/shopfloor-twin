@@ -454,6 +454,18 @@ export function Login() {
   if (session && !session.user.mustChangePassword) {
     return <BackTo href={target} />;
   }
+  // While the session is read, no form: a session found takes the page on (`BackTo`) and would
+  // drop what was typed. A read that fails (the MES unreachable) shows the form; the login says.
+  if (session === undefined && !auth.error) {
+    return (
+      <LoginCard>
+        <p role="status" className="flex items-center gap-2 text-sm text-ink-secondary">
+          <Icon name="spinner" size={16} className="motion-safe:animate-spin" />
+          Checking your session…
+        </p>
+      </LoginCard>
+    );
+  }
   if (session?.user.mustChangePassword === true) {
     return (
       <LoginCard

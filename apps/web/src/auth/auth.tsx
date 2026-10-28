@@ -130,15 +130,76 @@ export function forgetLegacyStorage(storage: () => Storage = () => globalThis.lo
   }
 }
 
+/**
+ * Set in this tab's `sessionStorage` while a logout is on its way to the MES. A page left before
+ * the logout ended (a reload, a link, a URL typed right after "Log out") cuts it off, and the next
+ * page's read of the session could reach the MES first and find the session still live: it would
+ * sign the user back in until the logout landed and then say "Your session ended" (the demo's
+ * scene 8 flake, #390). The next page ends the session again first (`finishPendingLogout`).
+ */
+export const LOGOUT_PENDING_KEY = 'shopfloor.logoutPending';
+
+function tabStorage(): Storage {
+  return globalThis.sessionStorage;
+}
+
+/** Marks a logout as on its way, or done; storage may refuse (then the mark is not kept). */
+function markLogout(pending: boolean): void {
+  try {
+    if (pending) tabStorage().setItem(LOGOUT_PENDING_KEY, '1');
+    else tabStorage().removeItem(LOGOUT_PENDING_KEY);
+  } catch {
+    // Private mode or blocked storage: a reload right after a logout may race it, as before.
+  }
+}
+
+function logoutPending(): boolean {
+  try {
+    return tabStorage().getItem(LOGOUT_PENDING_KEY) !== null;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ends the session a logout of an earlier page of this tab was ending, before this page reads
+ * it (`LOGOUT_PENDING_KEY`): the logout is idempotent, and its answer clears the cookie.
+ */
+async function finishPendingLogout(): Promise<void> {
+  if (!logoutPending()) return;
+  try {
+    await logout();
+  } catch {
+    // An unreachable MES: the read that follows says so; the session ends at its idle expiry.
+  }
+  markLogout(false);
+}
+
 /** A 4403 close starts the live client again at most this often (UX-7 review). */
 export const RESTART_AFTER_4403_MS = 30_000;
 
 export function AuthProvider({ children }: { readonly children: ReactNode }) {
   const queryClient = useQueryClient();
   const live = useLiveClient();
+  // The last user who held a session in this tab: a login as anyone else empties the cache.
+  const lastUser = useRef<string | undefined>(undefined);
+  // Moves with every login and logout: a logout empties the cache only if it is still the last,
+  // and a read of the session begun before either is not the session any more.
+  const generation = useRef(0);
+  // A logout an earlier page of this tab left on its way, ended before the first read.
+  const pendingLogout = useRef<Promise<void> | undefined>(undefined);
   const query = useQuery({
     queryKey: sessionKey,
-    queryFn: ({ signal }) => getSession(signal),
+    queryFn: async ({ signal }) => {
+      pendingLogout.current ??= finishPendingLogout();
+      await pendingLogout.current;
+      const at = generation.current;
+      const read = await getSession(signal);
+      // A logout or a login meanwhile decides the session: the MES may have answered this read
+      // before the logout ended it, and it must not sign that user back in (#390).
+      if (generation.current === at) return read;
+      return queryClient.getQueryData<SessionDto | null>(sessionKey) ?? null;
+    },
     staleTime: Infinity,
     meta: { auth: false },
   });
@@ -150,10 +211,6 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
   useEffect(() => {
     forgetLegacyStorage();
   }, []);
-  // The last user who held a session in this tab: a login as anyone else empties the cache.
-  const lastUser = useRef<string | undefined>(undefined);
-  // Moves with every login and logout: a logout empties the cache only if it is still the last.
-  const generation = useRef(0);
   useEffect(() => {
     if (session) lastUser.current = session.user.username;
   }, [session]);
@@ -194,6 +251,8 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
       if (!sameUser) forgetData(queryClient);
       lastUser.current = next.user.username;
       generation.current += 1;
+      // A logout this tab left on its way is moot: this login's cookie is the session now.
+      markLogout(false);
       queryClient.setQueryData(sessionKey, next);
       setLost(undefined);
       setEnded(undefined);
@@ -220,19 +279,25 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
     restarts.cancel();
     live.stop();
     setLoggingOut(true);
+    // Kept until the MES answers: a page left before then ends the session first (#390).
+    markLogout(true);
     try {
       await logout();
     } catch {
       // The cookie may outlive an unreachable MES; the session still ends at its idle expiry.
     } finally {
       setLoggingOut(false);
+      markLogout(false);
     }
     // Only if nobody logged in meanwhile: their reads must stay.
     if (generation.current === mine) forgetData(queryClient);
   }, [queryClient, live, restarts]);
 
   const refresh = useCallback(async () => {
+    const at = generation.current;
     const next = await getSession();
+    // A logout or a login meanwhile: this answer may predate it (see the session query).
+    if (generation.current !== at) return;
     if (next) queryClient.setQueryData(sessionKey, next);
     else sessionLost('ended');
   }, [queryClient, sessionLost]);

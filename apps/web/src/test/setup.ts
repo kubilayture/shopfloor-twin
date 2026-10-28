@@ -11,6 +11,13 @@ afterEach(() => {
   cleanup();
   modalDialogs.length = 0;
   autoPopovers.length = 0;
+  // Each test is a new tab: a logout one left on its way (`LOGOUT_PENDING_KEY`, #390) must not
+  // end the next test's session.
+  try {
+    globalThis.sessionStorage.clear();
+  } catch {
+    // no storage, or a test's stand-in that refuses
+  }
 });
 
 // jsdom has no layout; the router restores scroll positions on navigation.

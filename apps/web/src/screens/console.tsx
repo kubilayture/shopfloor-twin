@@ -37,7 +37,7 @@ import {
   ScreenError,
   SectionError,
   queryRead,
-  screenErrors,
+  useScreenErrors,
   type ScreenErrors,
 } from '../components/screen-error.tsx';
 import { Badge } from '../components/ui/badge.tsx';
@@ -1719,7 +1719,7 @@ export function Console() {
     refetchInterval: LIST_POLL_MS,
     enabled: allowed,
   });
-  const errors = screenErrors([
+  const errors = useScreenErrors([
     queryRead('the run', status, 'section'),
     queryRead('the timelines', scenarios, 'section'),
     queryRead('the machines', equipment, 'section'),

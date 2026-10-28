@@ -272,6 +272,23 @@ describe('opening a hold', () => {
     expect(screen.getByTestId('hold-open-form').firstElementChild).not.toBe(own);
   });
 
+  it('says an unknown episode politely while the reasons’ error is the one alert (#394)', async () => {
+    const server = qualityMes(qualityState());
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(input instanceof Request ? input.url : String(input), 'http://localhost')
+        .pathname;
+      return path === '/api/v1/quality/hold-reasons'
+        ? Promise.resolve(problem(503, 'Service Unavailable', 'quality not ready', path))
+        : server.fetch(input, init);
+    });
+    await renderApp('/quality/holds/new?signal=9', { session: QUALITY });
+    const missing = await screen.findByTestId('hold-suggestion-missing');
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Could not load the hold reasons.');
+    expect(screen.getAllByRole('alert')).toEqual([alert]);
+    expect(missing.getAttribute('role')).toBe('status');
+  });
+
   it('refuses the form to a role without quality:hold', async () => {
     vi.stubGlobal('fetch', qualityMes(qualityState()).fetch);
     await renderApp('/quality/holds/new?kind=lot&id=K1', { session: sessionOf(['operator']) });

@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useQuietErrors } from './query-error.tsx';
 import { ErrorState } from './ui/error-state.tsx';
 
@@ -36,8 +37,17 @@ export interface ScreenRead {
   readonly error: unknown;
   /** An answer is there to show. */
   readonly hasData: boolean;
-  /** On its way, with nothing to show yet (a disabled read is neither this nor failed). */
+  /**
+   * Its first load is on its way, with nothing to show yet (a disabled read is neither this nor
+   * failed).
+   */
   readonly loading: boolean;
+  /**
+   * Read again after a failure, with nothing to show and no answer yet: TanStack Query (v5) sets
+   * such a query back to `pending` with no error while it fetches (a poll, a retry). The screen's
+   * errors keep its last failure meanwhile (`useScreenErrors`), so the error does not flap.
+   */
+  readonly retrying: boolean;
   readonly retry: () => void;
 }
 
@@ -47,6 +57,8 @@ export interface QueryLike {
   readonly fetchStatus: 'fetching' | 'paused' | 'idle';
   readonly data: unknown;
   readonly error: unknown;
+  /** How often it failed since it was created: more than none, a fetch now is a re-read. */
+  readonly errorUpdateCount: number;
   readonly refetch: () => unknown;
 }
 
@@ -57,6 +69,7 @@ export function queryRead(
   kind: ReadKind,
   key: string = what,
 ): ScreenRead {
+  const fetching = query.status === 'pending' && query.fetchStatus !== 'idle';
   return {
     key,
     what,
@@ -64,7 +77,8 @@ export function queryRead(
     failed: query.status === 'error',
     error: query.error,
     hasData: query.data !== undefined,
-    loading: query.status === 'pending' && query.fetchStatus !== 'idle',
+    loading: fetching && query.errorUpdateCount === 0,
+    retrying: fetching && query.errorUpdateCount > 0,
     retry: () => {
       void query.refetch();
     },
@@ -76,9 +90,12 @@ export function selectionRead(selection: {
   readonly pending: boolean;
   readonly error: unknown;
   readonly current: unknown;
+  /** One of its reads is read again after a failure, with no answer yet. */
+  readonly retrying: boolean;
   readonly retry: () => void;
 }): ScreenRead {
   const failed = selection.error !== null && selection.error !== undefined;
+  const retrying = !failed && selection.retrying;
   return {
     key: 'the shifts',
     what: 'the shifts',
@@ -86,9 +103,39 @@ export function selectionRead(selection: {
     failed,
     error: selection.error,
     hasData: selection.current !== undefined,
-    loading: selection.pending && !failed,
+    loading: selection.pending && !failed && !retrying,
+    retrying,
     retry: selection.retry,
   };
+}
+
+/**
+ * The screen's errors (`screenErrors`), each read's last failure kept while it is read again
+ * (`retrying`): a polled or retried read that failed with nothing to show stays failed, with the
+ * same error, until it answers, so the one error neither loses a name nor goes away and comes
+ * back on every poll. A re-read with no failure seen by this screen (the screen opened on a query
+ * that had failed before) counts as loading.
+ */
+export function useScreenErrors(reads: readonly ScreenRead[]): ScreenErrors {
+  // The last failure of each read that is being read again, by key (state set while rendering, the
+  // way React derives state from props: the render that saw it uses `next` at once).
+  const [last, setLast] = useState<ReadonlyMap<string, unknown>>(() => new Map());
+  const next = new Map(last);
+  const kept = reads.map((read): ScreenRead => {
+    if (read.failed) {
+      next.set(read.key, read.error);
+      return read;
+    }
+    if (read.retrying && next.has(read.key)) {
+      return { ...read, failed: true, error: next.get(read.key), retrying: false };
+    }
+    if (!read.retrying) next.delete(read.key);
+    return read;
+  });
+  const changed =
+    next.size !== last.size || [...next].some(([key, error]) => last.get(key) !== error);
+  if (changed) setLast(next);
+  return screenErrors(kept);
 }
 
 export interface ScreenErrors {
@@ -111,7 +158,8 @@ export function screenErrors(reads: readonly ScreenRead[]): ScreenErrors {
   const loaded = reads.some((read) => read.kind !== 'base' && read.hasData);
   // Until something loaded, a failure waits for the reads still on their way; once something
   // has, what failed is said at once (a read loading later, another tab's, hides nothing).
-  const waiting = !loaded && reads.some((read) => read.loading);
+  // A re-read whose failure was not kept counts as a first load.
+  const waiting = !loaded && reads.some((read) => read.loading || (read.retrying && !read.failed));
   const failed = waiting ? [] : reads.filter((read) => read.failed);
   const only = failed.length === 1 ? failed[0] : undefined;
   const own = loaded && only?.kind === 'section' ? only : undefined;

@@ -26,7 +26,12 @@ import {
 } from '../api/quality.ts';
 import { useCan, useUnsavedDraft } from '../auth/auth.tsx';
 import { QueryError } from '../components/query-error.tsx';
-import { ScreenError, SectionError, queryRead, screenErrors } from '../components/screen-error.tsx';
+import {
+  ScreenError,
+  SectionError,
+  queryRead,
+  useScreenErrors,
+} from '../components/screen-error.tsx';
 import {
   CommentInput,
   FailureMessage,
@@ -646,7 +651,7 @@ export function HoldOpen() {
   // reasons failed without a suggestion to read, is one error at the top of the form; otherwise
   // each says its own in place. An unknown episode (404) is an answer, said by its own callout.
   const unknownEpisode = suggestion.error instanceof ApiError && suggestion.error.status === 404;
-  const errors = screenErrors([
+  const errors = useScreenErrors([
     ...(fromSignal !== undefined && !unknownEpisode
       ? [queryRead('the suggested scope', suggestion, 'section')]
       : []),
@@ -697,24 +702,27 @@ export function HoldOpen() {
       >
         <ScreenError errors={errors} />
         {fromSignal !== undefined ? (
-          suggestion.isPending ? (
-            <Skeleton shape="text" rows={3} label="Loading the episode’s suggested scope…" />
-          ) : suggestion.isError ? (
-            unknownEpisode ? (
-              <Callout tone="alarm" role="alert" data-testid="hold-suggestion-missing">
-                Episode {fromSignal} is unknown or withdrawn: it suggests no scope.
-              </Callout>
-            ) : errors.inSection('the suggested scope') ? (
-              <SectionError errors={errors} readKey="the suggested scope" />
-            ) : errors.summary.length > 0 ? null : (
-              <Skeleton shape="text" rows={3} label="Loading the episode’s suggested scope…" />
-            )
-          ) : (
+          unknownEpisode ? (
+            // One alert for the form (#394): with the reasons' error up, this answer is polite.
+            <Callout
+              tone="alarm"
+              role={errors.summary.length > 0 ? 'status' : 'alert'}
+              data-testid="hold-suggestion-missing"
+            >
+              Episode {fromSignal} is unknown or withdrawn: it suggests no scope.
+            </Callout>
+          ) : errors.inSection('the suggested scope') ? (
+            <SectionError errors={errors} readKey="the suggested scope" />
+          ) : errors.summary.some(
+              (read) => read.key === 'the suggested scope',
+            ) ? null : suggestion.data ? (
             <Suggestion
               suggestion={suggestion.data}
               selected={selected}
               setSelected={setSelected}
             />
+          ) : (
+            <Skeleton shape="text" rows={3} label="Loading the episode’s suggested scope…" />
           )
         ) : (
           <div className="flex flex-wrap items-start gap-x-4 gap-y-3">

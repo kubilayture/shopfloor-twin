@@ -4,7 +4,7 @@ import {
   type OeeBucketDto,
   type Pareto,
 } from '@shopfloor/contracts/mes-api';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearch } from '@tanstack/react-router';
 import { useEffect, useMemo, useRef } from 'react';
 import { getOee, getPareto, getShiftOee, listEquipment, type OeeScope } from '../api/client.ts';
@@ -28,12 +28,13 @@ import {
   ratioStat,
   type GroupFinality,
 } from '../components/oee-ui.tsx';
-import { QueryError } from '../components/query-error.tsx';
 import {
   ScreenError,
+  SectionError,
   queryRead,
-  screenErrors,
   selectionRead,
+  useScreenErrors,
+  type ScreenErrors,
 } from '../components/screen-error.tsx';
 import { ShiftPicker, ShiftSpan, useShiftSelection } from '../components/shift-picker.tsx';
 import { Badge } from '../components/ui/badge.tsx';
@@ -68,7 +69,7 @@ import {
   useLiveOees,
   useLiveSubscriptions,
 } from '../live/live-context.tsx';
-import { LineOeeCard, useLineOee } from './line-oee.tsx';
+import { LINE_HOURS_READ, LINE_READ, LineOeeCard, useLineOee } from './line-oee.tsx';
 
 const LIVE_REFRESH_MS = 30_000;
 /** A downtime push (a new record, a recode) rereads the Pareto, at most this often. */
@@ -413,26 +414,69 @@ function hourColumns(
   ];
 }
 
-function HourlyChart({
-  scope,
-  id,
-  shiftKey,
-  start,
-  end,
-  live,
-}: {
+/** The hourly OEE's and the Pareto's reads, as the screen's errors name them (#394). */
+const HOURS_READ = 'the hourly OEE';
+const PARETO_READ = 'the Pareto';
+
+/** The work center or machine the details are for, in the shift's span. */
+interface Detail {
   readonly scope: OeeScope;
   readonly id: string;
   readonly shiftKey: string;
   readonly start: number;
   readonly end: number;
-  readonly live: boolean;
-}) {
-  const hours = useQuery({
-    queryKey: queryKeys.hourlyOee(id, shiftKey),
-    queryFn: ({ signal }) => getOee({ scope, id, bucket: 'hour', from: start, to: end }, signal),
+}
+
+/** The focus's OEE per hour: not asked until the focus and the shift's span are known. */
+function useHourlyOee(detail: Detail | undefined, live: boolean) {
+  return useQuery({
+    queryKey: queryKeys.hourlyOee(detail?.id ?? '', detail?.shiftKey ?? ''),
+    queryFn: detail
+      ? ({ signal }) =>
+          getOee(
+            {
+              scope: detail.scope,
+              id: detail.id,
+              bucket: 'hour',
+              from: detail.start,
+              to: detail.end,
+            },
+            signal,
+          )
+      : skipToken,
     refetchInterval: live ? LIVE_REFRESH_MS : false,
   });
+}
+
+/** The focus's downtime Pareto: not asked until the focus and the shift's span are known. */
+function usePareto(detail: Detail | undefined, live: boolean) {
+  return useQuery({
+    queryKey: queryKeys.pareto(detail?.id ?? '', detail?.shiftKey ?? ''),
+    queryFn: detail
+      ? ({ signal }) =>
+          getPareto(
+            { scope: detail.scope, id: detail.id, from: detail.start, to: detail.end },
+            signal,
+          )
+      : skipToken,
+    refetchInterval: live ? LIVE_REFRESH_MS : false,
+  });
+}
+
+function HourlyChart({
+  id,
+  start,
+  end,
+  hours,
+  errors,
+}: {
+  readonly id: string;
+  readonly start: number;
+  readonly end: number;
+  /** Read by the dashboard (`useHourlyOee`), so its failure is one of the screen's (#394). */
+  readonly hours: ReturnType<typeof useHourlyOee>;
+  readonly errors: ScreenErrors;
+}) {
   // Only the hour the clock is in is pushed; earlier hours come from REST, read again when the
   // clock moves into a new hour (live-cache).
   const pushed = useLiveOee(id)?.hour;
@@ -467,14 +511,10 @@ function HourlyChart({
             : 'No planned time in this shift.'
       }
     >
-      {hours.isError ? (
-        <QueryError
-          what="the hourly OEE"
-          error={hours.error}
-          onRetry={() => void hours.refetch()}
-        />
+      <SectionError errors={errors} readKey={HOURS_READ} />
+      {hours.data === undefined && !errors.inSection(HOURS_READ) ? (
+        <Skeleton shape="chart" label="Loading hours…" />
       ) : null}
-      {hours.isPending ? <Skeleton shape="chart" label="Loading hours…" /> : null}
       {rows.length > 0 ? (
         <div className="mt-2 flex flex-col gap-2">
           <p className="flex flex-wrap gap-x-4 text-xs text-ink-secondary">
@@ -646,26 +686,14 @@ function ParetoTable({ pareto }: { readonly pareto: Pareto }) {
 }
 
 function ParetoChart({
-  scope,
-  id,
-  shiftKey,
-  start,
-  end,
-  live,
+  pareto,
+  errors,
 }: {
-  readonly scope: OeeScope;
-  readonly id: string;
-  readonly shiftKey: string;
-  readonly start: number;
-  readonly end: number;
-  readonly live: boolean;
+  /** Read by the dashboard (`usePareto`), so its failure is one of the screen's (#394). */
+  readonly pareto: ReturnType<typeof usePareto>;
+  readonly errors: ScreenErrors;
 }) {
   const queryClient = useQueryClient();
-  const pareto = useQuery({
-    queryKey: queryKeys.pareto(id, shiftKey),
-    queryFn: ({ signal }) => getPareto({ scope, id, from: start, to: end }, signal),
-    refetchInterval: live ? LIVE_REFRESH_MS : false,
-  });
   // A downtime push (created, closed, recoded) changes the Pareto: read it again, throttled.
   const seq = useLiveDowntime()?.seq;
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -697,10 +725,10 @@ function ParetoChart({
       height={chart?.height ?? 200}
       empty={pareto.data ? 'No availability loss in this shift.' : undefined}
     >
-      {pareto.isPending ? <Skeleton shape="chart" label="Loading the Pareto…" /> : null}
-      {pareto.isError ? (
-        <QueryError what="the Pareto" error={pareto.error} onRetry={() => void pareto.refetch()} />
+      {pareto.data === undefined && !errors.inSection(PARETO_READ) ? (
+        <Skeleton shape="chart" label="Loading the Pareto…" />
       ) : null}
+      <SectionError errors={errors} readKey={PARETO_READ} />
       {/* Nothing lost: the chart's empty state says so, without a line of zeros under it. */}
       {pareto.data && pareto.data.reasons.length > 0 ? (
         <div className="mt-2 flex flex-col gap-2">
@@ -758,44 +786,32 @@ function FocusPicker({
 
 function FocusDetails({
   focus,
-  scope,
   shiftKey,
   start,
   end,
-  live,
   rest,
+  hours,
+  pareto,
+  errors,
 }: {
   readonly focus: string;
-  readonly scope: OeeScope;
   readonly shiftKey: string;
   readonly start: number;
   readonly end: number;
-  readonly live: boolean;
   readonly rest: OeeBucketDto | undefined;
+  readonly hours: ReturnType<typeof useHourlyOee>;
+  readonly pareto: ReturnType<typeof usePareto>;
+  readonly errors: ScreenErrors;
 }) {
   const bucket = useShiftBucket(focus, rest, shiftKey);
   return (
     // Each chart card as tall as its own content (E-05: the hourly card was stretched to the
     // waterfall's height and stood half empty).
     <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
-      <HourlyChart
-        scope={scope}
-        id={focus}
-        shiftKey={shiftKey}
-        start={start}
-        end={end}
-        live={live}
-      />
+      <HourlyChart id={focus} start={start} end={end} hours={hours} errors={errors} />
       <WaterfallChart bucket={bucket} />
       <div className="lg:col-span-2">
-        <ParetoChart
-          scope={scope}
-          id={focus}
-          shiftKey={shiftKey}
-          start={start}
-          end={end}
-          live={live}
-        />
+        <ParetoChart pareto={pareto} errors={errors} />
       </div>
     </div>
   );
@@ -864,10 +880,26 @@ export function OeeDashboard() {
   const machineFinality = groupFinality(machineRows.map((row) => row.bucket));
   // One error for the screen's own reads (#394); the sections' reads (the line, the hours, the
   // Pareto) run once the shift's OEE is in, and say their own failures.
-  const errors = screenErrors([
+  // The focus's hours and Pareto, read here (not in their charts) so every read of the screen is
+  // one of its errors.
+  const span = data ? { start: Date.parse(data.start), end: Date.parse(data.end) } : undefined;
+  const detail =
+    focus !== undefined && shiftKey !== undefined && span
+      ? { scope, id: focus, shiftKey, ...span }
+      : undefined;
+  const hours = useHourlyOee(detail, selection.isCurrent);
+  const pareto = usePareto(detail, selection.isCurrent);
+  // One error for the screen (#394): its own reads, then the line card's, the hours' and the
+  // Pareto's, which run once the shift's OEE is in. With that loaded, one failed section says it
+  // itself; several are one error under the header, a quiet line in each.
+  const errors = useScreenErrors([
     selectionRead(selection),
     queryRead('the equipment', equipment, 'base'),
     queryRead("the shift's OEE", shiftOee, 'main'),
+    queryRead(LINE_READ, line.shiftRead, 'section'),
+    queryRead(LINE_HOURS_READ, line.hoursRead, 'section'),
+    queryRead(HOURS_READ, hours, 'section'),
+    queryRead(PARETO_READ, pareto, 'section'),
   ]);
 
   return (
@@ -912,7 +944,7 @@ export function OeeDashboard() {
       {data && shiftKey !== undefined ? (
         <>
           <Section id="line-title" title="Line">
-            <LineOeeCard view={line} equipment={known.equipment} />
+            <LineOeeCard view={line} equipment={known.equipment} errors={errors} />
           </Section>
           <Section
             id="wc-title"
@@ -984,12 +1016,13 @@ export function OeeDashboard() {
               <FocusDetails
                 key={`${focus}|${shiftKey}`}
                 focus={focus}
-                scope={scope}
                 shiftKey={shiftKey}
                 start={Date.parse(data.start)}
                 end={Date.parse(data.end)}
-                live={selection.isCurrent}
                 rest={focusRest}
+                hours={hours}
+                pareto={pareto}
+                errors={errors}
               />
             </Section>
           ) : null}

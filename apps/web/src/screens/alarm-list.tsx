@@ -25,7 +25,12 @@ import {
 import { queryKeys, useAlarmConfig, usePlantClock } from '../api/queries.ts';
 import { PriorityBadge } from '../components/priority-badge.tsx';
 import { QueryError } from '../components/query-error.tsx';
-import { ScreenError, SectionError, queryRead, screenErrors } from '../components/screen-error.tsx';
+import {
+  ScreenError,
+  SectionError,
+  queryRead,
+  useScreenErrors,
+} from '../components/screen-error.tsx';
 import { Badge, type BadgeVariant } from '../components/ui/badge.tsx';
 import { Button } from '../components/ui/button.tsx';
 import { Callout } from '../components/ui/callout.tsx';
@@ -1120,7 +1125,7 @@ export function AlarmList() {
     queryRead('the shelved alarms', shelved, view === 'shelved' ? 'section' : 'main', 'shelved'),
     queryRead('the alarm history', history, view === 'history' ? 'section' : 'main', 'history'),
   ];
-  const errors = screenErrors([
+  const errors = useScreenErrors([
     // The shown view first: the error names what the panel would have shown first.
     ...viewReads.filter((read) => read.key === view),
     ...viewReads.filter((read) => read.key !== view),
@@ -1131,6 +1136,8 @@ export function AlarmList() {
       : []),
   ]);
   const errorInPanel = errors.summary.some((read) => read.key === view);
+  // The shown list failed: no bulk action over it, also while it is read again (#394).
+  const viewFailed = errorInPanel || errors.inSection(view) || loaded.isError;
 
   const bulk = mayAck && (view === 'active' || view === 'shelved');
   const panelOpen = selectedOccurrence !== undefined;
@@ -1291,7 +1298,7 @@ export function AlarmList() {
                 data-testid="alarm-toolbar"
                 className="mb-3 flex min-h-11 flex-wrap items-center gap-x-3 gap-y-2"
               >
-                {bulk && !loaded.isError ? (
+                {bulk && !viewFailed ? (
                   <>
                     <Button
                       variant="primary"

@@ -650,23 +650,51 @@ describe('OEE dashboard', () => {
     }
   });
 
-  it('says one error in the line card when both of its reads fail (#394)', async () => {
+  it('names the line, hours and Pareto failures in one error once the shift loaded (#394)', async () => {
+    const fail = (path: string) => () =>
+      problem(500, 'Internal Server Error', 'the read failed', path);
     vi.stubGlobal(
       'fetch',
       api({
-        '/api/v1/oee/line': () =>
-          problem(503, 'Service Unavailable', 'line OEE is not available', '/api/v1/oee/line'),
+        '/api/v1/oee/line': fail('/api/v1/oee/line'),
+        '/api/v1/oee': fail('/api/v1/oee'),
+        '/api/v1/downtime/pareto': fail('/api/v1/downtime/pareto'),
       }),
     );
     await renderApp('/oee');
     const card = await screen.findByTestId('line-oee-card');
+    const alert = await screen.findByRole('alert');
     await waitFor(() => {
-      expect(within(card).getByRole('alert').textContent).toContain(
-        'Could not load the line OEE and the hourly line OEE.',
+      expect(alert.textContent).toContain(
+        'Could not load the line OEE, the hourly line OEE, the hourly OEE and the Pareto.',
       );
     });
-    expect(screen.getAllByRole('alert')).toHaveLength(1);
-    // Nothing of the card loaded: the hours are not drawn under the error (no skeleton for ever).
-    expect(within(card).queryByText(/Line OEE per hour/)).toBeNull();
+    expect(screen.getAllByRole('alert')).toEqual([alert]);
+    // Under the page header, the sections still drawn, each failure a quiet line in its place.
+    expect(card.contains(alert)).toBe(false);
+    expect(screen.getByTestId('oee-card-cell-m1')).toBeTruthy();
+    const quiet = [...card.querySelectorAll('[data-error]')].map((e) =>
+      e.getAttribute('data-error'),
+    );
+    expect(quiet).toEqual(['quiet', 'quiet']);
+    expect(
+      within(screen.getByTestId('pareto')).getByText(/^Could not load the Pareto/),
+    ).toBeTruthy();
+    expect(within(card).queryByRole('button', { name: 'Try again' })).toBeNull();
+  });
+
+  it('says one failed section of the loaded dashboard in that section (#394)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      api({
+        '/api/v1/downtime/pareto': () =>
+          problem(503, 'Service Unavailable', 'no Pareto', '/api/v1/downtime/pareto'),
+      }),
+    );
+    await renderApp('/oee');
+    const alert = await screen.findByRole('alert');
+    expect(within(screen.getByTestId('pareto')).getByRole('alert')).toBe(alert);
+    expect(alert.textContent).toContain('Could not load the Pareto.');
+    expect(screen.getAllByRole('alert')).toEqual([alert]);
   });
 });

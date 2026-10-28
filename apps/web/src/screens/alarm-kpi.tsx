@@ -42,7 +42,7 @@ import {
   ScreenError,
   SectionError,
   queryRead,
-  screenErrors,
+  useScreenErrors,
   selectionRead,
   type ScreenErrors,
 } from '../components/screen-error.tsx';
@@ -1006,13 +1006,15 @@ export function AlarmKpi() {
   const floodsRead = useFloodsRead(detailScope, range);
   const actorsRead = useBadActorsRead(detailScope, range);
   const operatorRead = useOperatorRead(detailScope, range);
-  const errors = screenErrors([
+  const errors = useScreenErrors([
     selectionRead(selection),
     queryRead('the alarm scopes', scopes, 'base'),
     ...cards
       .map((scope, index) => {
         const read = cardReads[index];
-        return read ? queryRead('the KPIs', read, 'section', `card:${scopeKey(scope)}`) : undefined;
+        return read
+          ? queryRead(`the ${scope.name} KPIs`, read, 'section', `card:${scopeKey(scope)}`)
+          : undefined;
       })
       .filter((read) => read !== undefined),
     queryRead('the buckets', bucketsRead, 'section'),

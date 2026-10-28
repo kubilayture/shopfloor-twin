@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, renderHook, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../api/client.ts';
 import {
@@ -8,6 +8,7 @@ import {
   queryRead,
   screenErrors,
   selectionRead,
+  useScreenErrors,
   type ReadKind,
   type ScreenRead,
 } from './screen-error.tsx';
@@ -31,6 +32,7 @@ function read(
     error: state === 'failed' || state === 'stale' ? error : null,
     hasData: state === 'loaded' || state === 'stale',
     loading: state === 'loading',
+    retrying: false,
     retry: vi.fn(),
   };
 }
@@ -136,6 +138,7 @@ describe('queryRead and selectionRead', () => {
     fetchStatus: 'fetching' as const,
     data: undefined,
     error: null,
+    errorUpdateCount: 0,
     refetch: vi.fn(),
     ...over,
   });
@@ -161,6 +164,13 @@ describe('queryRead and selectionRead', () => {
     expect(
       queryRead('the x', query({ status: 'success', fetchStatus: 'idle', data: [] }), 'section'),
     ).toMatchObject({ failed: false, hasData: true, loading: false });
+    // Read again after a failure with nothing to show: TanStack sets it back to pending.
+    expect(
+      queryRead('the x', query({ fetchStatus: 'fetching', errorUpdateCount: 2 }), 'section'),
+    ).toMatchObject({ failed: false, loading: false, retrying: true });
+    expect(
+      queryRead('the x', query({ fetchStatus: 'idle', errorUpdateCount: 2 }), 'section'),
+    ).toMatchObject({ loading: false, retrying: false });
     // Read again after a failure: still failed until the answer comes.
     expect(
       queryRead('the x', query({ status: 'error', fetchStatus: 'fetching', error }), 'section'),
@@ -172,7 +182,9 @@ describe('queryRead and selectionRead', () => {
 
   it('reads the shift picker as the screen’s base', () => {
     const retry = vi.fn();
-    expect(selectionRead({ pending: true, error: null, current: undefined, retry })).toMatchObject({
+    expect(
+      selectionRead({ pending: true, error: null, current: undefined, retrying: false, retry }),
+    ).toMatchObject({
       key: 'the shifts',
       what: 'the shifts',
       kind: 'base',
@@ -181,15 +193,73 @@ describe('queryRead and selectionRead', () => {
       hasData: false,
     });
     const error = unavailable();
-    const failed = selectionRead({ pending: false, error, current: undefined, retry });
+    const failed = selectionRead({
+      pending: false,
+      error,
+      current: undefined,
+      retrying: false,
+      retry,
+    });
     expect(failed).toMatchObject({ failed: true, error, loading: false });
     failed.retry();
     expect(retry).toHaveBeenCalledTimes(1);
     expect(
-      selectionRead({ pending: false, error: undefined, current: { shift: null }, retry }),
+      selectionRead({
+        pending: false,
+        error: undefined,
+        current: { shift: null },
+        retrying: false,
+        retry,
+      }),
     ).toMatchObject({ failed: false, hasData: true });
+    expect(
+      selectionRead({ pending: true, error: null, current: undefined, retrying: true, retry }),
+    ).toMatchObject({ failed: false, loading: false, retrying: true });
     // The current shift failed while it was first read: failed, not loading.
-    expect(selectionRead({ pending: true, error, current: undefined, retry }).loading).toBe(false);
+    expect(
+      selectionRead({ pending: true, error, current: undefined, retrying: false, retry }).loading,
+    ).toBe(false);
+  });
+});
+
+describe('useScreenErrors', () => {
+  const retrying = (key: string, kind: ReadKind): ScreenRead => ({
+    ...read(key, kind, 'idle'),
+    retrying: true,
+  });
+
+  it('keeps a failure while its read is read again, until it answers', () => {
+    const first = unavailable('first');
+    let reads = [read('oee', 'main', 'failed', first), read('hours', 'section', 'failed')];
+    const { result, rerender } = renderHook(() => useScreenErrors(reads));
+    expect(keys(result.current.summary)).toEqual(['oee', 'hours']);
+    // A poll: TanStack Query shows the read as pending with no error meanwhile.
+    reads = [retrying('oee', 'main'), retrying('hours', 'section')];
+    rerender();
+    expect(keys(result.current.summary)).toEqual(['oee', 'hours']);
+    expect(result.current.summary[0]?.error).toBe(first);
+    expect(result.current.whole).toBe(true);
+    rerender();
+    expect(keys(result.current.summary)).toEqual(['oee', 'hours']);
+    // It answered: nothing kept.
+    reads = [read('oee', 'main', 'loaded'), retrying('hours', 'section')];
+    rerender();
+    // The screen loaded: the one failure, kept, is its section's own.
+    expect(result.current.summary).toEqual([]);
+    expect(result.current.section('hours')?.own).toBe(true);
+    reads = [read('oee', 'main', 'loaded'), read('hours', 'section', 'loaded')];
+    rerender();
+    reads = [read('oee', 'main', 'loaded'), retrying('hours', 'section')];
+    rerender();
+    expect(result.current.summary).toEqual([]);
+    expect(result.current.inSection('hours')).toBe(false);
+  });
+
+  it('counts a re-read it saw no failure of as loading', () => {
+    const reads = [retrying('oee', 'main'), read('hours', 'section', 'failed')];
+    const { result } = renderHook(() => useScreenErrors(reads));
+    expect(result.current.summary).toEqual([]);
+    expect(result.current.whole).toBe(false);
   });
 });
 
@@ -249,6 +319,18 @@ describe('ScreenError', () => {
     // A retry can fix one of them: offered, and it reads every one again.
     fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
     for (const r of reads) expect(r.retry).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers a retry when a later read can be helped, the first one refused', () => {
+    render(
+      <ScreenError
+        errors={screenErrors([
+          read('a', 'main', 'failed', new ApiError('Forbidden: no', 403)),
+          read('b', 'main', 'failed'),
+        ])}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
   });
 
   it('offers no retry when none can help, and draws nothing without a failure', () => {

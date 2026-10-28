@@ -17,13 +17,7 @@ import {
   ratioStat,
   type GroupFinality,
 } from '../components/oee-ui.tsx';
-import {
-  ScreenError,
-  SectionError,
-  queryRead,
-  screenErrors,
-  type ScreenErrors,
-} from '../components/screen-error.tsx';
+import { SectionError, type ScreenErrors } from '../components/screen-error.tsx';
 import { Callout } from '../components/ui/callout.tsx';
 import { Card } from '../components/ui/card.tsx';
 import { Code } from '../components/ui/code.tsx';
@@ -62,6 +56,10 @@ export interface LineOeeView {
  * over the shift, followed live on `oee:line` (the current hour and shift and the bottlenecks).
  * `range` is undefined until the shift's span is known.
  */
+/** The line card's reads as the OEE dashboard's errors name them (#394). */
+export const LINE_READ = 'the line OEE';
+export const LINE_HOURS_READ = 'the hourly line OEE';
+
 export function useLineOee(
   shiftKey: string | undefined,
   range: { readonly start: number; readonly end: number } | undefined,
@@ -108,7 +106,12 @@ export function useLineOee(
     hours,
     bottlenecks: bottlenecks ?? [],
     bottleneckState:
-      bottlenecks !== undefined ? 'known' : shiftRead.isError ? 'unknown' : 'loading',
+      bottlenecks !== undefined
+        ? 'known'
+        : // Failed, also while it is read again (#394): not back to "loading" on every poll.
+          shiftRead.isError || shiftRead.errorUpdateCount > 0
+          ? 'unknown'
+          : 'loading',
     productionMode: pushed?.productionMode ?? shiftRead.data?.productionMode,
     shiftRead,
     hoursRead,
@@ -254,8 +257,8 @@ function LineHours({
       }
       defaultOpen
     >
-      {errors.inSection('the hourly line OEE') ? (
-        <SectionError errors={errors} readKey="the hourly line OEE" />
+      {errors.inSection(LINE_HOURS_READ) ? (
+        <SectionError errors={errors} readKey={LINE_HOURS_READ} />
       ) : read.data === undefined && hours.length === 0 ? (
         <Skeleton shape="table" rows={3} label="Loading hours…" />
       ) : (
@@ -355,20 +358,18 @@ function LineFigures({ shift }: { readonly shift: LineBucketDto }) {
 export function LineOeeCard({
   view,
   equipment,
+  errors,
 }: {
   readonly view: LineOeeView;
   readonly equipment: ReadonlyMap<string, EquipmentDto>;
+  /**
+   * The dashboard's errors (#394): its two reads are `LINE_READ` and `LINE_HOURS_READ` there,
+   * each failure said here as its own error or a quiet line.
+   */
+  readonly errors: ScreenErrors;
 }) {
   const { shift, shiftRead } = view;
   const idle = shift?.oee === null;
-  // Both of the card's reads failed: one error for the card (#394), not one per read.
-  const errors = screenErrors([
-    queryRead('the line OEE', shiftRead, 'section'),
-    queryRead('the hourly line OEE', view.hoursRead, 'section'),
-  ]);
-  // Failed, and not said yet: the other read is still on its way.
-  const shiftWaits =
-    shiftRead.isError && errors.summary.length === 0 && !errors.inSection('the line OEE');
   return (
     <Card
       as="article"
@@ -384,8 +385,7 @@ export function LineOeeCard({
     >
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)]">
         <div className="flex min-w-0 flex-col gap-3">
-          <ScreenError errors={errors} />
-          <SectionError errors={errors} readKey="the line OEE" />
+          <SectionError errors={errors} readKey={LINE_READ} />
           {shift && !idle ? (
             <LineFigures shift={shift} />
           ) : shift && idle ? (
@@ -415,9 +415,9 @@ export function LineOeeCard({
               />
               <StatusFlags flags={lineFlags(shift)} />
             </>
-          ) : shiftRead.isPending || shiftWaits ? (
+          ) : errors.inSection(LINE_READ) ? null : shiftRead.data === undefined ? (
             <Skeleton shape="stat" label="Loading the line OEE…" />
-          ) : shiftRead.isError ? null : (
+          ) : (
             <EmptyState
               size="inline"
               icon="info"
@@ -429,9 +429,7 @@ export function LineOeeCard({
         </div>
         <div className="flex min-w-0 flex-col gap-4">
           <Bottlenecks bottlenecks={view.bottlenecks} equipment={equipment} />
-          {errors.whole ? null : (
-            <LineHours hours={view.hours} read={view.hoursRead} errors={errors} />
-          )}
+          <LineHours hours={view.hours} read={view.hoursRead} errors={errors} />
         </div>
       </div>
     </Card>

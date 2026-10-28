@@ -23,7 +23,7 @@ import { QueryError } from '../components/query-error.tsx';
 import {
   ScreenError,
   queryRead,
-  screenErrors,
+  useScreenErrors,
   selectionRead,
 } from '../components/screen-error.tsx';
 import { ShiftPicker, useShiftSelection } from '../components/shift-picker.tsx';
@@ -800,16 +800,16 @@ export function DowntimeCoding() {
   // One error for the screen (#394): the records' failed read (or one it waits on) takes the
   // table's place, naming every failed read; with the records in, a failed read of the reason
   // codes is said above them.
-  const failed =
-    selection.error !== null && selection.error !== undefined
-      ? true
-      : shift.isError || list.isError;
-  const errors = screenErrors([
+  const errors = useScreenErrors([
     selectionRead(selection),
     queryRead('the shift', shift, 'base'),
     queryRead('the downtime records', list, 'main'),
     queryRead('the reason codes', reasons, 'base'),
   ]);
+  // The records' read, or one it waits on, failed (kept while it is read again: `errors`).
+  const failed = errors.summary.some((read) => read.key !== 'the reason codes');
+  const waits =
+    (selection.error !== null && selection.error !== undefined) || shift.isError || list.isError;
   const noShift = !selection.pending && shiftKey === undefined;
   const loading =
     !noShift && (selection.pending || shift.isPending || list.isPending) && shown.length === 0;
@@ -906,7 +906,7 @@ export function DowntimeCoding() {
         className={beside ? 'grid grid-cols-[minmax(0,1fr)_25rem] items-start gap-4' : undefined}
       >
         <div className="min-w-0">
-          {failed && errors.summary.length > 0 ? (
+          {failed ? (
             <ScreenError errors={errors} />
           ) : (
             <DataTable
@@ -930,7 +930,7 @@ export function DowntimeCoding() {
               }
               narrow="stack"
               // A failed read waits here while the screen's other reads are on their way.
-              loading={loading || failed ? 'Loading downtime…' : undefined}
+              loading={loading || waits ? 'Loading downtime…' : undefined}
               empty={
                 noShift ? (
                   <EmptyState

@@ -519,7 +519,7 @@ describe('alarm KPI page', () => {
     await renderApp('/alarms/kpi');
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain(
-      'Could not load the KPIs, the buckets, the floods, the bad actors and the operator measures.',
+      'Could not load the Plant KPIs, the Cell M1 KPIs, the Line A1 KPIs, the buckets, the floods, the bad actors and the operator measures.',
     );
     expect(within(alert).getAllByText(/KPIs not ready/)).toHaveLength(1);
     expect(screen.getAllByRole('alert')).toEqual([alert]);

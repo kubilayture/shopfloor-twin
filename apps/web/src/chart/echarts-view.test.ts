@@ -70,13 +70,14 @@ interface HourlyCase {
 const drawn = () => host?.textContent ?? '';
 
 /**
- * Runs ECharts' pending timers, then draws what they changed. The tooltip comes back a task after
+ * Runs ECharts' pending timers (or those due within `ms`), then draws what they changed. The tooltip comes back a task after
  * an update (`_keepShow`, a 0 ms timeout) and is hidden after `hideDelay`; zrender draws it on its
  * next animation frame, which jsdom runs every 16.7 ms on a real interval. A fixed sleep raced that
  * frame and lost under load (#386): ECharts' timers are fake here and the frame is drawn now.
  */
-function settle(instance: EChartsType) {
-  vi.runAllTimers();
+function settle(instance: EChartsType, ms?: number) {
+  if (ms === undefined) vi.runAllTimers();
+  else vi.advanceTimersByTime(ms);
   instance.getZr().flush();
 }
 
@@ -160,8 +161,8 @@ describe('EChartsView updates (#356)', () => {
     const applied = applyOption(instance, hourly(3.25), undefined);
     hoverCurrentHour(instance);
     applyOption(instance, hourly(4.75, { hours: 1 }), applied);
-    // ECharts hides a tooltip after its `hideDelay` (100 ms).
-    settle(instance);
+    // ECharts hides a tooltip after its `hideDelay` (100 ms): gone within 200 ms.
+    settle(instance, 200);
     expect(drawn()).not.toContain('Good');
     expect(drawn()).not.toContain('Scrap');
     expect((instance.getOption() as { xAxis: { data: string[] }[] }).xAxis[0]?.data).toEqual([

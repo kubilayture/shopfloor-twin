@@ -255,9 +255,12 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
         // (#341 review, UX-7 review M2), and the desk and the terminal would stay "Offline".
         // At most once per `RESTART_AFTER_4403_MS` (`Restarts`): a 4403 inside it puts the
         // restart off to its end, so the client is not started in a loop, nor left stopped.
+        // A restart now waits on the session's read: not after an unmount, a logout, a lost
+        // session or another start meanwhile (`Restarts.cancel`).
         const again = restarts.refused(startLive);
+        const generation = restarts.generation;
         void queryClient.invalidateQueries({ queryKey: sessionKey }).then(() => {
-          if (again) startLive();
+          if (again && restarts.current(generation)) startLive();
         });
       }
     });

@@ -252,7 +252,10 @@ describe('a 4403 close (#341 review, UX-7 review M2)', () => {
    * fake timers that also follow real time (Testing Library's waits): `later` moves the clock.
    */
   async function restartedOnce(options: Parameters<typeof fakeMes>[0] = {}) {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'], shouldAdvanceTime: true });
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'],
+      shouldAdvanceTime: true,
+    });
     const refused = vi.spyOn(Restarts.prototype, 'refused');
     const mes = fakeMes({ signedIn: true, roles: ['supervisor'], ...options });
     vi.stubGlobal('fetch', mes.fetch);
@@ -301,15 +304,13 @@ describe('a 4403 close (#341 review, UX-7 review M2)', () => {
     expect(app.factory.sockets).toHaveLength(3);
   });
 
-  it('starts at once again after 30 s, dropping the restart put off', async () => {
+  it('starts at once again for a 4403 30 s after the restart put off', async () => {
     const { app, restarts, later, refusedAgain } = await restartedOnce();
     await refusedAgain();
-    expect(app.factory.sockets).toHaveLength(2);
-    // A start meanwhile (here the live client's own, as after a reconnect) makes it moot: the
-    // next 4403 past the interval starts the client itself.
-    vi.setSystemTime(Date.now() + RESTART_AFTER_4403_MS);
-    app.live.start();
+    await later(RESTART_AFTER_4403_MS);
+    expect(app.factory.sockets).toHaveLength(3);
     await app.open();
+    await later(RESTART_AFTER_4403_MS);
     await app.drop(4403);
     await waitFor(() => {
       expect(app.factory.sockets).toHaveLength(4);
@@ -317,6 +318,22 @@ describe('a 4403 close (#341 review, UX-7 review M2)', () => {
     expect(restarts.pending).toBe(false);
     await later(2 * RESTART_AFTER_4403_MS);
     expect(app.factory.sockets).toHaveLength(4);
+  });
+
+  it('does not start it again when the app unmounts while the session is read (review)', async () => {
+    const mes = fakeMes({ signedIn: true, roles: ['supervisor'] });
+    vi.stubGlobal('fetch', mes.fetch);
+    const app = await renderApp('/', { session: 'fetch' });
+    await app.open();
+    act(() => {
+      app.factory.last.drop(4403);
+      app.unmount();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(app.factory.sockets).toHaveLength(1);
+    expect(app.live.status).toBe('stopped');
   });
 
   it('drops the restart put off on logout', async () => {

@@ -13,7 +13,7 @@ afterEach(() => {
 
 /** A 4403 close as `AuthProvider` handles it: starts now when allowed, and records each start. */
 function closes(restarts: Restarts, starts: number[]) {
-  const start = () => starts.push(Date.now());
+  const start = () => starts.push(performance.now());
   return () => {
     if (restarts.refused(start)) start();
   };
@@ -24,7 +24,7 @@ describe('Restarts after 4403 closes (#387)', () => {
     const restarts = new Restarts(INTERVAL);
     const starts: number[] = [];
     const close = closes(restarts, starts);
-    const t0 = Date.now();
+    const t0 = performance.now();
     close();
     expect(starts).toEqual([t0]);
     vi.advanceTimersByTime(1_000);
@@ -105,10 +105,33 @@ describe('Restarts after 4403 closes (#387)', () => {
     restarts.refused(later);
     restarts.refused(later);
     // The timer is late (a busy tab): a close at the interval's end starts the client itself.
-    vi.setSystemTime(Date.now() + INTERVAL);
+    vi.spyOn(performance, 'now').mockReturnValue(performance.now() + INTERVAL);
     expect(restarts.refused(later)).toBe(true);
     expect(restarts.pending).toBe(false);
+    vi.restoreAllMocks();
     vi.advanceTimersByTime(INTERVAL);
     expect(later).not.toHaveBeenCalled();
+  });
+
+  it('times the interval on the monotonic clock, whatever the wall clock does', () => {
+    const restarts = new Restarts(INTERVAL);
+    const later = vi.fn();
+    restarts.refused(later);
+    // The wall clock steps back an hour (NTP), then forward a day: neither moves the restart.
+    vi.setSystemTime(Date.now() - 3_600_000);
+    expect(restarts.refused(later)).toBe(false);
+    vi.advanceTimersByTime(INTERVAL);
+    expect(later).toHaveBeenCalledOnce();
+    vi.setSystemTime(Date.now() + 86_400_000);
+    expect(restarts.refused(later)).toBe(false);
+  });
+
+  it('moves its generation on cancel, so a restart now waiting on the session is dropped', () => {
+    const restarts = new Restarts(INTERVAL);
+    expect(restarts.refused(vi.fn())).toBe(true);
+    const generation = restarts.generation;
+    expect(restarts.current(generation)).toBe(true);
+    restarts.cancel();
+    expect(restarts.current(generation)).toBe(false);
   });
 });

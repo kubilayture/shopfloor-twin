@@ -13,8 +13,9 @@ import {
   type ImpactCounts,
   type OverlayCheck,
   type Violation,
-  aboveMainChange,
+  combineLockProofs,
   connectionSettled,
+  needsRemeasure,
   type ConnectionState,
 } from '../../src/a11y-report.ts';
 
@@ -741,21 +742,6 @@ export async function settleConnection(
   return { settled: connectionSettled(state), state };
 }
 
-type LockMeasure = Awaited<ReturnType<typeof position>>;
-
-/** What changed above `main` during one measurement (`aboveMainChange`), or `undefined`. */
-function aboveMainChanged(detail: Record<string, unknown>): string | undefined {
-  const at = (key: string) => (detail[key] as LockMeasure | undefined)?.above;
-  const before = at('before');
-  const open = at('open');
-  const after = at('after');
-  if (!before || !open || !after) return undefined;
-  return (
-    aboveMainChange(before, open, 'while the drawer opened') ??
-    aboveMainChange(open, after, 'while the page behind was scrolled')
-  );
-}
-
 /**
  * The drawer's scroll lock (UX-F1, #337; #398): measured once the live connection has settled,
  * and once more when something above `main` changed during the measurement (the offline bar
@@ -777,16 +763,6 @@ export async function lockProof(
     };
   }
   const first = await lockProofOnce(page, act);
-  const changed = first.ran ? aboveMainChanged(first.detail) : undefined;
-  if (changed === undefined) return first;
-  const second = await lockProofOnce(page, act);
-  const again = second.ran ? aboveMainChanged(second.detail) : undefined;
-  return {
-    ...second,
-    detail: { ...second.detail, remeasured: changed },
-    findings:
-      again === undefined
-        ? second.findings
-        : [...second.findings, `the page above main changed during both measurements (${again})`],
-  };
+  if (!needsRemeasure(first)) return first;
+  return combineLockProofs(first, await lockProofOnce(page, act));
 }

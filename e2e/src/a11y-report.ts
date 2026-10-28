@@ -905,6 +905,59 @@ export function aboveMainChange(
   return changes.length === 0 ? undefined : `${between}: ${changes.join('; ')}`;
 }
 
+/** One measurement of the drawer's scroll lock (`lockProof`, `e2e/browser/a11y/probe.ts`). */
+export interface LockRun {
+  readonly ran: boolean;
+  readonly detail: Record<string, unknown>;
+  readonly findings: string[];
+}
+
+/**
+ * What changed above `main` during one measurement of the drawer check, or `undefined`: between
+ * the page scrolled (`before`), the drawer open (`open`), the page behind scrolled (`after`) and
+ * the drawer closed (`closed`), each step's `above` (#398).
+ */
+export function lockAboveChange(detail: Readonly<Record<string, unknown>>): string | undefined {
+  const at = (key: string) => (detail[key] as { readonly above?: AboveMain } | undefined)?.above;
+  const steps: readonly [string, string, string][] = [
+    ['before', 'open', 'while the drawer opened'],
+    ['open', 'after', 'while the page behind was scrolled'],
+    ['after', 'closed', 'while the drawer closed'],
+  ];
+  for (const [from, to, between] of steps) {
+    const a = at(from);
+    const b = at(to);
+    if (!a || !b) continue;
+    const change = aboveMainChange(a, b, between);
+    if (change !== undefined) return change;
+  }
+  return undefined;
+}
+
+/** Whether a measurement must be taken again: it ran, and something above `main` changed. */
+export function needsRemeasure(run: LockRun): boolean {
+  return run.ran && lockAboveChange(run.detail) !== undefined;
+}
+
+/**
+ * The drawer check from its two measurements (#398): the first when nothing above `main` changed
+ * during it; else the second, in full, marked with why it was taken, and a finding when something
+ * above `main` changed during it too (the check could not tell the drawer's effect apart).
+ */
+export function combineLockProofs(first: LockRun, second: LockRun): LockRun {
+  const changed = first.ran ? lockAboveChange(first.detail) : undefined;
+  if (changed === undefined) return first;
+  const again = second.ran ? lockAboveChange(second.detail) : undefined;
+  return {
+    ...second,
+    detail: { ...second.detail, remeasured: changed },
+    findings:
+      again === undefined
+        ? second.findings
+        : [...second.findings, `the page above main changed during both measurements (${again})`],
+  };
+}
+
 /** The impacts that fail the gate; moderate and minor are listed. */
 export const FAILING_IMPACTS: readonly Impact[] = ['critical', 'serious'];
 

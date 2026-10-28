@@ -75,6 +75,12 @@ import { countOf } from '../domain/words.ts';
 const TITLE_ID = 'downtime-title';
 /** The detail's title: the "Skip to the details" link's target. */
 const PANEL_TITLE_ID = 'coding-panel-title';
+/**
+ * The end of the record list (G-33, UX-F1 #337): the "Skip past the records" link's target while
+ * no detail is beside the table, as nothing follows the list on the page then. Visually hidden
+ * until the link moves the focus to it.
+ */
+const LIST_END_ID = 'downtime-list-end';
 
 /** A record's state as a badge, its cause code beside it. */
 function StateWithCause({ record }: { readonly record: DowntimeRecordDto }) {
@@ -907,7 +913,8 @@ export function DowntimeCoding() {
               rowTone={(record) => (record.uncoded ? 'warn' : undefined)}
               activeRowKey={search.record}
               actions={rowAction}
-              skipToDetails={beside ? PANEL_TITLE_ID : undefined}
+              skipToDetails={beside ? PANEL_TITLE_ID : LIST_END_ID}
+              skipLabel={beside ? undefined : 'Skip past the records'}
               announceRemoval={(left) =>
                 `The record left the list; ${left === 0 ? 'no records remain' : `${countOf(left, 'record')} ${left === 1 ? 'remains' : 'remain'}`}.`
               }
@@ -940,6 +947,14 @@ export function DowntimeCoding() {
                 )
               }
             />
+          )}
+          {beside || shown.length === 0 ? null : (
+            <p
+              id={LIST_END_ID}
+              className="sr-only text-sm text-ink-secondary focus:not-sr-only focus:mt-3 focus:block"
+            >
+              End of the downtime records.
+            </p>
           )}
         </div>
         {selected ? (

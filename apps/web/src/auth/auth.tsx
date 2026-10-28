@@ -14,6 +14,13 @@ import {
 import { getSession, logout } from '../api/identity.ts';
 import { forgetCharts } from '../api/quality.ts';
 import { authEventsFor } from './events.ts';
+import {
+  LOGOUT_TIMEOUT_MS,
+  clearLogoutMark,
+  finishPendingLogout,
+  markLogout,
+  noteLogin,
+} from './pending-logout.ts';
 import { Restarts } from './restarts.ts';
 import { useLiveClient } from '../live/live-context.tsx';
 
@@ -54,6 +61,8 @@ export interface Auth {
   readonly session: SessionDto | null | undefined;
   /** Why the session could not be read (the MES unreachable), if it could not. */
   readonly error: unknown;
+  /** A read of the session failed at least once (it may be retrying): `/login` shows its form. */
+  readonly readFailed: boolean;
   readonly lost: LostSession | undefined;
   /** Why the last session of this tab ended, for `/login` to say: lost (above) or logged out. */
   readonly ended: LostReason | 'logout' | undefined;
@@ -68,6 +77,8 @@ export interface Auth {
   readonly logOut: () => Promise<void>;
   /** The session is gone (a 401, a 4401 close, or the idle timeout). */
   readonly sessionLost: (reason: LostReason) => void;
+  /** The idle timeout here ended the session: lost as `idle`, and logged out at the MES. */
+  readonly idleEnded: () => void;
   /** Reads the session again: counts as use at the MES and moves its idle expiry. */
   readonly refresh: () => Promise<void>;
   /**
@@ -136,9 +147,35 @@ export const RESTART_AFTER_4403_MS = 30_000;
 export function AuthProvider({ children }: { readonly children: ReactNode }) {
   const queryClient = useQueryClient();
   const live = useLiveClient();
+  // The last user who held a session in this tab: a login as anyone else empties the cache.
+  const lastUser = useRef<string | undefined>(undefined);
+  // Moves with every login and logout: a logout empties the cache only if it is still the last,
+  // and a read of the session begun before either is not the session any more.
+  const generation = useRef(0);
+  // The replay of a logout an earlier page of this tab left on its way, before the first read.
+  const replayed = useRef<Promise<void> | undefined>(undefined);
+  // The logout this page sent, until the MES answers it.
+  const ending = useRef<Promise<void>>(Promise.resolve());
+  /**
+   * Waits for any logout on its way (#390): a read of the session that reached the MES before the
+   * logout's DELETE would find the session still live and sign its user back in.
+   */
+  const afterLogouts = useCallback(async () => {
+    replayed.current ??= finishPendingLogout(logout);
+    await replayed.current;
+    await ending.current;
+  }, []);
   const query = useQuery({
     queryKey: sessionKey,
-    queryFn: ({ signal }) => getSession(signal),
+    queryFn: async ({ signal }) => {
+      await afterLogouts();
+      const at = generation.current;
+      const read = await getSession(signal);
+      // A logout or a login meanwhile decides the session: the MES may have answered this read
+      // before the logout ended it, or before the login.
+      if (generation.current === at) return read;
+      return queryClient.getQueryData<SessionDto | null>(sessionKey) ?? null;
+    },
     staleTime: Infinity,
     meta: { auth: false },
   });
@@ -150,10 +187,6 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
   useEffect(() => {
     forgetLegacyStorage();
   }, []);
-  // The last user who held a session in this tab: a login as anyone else empties the cache.
-  const lastUser = useRef<string | undefined>(undefined);
-  // Moves with every login and logout: a logout empties the cache only if it is still the last.
-  const generation = useRef(0);
   useEffect(() => {
     if (session) lastUser.current = session.user.username;
   }, [session]);
@@ -194,6 +227,9 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
       if (!sameUser) forgetData(queryClient);
       lastUser.current = next.user.username;
       generation.current += 1;
+      // A logout left on its way, in this tab or another, is moot: the cookie is this session's.
+      clearLogoutMark();
+      noteLogin();
       queryClient.setQueryData(sessionKey, next);
       setLost(undefined);
       setEnded(undefined);
@@ -209,33 +245,63 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
     [queryClient, startLive],
   );
 
+  /**
+   * Ends `held` at the MES (a logout, the idle timeout): reads of the session wait for it, a login
+   * waits for it (`loggingOut`), at most `LOGOUT_TIMEOUT_MS`, and a page left before it ended
+   * replays it (`markLogout`). `scoped` (a timeout the user did not ask for) ends only `held`, never
+   * a newer session another tab's login put in the cookie; a Log out ends the cookie's session.
+   */
+  const endAtMes = useCallback(async (held: SessionDto | null | undefined, scoped = false) => {
+    generation.current += 1;
+    if (held) markLogout(held.createdAt);
+    setLoggingOut(true);
+    const body = scoped && held ? { createdAt: held.createdAt } : {};
+    const done = logout(body, AbortSignal.timeout(LOGOUT_TIMEOUT_MS)).then(
+      () => {
+        clearLogoutMark();
+      },
+      () => {
+        // The cookie may outlive an unreachable or hung MES; the session still ends at its idle
+        // expiry. The mark stays (within its age): the next page of the tab tries again.
+      },
+    );
+    ending.current = done;
+    await done;
+    setLoggingOut(false);
+  }, []);
+
   const logOut = useCallback(async () => {
     // The page goes first (no session: the shell leaves it), then the socket and the cookie.
+    const held = queryClient.getQueryData<SessionDto | null>(sessionKey);
     lastUser.current = undefined;
-    generation.current += 1;
-    const mine = generation.current;
     setLost(undefined);
     setEnded('logout');
     queryClient.setQueryData(sessionKey, null);
     restarts.cancel();
     live.stop();
-    setLoggingOut(true);
-    try {
-      await logout();
-    } catch {
-      // The cookie may outlive an unreachable MES; the session still ends at its idle expiry.
-    } finally {
-      setLoggingOut(false);
-    }
+    const ends = endAtMes(held);
+    const mine = generation.current;
+    await ends;
     // Only if nobody logged in meanwhile: their reads must stay.
     if (generation.current === mine) forgetData(queryClient);
-  }, [queryClient, live, restarts]);
+  }, [queryClient, live, restarts, endAtMes]);
+
+  const idleEnded = useCallback(() => {
+    const held = queryClient.getQueryData<SessionDto | null>(sessionKey);
+    sessionLost('idle');
+    // Ends it at the MES too (other tabs then close their sockets with 4401).
+    void endAtMes(held, true);
+  }, [queryClient, sessionLost, endAtMes]);
 
   const refresh = useCallback(async () => {
+    await afterLogouts();
+    const at = generation.current;
     const next = await getSession();
+    // A logout or a login meanwhile: this answer may predate it (see the session query).
+    if (generation.current !== at) return;
     if (next) queryClient.setQueryData(sessionKey, next);
     else sessionLost('ended');
-  }, [queryClient, sessionLost]);
+  }, [queryClient, sessionLost, afterLogouts]);
 
   // Requests the MES refused for the session (query and mutation caches), and the socket's close.
   useEffect(() => {
@@ -274,6 +340,7 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
     () => ({
       session,
       error: query.error,
+      readFailed: query.error !== null || query.failureCount > 0,
       lost,
       ended,
       loggingOut,
@@ -286,12 +353,14 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
       loggedIn,
       logOut,
       sessionLost,
+      idleEnded,
       refresh,
       startLive,
     }),
     [
       session,
       query.error,
+      query.failureCount,
       lost,
       ended,
       loggingOut,
@@ -299,6 +368,7 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
       loggedIn,
       logOut,
       sessionLost,
+      idleEnded,
       refresh,
       startLive,
     ],

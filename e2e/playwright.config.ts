@@ -37,11 +37,11 @@ import { WEB_SPKI_ENV, chromiumSpkiArgument } from '@shopfloor/test-kit/tls';
  * The HTTPS front (P9-14, ADR-0039, checklist S4; browser/tls) runs in `orders-dispatch` (the gate's
  * reconciliation, while the simulator waits) and in `console`.
  * No Content-Security-Policy violation on any route (#338; browser/csp) runs in `orders-dispatch`.
- * The visual and accessibility harness (UX-1g, #321; browser/a11y) has `a11y`: report-only, run by
- * the reconciliation after its passes when RECONCILE_A11Y=1 (e2e/results/a11y).
+ * The visual and accessibility harness (UX-1g, #321; browser/a11y) has `a11y`: a failing gate since
+ * UX-F1 (#337), run by the reconciliation after its passes when RECONCILE_A11Y=1 (e2e/results/a11y).
  * Every run holds the host-wide heavy-suite lock (#228, src/playwright-lock.ts).
  * Chromium for every project; `a11y` also launches WebKit's iPhone profile for its touch-scroll
- * check when WebKit is installed (`pnpm --filter @shopfloor/e2e playwright:install:webkit`). On failure: a trace and a screenshot in e2e/results/<pass>/playwright/<project>.
+ * check, which the gate requires (`pnpm --filter @shopfloor/e2e playwright:install:webkit`). On failure: a trace and a screenshot in e2e/results/<pass>/playwright/<project>.
  *
  * TLS (P9-14): the web front serves a certificate of the stack's own dev CA, which Chromium doesn't
  * trust. The harness passes the SPKI hash of that certificate (RECONCILE_WEB_SPKI, from the pki
@@ -149,7 +149,7 @@ export default defineConfig({
       use: { ...chromium },
     },
     {
-      // UX-1g (#321): report-only, after the reconciliation's passes, with RECONCILE_A11Y=1.
+      // UX-1g (#321), gate since UX-F1 (#337): after the reconciliation's passes, RECONCILE_A11Y=1.
       name: 'a11y',
       testDir: './browser/a11y',
       outputDir: join(results, 'playwright', 'a11y'),

@@ -215,6 +215,8 @@ NOT_CLASSES.add('max-time-to-ack');
 NOT_CLASSES.add('min');
 /** #339: the order's bill of materials counted with `countOf(n, 'line')`. */
 NOT_CLASSES.add('line');
+/** UX-F1 (#337): the CSS unit of the data table's measured scroll padding, `${height}px`. */
+NOT_CLASSES.add('px');
 
 const CLASSES = [...new Set([...FILES.flatMap(harvest), ...PASSED_IN])]
   .filter((c) => !NOT_CLASSES.has(c))

@@ -9,6 +9,7 @@ import {
 import {
   PROBLEM_TYPES,
   loginRequestSchema,
+  logoutRequestSchema,
   passwordChangeRequestSchema,
   passwordChangeResultSchema,
   passwordResetRequestSchema,
@@ -476,7 +477,6 @@ const userDto = (user: User): UserDto => ({
 const usernameParams = z.strictObject({
   username: z.string().regex(/^[a-z0-9][a-z0-9._-]{1,63}$/),
 });
-const emptyBody = z.strictObject({}).describe('An empty JSON object');
 /** Alarm write refusals (#143) map the same way. */
 const ALARM_WRITE_STATUS = CODING_STATUS;
 const SHIFT_STATUS = { 'not-found': 404, conflict: 409, invalid: 422 } as const;
@@ -2580,22 +2580,34 @@ export async function registerRealtime(
           access: 'public',
           summary: 'Logs out: ends the session, if live, and clears the cookie',
           description:
-            'The body is an empty JSON object (writes are application/json). Clears the cookie ' +
-            'also when the session already ended or expired, or the cookie is invalid ' +
-            '(`ended: false`).',
+            'The body is a JSON object (writes are application/json), empty for a plain logout. ' +
+            'Clears the cookie also when the session already ended or expired, or the cookie is ' +
+            'invalid (`ended: false`). With `createdAt` (#390) only the session created at that ' +
+            'time ends: a live session of the cookie created at any other time (a newer login, ' +
+            'maybe from another tab) is left live with its cookie (`ended: false`, no ' +
+            '`Set-Cookie`). The web sends it when a page replays a logout an earlier page of the ' +
+            'tab left on its way.',
           tags: ['identity'],
           params: z.strictObject({}),
-          body: emptyBody,
+          body: logoutRequestSchema,
           response: z.object({
             ended: z.boolean().describe('Whether a live session ended (false: none was live)'),
           }),
           errors: [400, 413, 415, 503],
         },
         LIMITS.writeBodyBytes,
-        async ({ requestId, request, reply }) => {
+        async ({ body, requestId, request, reply }) => {
           const live = needIdentity();
           const token = tokenOf(request);
           const principal = token && (await live.authenticate(token, { touch: false }));
+          if (
+            principal &&
+            body.createdAt !== undefined &&
+            principal.session.createdAt.getTime() !== Date.parse(body.createdAt)
+          ) {
+            // Not the session being logged out: a newer one holds the cookie now, and keeps it.
+            return { ended: false };
+          }
           if (principal) await live.logout(principal, requestId);
           setCookie(reply, '', 0);
           return { ended: principal !== undefined };

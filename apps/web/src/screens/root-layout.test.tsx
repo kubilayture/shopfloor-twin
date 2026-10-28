@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EQUIPMENT, PLANT, fakeFetch, json, sessionOf } from '../test/fixtures.ts';
@@ -292,6 +294,78 @@ describe('the nav drawer below xl', () => {
     expect(root.hasAttribute('data-nav-open')).toBe(true);
     view.unmount();
     expect(root.hasAttribute('data-nav-open')).toBe(false);
+  });
+
+  it('holds the body where the page was while open and scrolls back on close, not after a link (iOS)', async () => {
+    stubWidth(false);
+    vi.stubGlobal('fetch', fakeFetch(api));
+    const app = await renderApp('/');
+    const root = document.documentElement;
+    const scrollTo = vi.spyOn(window, 'scrollTo');
+    Object.defineProperty(window, 'scrollY', { configurable: true, value: 640 });
+    try {
+      const menu = screen.getByRole('button', { name: 'Menu' });
+      expect(screen.queryByTestId('nav-backdrop')).toBeNull();
+      fireEvent.click(menu);
+      // The fixed body (`html[data-nav-open] body` in index.css) sits where the page was.
+      expect(root.style.getPropertyValue('--nav-lock-top')).toBe('-640px');
+      expect(screen.getByTestId('nav-backdrop').className).toContain('touch-none');
+      scrollTo.mockClear();
+      const focus = vi.spyOn(menu, 'focus');
+      fireEvent.keyDown(document.body, { key: 'Escape' });
+      expect(root.style.getPropertyValue('--nav-lock-top')).toBe('');
+      expect(scrollTo).toHaveBeenCalledWith({ top: 640, behavior: 'instant' });
+      // The focus goes back to the menu button without scrolling the page up to it.
+      expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+      expect(document.activeElement).toBe(menu);
+
+      // A followed link: the new page keeps the router's scroll, not the old page's position.
+      fireEvent.click(menu);
+      scrollTo.mockClear();
+      await settle(() => {
+        fireEvent.click(screen.getByTestId('nav-orders'));
+      });
+      await waitFor(() => {
+        expect(app.history.location.pathname).toBe('/orders');
+      });
+      expect(root.hasAttribute('data-nav-open')).toBe(false);
+      expect(root.style.getPropertyValue('--nav-lock-top')).toBe('');
+      expect(scrollTo).not.toHaveBeenCalledWith({ top: 640, behavior: 'instant' });
+    } finally {
+      Reflect.deleteProperty(window, 'scrollY');
+    }
+  });
+
+  it('restores the scroll position only on the same page and query: another view starts at the top', async () => {
+    stubWidth(false);
+    vi.stubGlobal('fetch', fakeFetch(api));
+    const app = await renderApp('/alarms?view=history');
+    const scrollTo = vi.spyOn(window, 'scrollTo');
+    Object.defineProperty(window, 'scrollY', { configurable: true, value: 600 });
+    try {
+      fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+      scrollTo.mockClear();
+      // The nav's Alarms link: the same pathname, another query (the nav ignores the search).
+      await settle(() => {
+        fireEvent.click(screen.getByTestId('nav-alarms'));
+      });
+      await waitFor(() => {
+        expect(app.history.location.search).toBe('');
+      });
+      expect(app.history.location.pathname).toBe('/alarms');
+      expect(document.documentElement.hasAttribute('data-nav-open')).toBe(false);
+      expect(scrollTo).not.toHaveBeenCalledWith({ top: 600, behavior: 'instant' });
+    } finally {
+      Reflect.deleteProperty(window, 'scrollY');
+    }
+  });
+
+  it("keeps the scrollbar's place while the drawer locks the page (no sideways shift)", () => {
+    const css = readFileSync(join(import.meta.dirname, '..', 'index.css'), 'utf8');
+    const rule = /html\[data-nav-open\] \{([^}]*)\}/.exec(css)?.[1] ?? '';
+    expect(rule).toMatch(/overflow: hidden;/);
+    // Kept by the root's own rule, for the drawer and dialogs alike (#339).
+    expect(css).toMatch(/\nhtml \{[^}]*scrollbar-gutter: stable;/);
   });
 
   it('gives the focus to the menu button when the layout narrows under a focused nav link', async () => {

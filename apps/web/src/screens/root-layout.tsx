@@ -323,6 +323,11 @@ function SideNav({
 export function RootLayout() {
   useLiveSubscription(STATES_TOPIC);
   const pathname = useRouterState({ select: (state) => state.location.pathname });
+  // The page and its query (`/alarms?view=history`): the drawer restores the scroll position only
+  // when it closes on the same view (UX-F1 review).
+  const view = useRouterState({
+    select: (state) => `${state.location.pathname}${state.location.searchStr}`,
+  });
   useFocusOnNavigation(pathname);
   const wide = useWide();
   const [open, setOpen] = useState(false);
@@ -351,7 +356,9 @@ export function RootLayout() {
       closeRef.current?.focus();
     } else if (returnFocus.current) {
       returnFocus.current = false;
-      menuRef.current?.focus();
+      // The menu button is in the sticky top bar, always in view: without `preventScroll` the
+      // browser scrolled the page up to clear the root's `scroll-padding-top` (UX-F1, #337).
+      menuRef.current?.focus({ preventScroll: true });
     }
   }, [drawer]);
 
@@ -370,14 +377,27 @@ export function RootLayout() {
     wasWide.current = wide;
   }, [wide]);
 
-  // The page behind an open drawer does not scroll (`html[data-nav-open]` in `index.css`); undone
-  // when it closes, on a widening and on unmount.
+  // The page behind an open drawer does not scroll (`html[data-nav-open]` in `index.css`): the
+  // root's `overflow: hidden`, which iOS Safari ignores for a touch scroll, and a `position: fixed`
+  // body, which it honours (UX-F1, #337). The body is fixed where the page was scrolled to
+  // (`--nav-lock-top`, set through the CSSOM, which `style-src 'self'` allows), so nothing moves,
+  // and the scroll position comes back when the drawer closes on the same page and query; a
+  // followed link's new page or view keeps the router's own scroll. Undone when it closes, on a widening and on unmount.
+  const shownViewRef = useRef(view);
+  useLayoutEffect(() => {
+    shownViewRef.current = view;
+  }, [view]);
   useEffect(() => {
     if (!drawer) return;
     const root = document.documentElement;
+    const page = shownViewRef.current;
+    const top = window.scrollY;
+    root.style.setProperty('--nav-lock-top', `${String(-top)}px`);
     root.dataset.navOpen = '';
     return () => {
       delete root.dataset.navOpen;
+      root.style.removeProperty('--nav-lock-top');
+      if (shownViewRef.current === page) window.scrollTo({ top, behavior: 'instant' });
     };
   }, [drawer]);
 
@@ -450,7 +470,7 @@ export function RootLayout() {
         <div
           aria-hidden="true"
           data-testid="nav-backdrop"
-          className="fixed inset-0 z-nav bg-backdrop xl:hidden print:hidden"
+          className="fixed inset-0 z-nav touch-none bg-backdrop xl:hidden print:hidden"
           onClick={close}
         />
       ) : null}

@@ -1,5 +1,6 @@
 import {
   loginRequestSchema,
+  logoutRequestSchema,
   passwordChangeRequestSchema,
   passwordChangeResultSchema,
   passwordResetRequestSchema,
@@ -9,6 +10,7 @@ import {
   userSchema,
   userUpdateRequestSchema,
   type LoginRequest,
+  type LogoutRequest,
   type PasswordChangeRequest,
   type PasswordChangeResult,
   type SessionDto,
@@ -37,9 +39,22 @@ export function login(body: LoginRequest): Promise<SessionDto> {
   return sendJson('POST', '/session', loginRequestSchema.parse(body), sessionSchema);
 }
 
-/** Logs out: ends the session (if live) and clears the cookie; never needs a live session. */
-export function logout(): Promise<{ readonly ended: boolean }> {
-  return sendJson('DELETE', '/session', {}, z.object({ ended: z.boolean() }));
+/**
+ * Logs out: ends the session (if live) and clears the cookie; never needs a live session. With
+ * `createdAt` only the session created then ends (a replayed logout, #390): a newer session of the
+ * cookie stays, with its cookie.
+ */
+export function logout(
+  body: LogoutRequest = {},
+  signal?: AbortSignal,
+): Promise<{ readonly ended: boolean }> {
+  return sendJson(
+    'DELETE',
+    '/session',
+    logoutRequestSchema.parse(body),
+    z.object({ ended: z.boolean() }),
+    signal,
+  );
 }
 
 /** Changes the caller's own password; ends the user's other sessions. */

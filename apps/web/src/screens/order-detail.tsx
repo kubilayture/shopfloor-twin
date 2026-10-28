@@ -860,6 +860,9 @@ function ErpMessages({ detail }: { readonly detail: OrderDetailDto }) {
         rowKey={(message) => String(message.id)}
         rowTestId={() => 'erp-message'}
         density="compact"
+        // G-33 (UX-F1, #337): a Payload disclosure per row; a way past them to the history.
+        skipToDetails="order-history-title"
+        skipLabel="Skip past the ERP messages"
         empty={<EmptyBlockInner testId="erp-messages-empty" title="No ERP message" />}
       />
     </Section>

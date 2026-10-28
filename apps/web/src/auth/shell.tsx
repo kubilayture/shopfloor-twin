@@ -2,7 +2,6 @@ import type { SessionDto } from '@shopfloor/contracts/mes-api';
 import { Navigate, Outlet, useNavigate, useRouterState } from '@tanstack/react-router';
 import { useEffect, useId, useRef, useState } from 'react';
 import { serverClockOffsetMs } from '../api/client.ts';
-import { logout } from '../api/identity.ts';
 import { Button } from '../components/ui/button.tsx';
 import { Callout } from '../components/ui/callout.tsx';
 import { PRODUCT_NAME, useRouteTitle } from '../components/ui/use-page-title.ts';
@@ -129,7 +128,7 @@ function SignedIn({ session }: { readonly session: SessionDto | null }) {
  */
 export function IdleWatch({ session }: { readonly session: SessionDto }) {
   const auth = useAuth();
-  const { refresh, sessionLost } = auth;
+  const { refresh, idleEnded } = auth;
   // The last input and the last keepalive: written by input handlers, read by the 1 s tick.
   const lastActivity = useRef(0);
   const lastKeepalive = useRef(0);
@@ -196,11 +195,9 @@ export function IdleWatch({ session }: { readonly session: SessionDto }) {
     if (warning) void refresh().catch(() => undefined);
   }, [warning, refresh]);
   useEffect(() => {
-    if (!over) return;
-    // Ends the session at the MES too (other tabs then close their sockets with 4401).
-    void logout().catch(() => undefined);
-    sessionLost('idle');
-  }, [over, sessionLost]);
+    // Ends the session at the MES too, as a logout does (#390 review L3).
+    if (over) idleEnded();
+  }, [over, idleEnded]);
 
   if (!warning) return null;
   return (

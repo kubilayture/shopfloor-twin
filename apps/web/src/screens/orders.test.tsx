@@ -771,6 +771,14 @@ describe('orders on the design system (UX-6a, #328)', () => {
     const payload = within(row).getByText('Payload').closest('details');
     expect(payload?.open).toBe(false);
     expect(payload?.textContent).toContain('"orderNumber": "PO-1001"');
+    // G-33 (UX-F1): a payload disclosure per row, so a skip link before the table to the history.
+    const skip = screen.getByRole('link', { name: 'Skip past the ERP messages' });
+    expect(skip.getAttribute('href')).toBe('#order-history-title');
+    expect(skip.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const history = screen.getByRole('heading', { name: 'History' });
+    expect(history.id).toBe('order-history-title');
+    fireEvent.click(skip);
+    expect(document.activeElement).toBe(history);
     const entry = screen.getByTestId('order-history-entry');
     const request = within(entry).getByText('Request id').closest('details');
     expect(request?.open).toBe(false);

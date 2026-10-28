@@ -20,6 +20,7 @@ import { ConnectionStatus } from '../components/connection-status.tsx';
 import { OfflineBar } from '../components/offline-bar.tsx';
 import { formatPlantTime } from '../domain/time.ts';
 import { useLiveSubscription } from '../live/live-context.tsx';
+import { ThemeMenu } from '../theme/theme-switch.tsx';
 
 /**
  * The app shell (UX-1b, #316; design system 3.2): a 48 px top bar, the side nav grouped by job
@@ -129,7 +130,10 @@ function useWide(): boolean {
 const DARK_CONTROL =
   'inline-flex shrink-0 items-center justify-center rounded-md hover:bg-nav-hover motion-safe:transition-colors motion-safe:duration-fast';
 
-/** Who is logged in, the account page and the logout (#170); the roles in the link's title (G-04). */
+/**
+ * Who is logged in, the account page, the theme switch (UX-12) and the logout (#170); the roles
+ * in the link's title (G-04).
+ */
 function UserMenu() {
   const auth = useAuth();
   const user = auth.session?.user;
@@ -148,6 +152,7 @@ function UserMenu() {
           {user.username}
         </span>
       </Link>
+      <ThemeMenu />
       <button
         type="button"
         data-testid="logout"

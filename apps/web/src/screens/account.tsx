@@ -9,13 +9,15 @@ import { Disclosure } from '../components/ui/disclosure.tsx';
 import { WallTime } from '../components/ui/format.tsx';
 import { PageHeader } from '../components/ui/page-header.tsx';
 import { permissionGroups, rolesText } from '../domain/identity.ts';
+import { ThemeRadioGroup } from '../theme/theme-switch.tsx';
 import { ChangePasswordForm } from './login.tsx';
 
 /**
  * `/account` (#170): who is logged in, with which roles and what they allow, the session's times
  * and the password. The times are wall times, labelled so (Y-01); the permissions are words
  * grouped by area in a closed disclosure, each with its id (Y-02); logging out is the top bar's
- * one "Log out", and the password form keeps a form's width (Y-03).
+ * one "Log out", and the password form keeps a form's width (Y-03). The theme (UX-12) is chosen
+ * here and in the top bar.
  */
 export function Account() {
   const auth = useAuth();
@@ -30,7 +32,7 @@ export function Account() {
       <PageHeader
         id="account-title"
         title="Account"
-        description="Who you are logged in as, what your roles allow, and your password."
+        description="Who you are logged in as, what your roles allow, your password and the theme."
       />
       <div className="grid items-start gap-4 lg:grid-cols-2">
         <Card title="Profile" as="section">
@@ -106,6 +108,9 @@ export function Account() {
               }}
             />
           </div>
+        </Card>
+        <Card title="Appearance" as="section">
+          <ThemeRadioGroup />
         </Card>
       </div>
     </section>

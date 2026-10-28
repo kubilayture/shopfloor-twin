@@ -202,4 +202,85 @@ describe('Menu', () => {
     expect(screen.getByRole('menu').hasAttribute('data-popover-open')).toBe(true);
     expect(trigger.getAttribute('aria-expanded')).toBe('true');
   });
+
+  // UX-12 (#336): a menu of choices, and its icon button on the dark top bar.
+  it('makes items with `checked` radio items with aria-checked and a check on the chosen one', async () => {
+    const chosen = vi.fn();
+    render(
+      <Menu
+        label="Theme"
+        icon="sun"
+        surface="dark"
+        items={[
+          {
+            id: 'a',
+            label: 'Alpha',
+            checked: false,
+            onSelect: () => {
+              chosen('a');
+            },
+          },
+          {
+            id: 'b',
+            label: 'Beta',
+            checked: true,
+            onSelect: () => {
+              chosen('b');
+            },
+          },
+          {
+            id: 'c',
+            label: 'Gamma',
+            checked: false,
+            onSelect: () => {
+              chosen('c');
+            },
+          },
+        ]}
+      />,
+    );
+    const trigger = screen.getByRole('button', { name: 'Theme' });
+    // The dark top bar's control, not the light ghost button.
+    expect(trigger.className).toContain('text-topbar-ink');
+    expect(trigger.className).toContain('hover:bg-nav-hover');
+    expect(trigger.className).not.toContain('text-accent');
+    expect(trigger.getAttribute('title')).toBe('Theme');
+    expect(trigger.querySelector('svg[data-icon="sun"]')).not.toBeNull();
+    // The list is a light surface, so its ring is `focus`, not `focus-on-dark`.
+    expect(screen.getByRole('menu').getAttribute('data-surface')).toBe('light');
+    // Without `menuLabel` the list takes the button's label.
+    expect(screen.getByRole('menu').getAttribute('aria-label')).toBe('Theme');
+    fireEvent.click(trigger);
+    await flushOverlayEvents();
+    expect(screen.queryAllByRole('menuitem')).toHaveLength(0);
+    const radios = screen.getAllByRole('menuitemradio');
+    expect(radios.map((radio) => radio.getAttribute('aria-checked'))).toEqual([
+      'false',
+      'true',
+      'false',
+    ]);
+    expect(radios.map((radio) => radio.querySelector('[data-icon="check"]') !== null)).toEqual([
+      false,
+      true,
+      false,
+    ]);
+    // The arrows, End and the type-ahead move over radio items as over plain ones.
+    expect(document.activeElement).toBe(radios[0]);
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(radios[1]);
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'End' });
+    expect(document.activeElement).toBe(radios[2]);
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'a' });
+    expect(document.activeElement).toBe(radios[0]);
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Gamma' }));
+    expect(chosen).toHaveBeenCalledWith('c');
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('keeps plain items menuitem with no aria-checked', async () => {
+    const { trigger, item } = setup();
+    fireEvent.click(trigger);
+    await flushOverlayEvents();
+    expect(item('Print').hasAttribute('aria-checked')).toBe(false);
+  });
 });

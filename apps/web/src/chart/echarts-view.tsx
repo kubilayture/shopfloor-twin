@@ -8,6 +8,7 @@ import {
 } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
 import { useEffect, useRef } from 'react';
+import { colorValue } from '../components/ui/tokens.ts';
 import { ECHARTS_MODULES } from './echarts-modules.ts';
 import {
   ECHARTS_THEME,
@@ -24,6 +25,38 @@ registerModules([...ECHARTS_MODULES, CanvasRenderer]);
 
 /** The print image's pixels per CSS pixel of the chart on screen. */
 const PRINT_PIXEL_RATIO = 3;
+
+/** The ECharts theme the print image is drawn in: `shopfloor` with the light values. */
+export const PRINT_THEME = 'shopfloor-print';
+
+/**
+ * The tokens' light values, whatever theme is on screen (UX-12, #336): print is always light.
+ * From the token data, not the stylesheet, so nothing depends on when `beforeprint` switches
+ * `data-theme`.
+ */
+export const lightTokens: TokenReader = (name) => colorValue(name, 'light');
+
+/**
+ * A throwaway chart of `option` in the light theme at `width` × `height`, for the print image: the
+ * live chart cannot be used, as in the dark theme it is drawn dark, and its repaint after the
+ * switch to light comes later than the `beforeprint` listener that takes the image. The caller
+ * disposes it. `renderer` and `ssr` are for the unit test (SVG in jsdom, which has no canvas).
+ */
+export function lightChart(
+  option: EChartsCoreOption,
+  size: { readonly width: number; readonly height: number },
+  { renderer = 'canvas', ssr = false }: { renderer?: 'canvas' | 'svg'; ssr?: boolean } = {},
+): EChartsType {
+  registerTheme(PRINT_THEME, echartsTheme(lightTokens, readFont()));
+  const instance = init(ssr ? null : document.createElement('div'), PRINT_THEME, {
+    renderer,
+    ssr,
+    width: size.width,
+    height: size.height,
+  });
+  instance.setOption(themedOption(option, lightTokens));
+  return instance;
+}
 
 /**
  * The option as the chart draws it (design system section 5): the builder's option with its token
@@ -150,6 +183,8 @@ export function EChartsView({
   const snapshot = useRef<HTMLImageElement>(null);
   const chart = useRef<EChartsType | null>(null);
   const read = useRef<TokenReader | null>(null);
+  // The option as last given (whole, not the merged update), for the print image.
+  const latest = useRef(option);
   /** What the chart was given last, so a live update is merged (#356). */
   const applied = useRef<Applied | undefined>(undefined);
   const themeVersion = useThemeVersion();
@@ -167,18 +202,27 @@ export function EChartsView({
     resize.observe(element);
     // Print (#146): the live canvas is resized and redrawn while the page is laid out for paper,
     // so it is hidden there and a still image of the chart as it is now is printed instead (a
-    // `data:` URL, which the CSP's img-src allows). Taken on `beforeprint` (Print button, Ctrl+P).
+    // `data:` URL, which the CSP's img-src allows). Taken on `beforeprint` (Print button, Ctrl+P),
+    // always in the light theme (UX-12): drawn by a throwaway chart with the light values, at the
+    // live chart's size, whatever theme the screen shows.
     const takeSnapshot = () => {
       const image = snapshot.current;
       if (!image) return;
-      // `pixelRatio` multiplies the chart's on-screen CSS width (a 462 px chart gives 924 px),
-      // not the paper's: the chart is laid out at the width it has on screen. Three times keeps
-      // a chart from a narrow window sharp when the image is stretched to the A4 text width.
-      image.src = instance.getDataURL({
-        type: 'png',
-        pixelRatio: PRINT_PIXEL_RATIO,
-        backgroundColor: readTokens()('surface'),
-      });
+      const width = instance.getWidth();
+      if (width <= 0) return;
+      const still = lightChart(latest.current, { width, height: instance.getHeight() });
+      try {
+        // `pixelRatio` multiplies the chart's on-screen CSS width (a 462 px chart gives 924 px),
+        // not the paper's: the chart is laid out at the width it has on screen. Three times
+        // keeps a chart from a narrow window sharp when the image is stretched to the A4 width.
+        image.src = still.getDataURL({
+          type: 'png',
+          pixelRatio: PRINT_PIXEL_RATIO,
+          backgroundColor: lightTokens('surface'),
+        });
+      } finally {
+        still.dispose();
+      }
     };
     window.addEventListener('beforeprint', takeSnapshot);
     return () => {
@@ -200,6 +244,7 @@ export function EChartsView({
   useEffect(() => {
     const instance = chart.current;
     if (!instance) return;
+    latest.current = option;
     applied.current = applyOption(
       instance,
       themedOption(option, read.current ?? readTokens()),

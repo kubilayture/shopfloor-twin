@@ -298,6 +298,8 @@ describe('serial page (backward trace)', () => {
     vi.stubGlobal('fetch', server.fetch);
     await renderApp('/trace/serials/VB-100-000042');
     const choice = await screen.findByTestId('serial-units');
+    // A hint, not a state: neutral, as every informational note (#339).
+    expect(choice.querySelector('[class*="bg-neutral-soft"]')).not.toBeNull();
     expect(choice.dataset.count).toBe('2');
     expect(choice.textContent).toContain('Which one?');
     expect(screen.queryByTestId('trace-unit')).toBeNull();
@@ -863,7 +865,7 @@ describe('trace screens on the design system (UX-8, #331)', () => {
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Carton NOPE-123');
     expect(
       within(screen.getByRole('main'))
-        .getByRole('link', { name: 'Traceability' })
+        .getByRole('link', { name: '‹ Traceability' })
         .getAttribute('href'),
     ).toBe('/trace');
     // Not the carton's description under the id (G-21).

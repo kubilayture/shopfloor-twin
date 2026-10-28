@@ -190,6 +190,21 @@ describe('machine detail', () => {
       ...screen.getByTestId('state-timeline').querySelectorAll<HTMLElement>('[data-state]'),
     ].map((band) => band.dataset.state);
     expect(states).toEqual(['Down', 'Running', 'Blocked']);
+    // The legend shows each band's own look beside its word (#339).
+    const legend = screen.getByRole('list', { name: 'Legend' });
+    const swatches = [...legend.querySelectorAll<HTMLElement>('[data-band-swatch]')];
+    expect(swatches.map((swatch) => swatch.dataset.bandSwatch)).toEqual([
+      'Down',
+      'Blocked',
+      'Running',
+    ]);
+    for (const swatch of swatches) {
+      expect(swatch.getAttribute('aria-hidden')).toBe('true');
+      const band = screen
+        .getByTestId('state-timeline')
+        .querySelector<HTMLElement>(`[data-state="${swatch.dataset.bandSwatch ?? ''}"]`);
+      expect(swatch.className).toContain(band?.className.replace('absolute inset-y-0 ', '') ?? '?');
+    }
     await waitFor(() => {
       expect(intervalReads()).toBe(2);
     });
@@ -278,7 +293,7 @@ describe('machine detail', () => {
     await app.open();
     expect(await screen.findByRole('heading', { level: 1, name: 'Machine nope' })).toBeTruthy();
     expect(screen.getByText('The MES has no machine with this id.')).toBeTruthy();
-    expect(screen.getByRole('link', { name: 'Plant overview' }).getAttribute('href')).toBe('/');
+    expect(screen.getByRole('link', { name: '‹ Plant overview' }).getAttribute('href')).toBe('/');
     expect(screen.queryByRole('alert')).toBeNull();
     expect(document.title).toBe('Machine nope · ShopFloor Twin');
   });
@@ -346,7 +361,7 @@ describe('machine detail', () => {
     expect(age.textContent).toBe('unchanged for 3 d 2 h');
     expect(age.className).toBe('text-ink-secondary');
     expect(screen.getByRole('rowheader', { name: /^Coolant temperature/ })).toBeTruthy();
-    const empty = await screen.findByText('No samples in this range.');
+    const empty = await screen.findByText('No samples in this range');
     const figure = empty.closest('figure');
     expect(figure?.textContent).toContain('Coolant temperature');
     expect(figure?.textContent).toContain('The last sample was at Mon 12 Oct, 06:50:00');

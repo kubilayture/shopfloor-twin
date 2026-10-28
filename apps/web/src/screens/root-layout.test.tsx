@@ -203,6 +203,8 @@ describe('the top bar (G-01, G-04)', () => {
     expect(time?.textContent).toBe(formatPlantTime(PLANT.clock.watermark));
     expect(time?.getAttribute('title')).toBe(time?.textContent);
     expect(time?.querySelector('span')?.className).toBe('hidden sm:inline');
+    // Its digits are the app's one number face: sans, tabular, not monospace (2.7, G-15).
+    expect(time?.className.split(' ')).toEqual(['font-semibold', 'tabular-nums']);
     // The prefix is for screen readers only below `lg`.
     expect(clock.querySelector('span')?.className).toMatch(/^sr-only .*lg:not-sr-only/);
   });
@@ -362,7 +364,8 @@ describe('the nav drawer below xl', () => {
     const css = readFileSync(join(import.meta.dirname, '..', 'index.css'), 'utf8');
     const rule = /html\[data-nav-open\] \{([^}]*)\}/.exec(css)?.[1] ?? '';
     expect(rule).toMatch(/overflow: hidden;/);
-    expect(rule).toMatch(/scrollbar-gutter: stable;/);
+    // Kept by the root's own rule, for the drawer and dialogs alike (#339).
+    expect(css).toMatch(/\nhtml \{[^}]*scrollbar-gutter: stable;/);
   });
 
   it('gives the focus to the menu button when the layout narrows under a focused nav link', async () => {

@@ -9,7 +9,7 @@
   },
   "scripts": {
     "verify": "node scripts/heavy.ts pnpm run verify:steps",
-    "verify:steps": "pnpm format:check && pnpm check:dockerfiles && pnpm check:architecture && turbo run lint typecheck test build",
+    "verify:steps": "pnpm format:check && pnpm check:dockerfiles && pnpm check:architecture && pnpm check:ui-tokens && turbo run lint typecheck test build",
     "build": "turbo run build",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",

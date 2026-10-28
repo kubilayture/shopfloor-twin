@@ -43,7 +43,7 @@ export function EChart({
         </div>
       ) : empty ? (
         <div className="flex items-center justify-center" style={{ minHeight: height }}>
-          <EmptyState title={empty} />
+          <EmptyState title={empty} icon="info" />
         </div>
       ) : null}
       {children}

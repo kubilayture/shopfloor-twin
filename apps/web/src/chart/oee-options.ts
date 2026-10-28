@@ -15,6 +15,7 @@ import {
   MAX_VALUE_LABELS,
   NARROW_CHART_WIDTH,
 } from './theme.ts';
+import { countOf } from '../domain/words.ts';
 
 /**
  * ECharts options for the OEE dashboard, built as plain data (tested without a canvas). Values
@@ -123,7 +124,7 @@ export function hourlyReading(hours: readonly OeeBucketDto[]): string {
   );
   const missing = hours.length - known.length;
   const without = missing > 0 ? `; ${String(missing)} without planned time` : '';
-  const count = (n: number) => `${String(n)} hour${n === 1 ? '' : 's'}`;
+  const count = (n: number) => countOf(n, 'hour');
   if (known.length === 0) {
     return `OEE per hour: no hour with planned time in ${count(hours.length)}`;
   }
@@ -321,5 +322,5 @@ export function paretoReading(pareto: Pick<Pareto, 'reasons'>): string {
   const top = pareto.reasons[0];
   if (!top) return 'Availability loss by reason: none';
   const n = pareto.reasons.length;
-  return `Availability loss by reason: largest ${top.name} (${top.loss}), ${minutesText(top.ms)}, of ${String(n)} reason${n === 1 ? '' : 's'}`;
+  return `Availability loss by reason: largest ${top.name} (${top.loss}), ${minutesText(top.ms)}, of ${countOf(n, 'reason')}`;
 }

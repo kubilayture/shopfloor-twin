@@ -30,6 +30,7 @@ import { Stat } from '../components/ui/stat.tsx';
 import { ABOVE_ONE_TEXT, cycleText, lineFlags, parseFraction, pickBucket } from '../domain/oee.ts';
 import { formatClockTime } from '../domain/time.ts';
 import { useLiveLineOee } from '../live/live-context.tsx';
+import { countOf } from '../domain/words.ts';
 
 /** As the other OEE reads of the dashboard: read again this often while the shift is current. */
 const LIVE_REFRESH_MS = 30_000;
@@ -158,7 +159,7 @@ function Bottlenecks({
               Effective cycle <span className="tabular-nums">{cycleText(b.effectiveCycleMs)}</span>{' '}
               (ideal{' '}
               <span className="tabular-nums">{cycleText(`${String(b.idealCycleMs)}/1`)}</span> ÷{' '}
-              {b.equipment.length} machine{b.equipment.length === 1 ? '' : 's'})
+              {countOf(b.equipment.length, 'machine')})
             </span>
           </li>
         ))}
@@ -281,7 +282,7 @@ function LineHours({
           />
           {left > 0 && shown.length > 0 ? (
             <p className="text-xs text-ink-secondary">
-              {left} hour{left === 1 ? '' : 's'} without planned line time not listed.
+              {countOf(left, 'hour')} without planned line time not listed.
             </p>
           ) : null}
         </div>

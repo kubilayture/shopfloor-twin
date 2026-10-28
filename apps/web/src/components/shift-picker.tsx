@@ -1,5 +1,5 @@
 import type { CurrentShift, ShiftInstanceDto } from '@shopfloor/contracts/mes-api';
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { getCurrentShift, getShifts } from '../api/client.ts';
 import { queryKeys } from '../api/queries.ts';
 import { PLANT_TIME_ZONE, formatClockTime, formatPlantTime, plantDayOf } from '../domain/time.ts';
@@ -14,7 +14,7 @@ const CURRENT_SHIFT_REFRESH_MS = 15_000;
 const shiftDay = new Intl.DateTimeFormat('en-GB', {
   timeZone: 'UTC',
   weekday: 'short',
-  day: 'numeric',
+  day: '2-digit',
   month: 'short',
 });
 
@@ -91,6 +91,9 @@ export function useShiftSelection(requested: string | undefined): ShiftSelection
     queryFn: ({ signal }) =>
       getShifts({ from: new Date((to ?? 0) - SHIFT_HISTORY_MS), to: new Date(to ?? 0) }, signal),
     enabled: to !== undefined,
+    // The key moves with every plant hour: keep the list shown while the next one is read, so
+    // a screen never drops back to its loading state each hour (#393 review F1).
+    placeholderData: keepPreviousData,
   });
   const shifts = (list.data?.shifts ?? [])
     .filter((shift) => clockMs !== undefined && Date.parse(shift.start) < clockMs)
@@ -102,7 +105,10 @@ export function useShiftSelection(requested: string | undefined): ShiftSelection
     shifts,
     selected,
     isCurrent: selected !== undefined && selected === currentKey,
-    pending: current.isPending,
+    // Until the first list is in too: with the current shift alone, a screen took the empty list
+    // for "no shift yet" while it was on its way (#339). A later hour's list is read behind the
+    // one shown (`keepPreviousData`), so it never counts as pending.
+    pending: current.isPending || (to !== undefined && list.isPending),
     error: current.error ?? list.error,
     retry: () => {
       void current.refetch();
@@ -135,7 +141,9 @@ export function ShiftPicker({
     <div className="flex max-w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
       <Select
         label="Shift"
-        inline
+        // Above the select on a phone: the longest option ("… (14:00–22:00) – current") needs
+        // the row's whole width at 390 px (#339).
+        inline="sm"
         name="shift"
         data-testid="shift-select"
         value={selection.selected ?? ''}

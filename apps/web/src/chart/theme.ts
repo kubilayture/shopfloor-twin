@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { colorValue, FONTS, type Theme } from '../components/ui/tokens.ts';
+import { plainText, quantityText } from '../domain/numbers.ts';
 
 /**
  * The chart theme (UX-1f, #320; design system section 5), shared by ECharts and uPlot.
@@ -167,6 +168,16 @@ export const ECHARTS_THEME = 'shopfloor';
  * `neutral-500`, ticks outside 4 px, dashed split lines on the value axis only), legend top-left,
  * the tooltip white with a `line` border and elevation 2, drawn on the canvas; no animation.
  */
+/**
+ * A value axis's tick as the text beside it writes numbers (design system 6.1): thousands grouped
+ * from 10,000 up only, a true minus. ECharts' own grouped every thousand, so the Pareto's axis
+ * said "1,800" under a table of "1800.0 min" (#339).
+ */
+export function axisValueText(value: number): string {
+  const decimals = plainText(value).split('.')[1]?.length ?? 0;
+  return quantityText(value, decimals);
+}
+
 export function echartsTheme(read: TokenReader, font: string) {
   const text = read('ink-secondary');
   const axisLine = { show: true, lineStyle: { color: read('line-strong'), width: 1 } };
@@ -218,7 +229,7 @@ export function echartsTheme(read: TokenReader, font: string) {
     valueAxis: {
       axisLine,
       axisTick,
-      axisLabel: { ...axisLabel, hideOverlap: true },
+      axisLabel: { ...axisLabel, hideOverlap: true, formatter: axisValueText },
       nameTextStyle,
       nameLocation: 'end',
       splitLine: dashedSplit,

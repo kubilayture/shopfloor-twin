@@ -137,6 +137,13 @@ export function episodeAreas(signals: readonly SpcSignalDto[], chart: SpcChartNa
   });
 }
 
+/** The plot's top edge (px): room for the legend, the unit's row and the label lane above it. */
+export const SPC_GRID_TOP = 60;
+/** The unit's distance above the plot (px): over the label lane's 4 px gap and 12 px text. */
+export const SPC_UNIT_GAP = 24;
+/** The label lane's distance above the plot (px). */
+export const SPC_LANE_GAP = 4;
+
 /** The label lane's series: on its own hidden axis (0 to 1), its marks on the top edge (1). */
 export const RULE_LANE = 'Rule labels';
 
@@ -176,7 +183,7 @@ export function ruleLane(
     label: {
       show: true,
       position: 'top',
-      distance: 4,
+      distance: SPC_LANE_GAP,
       formatter: '{b}',
       ...axisText,
     },
@@ -338,7 +345,8 @@ export function spcChartOption(input: SpcChartInput): EChartsCoreOption {
     // every load, window switch or new view; a look, print or screenshot then saw the later
     // points (signals included) as a bare line. EChartsView lets the option's own value win.
     animation: false,
-    grid: { left: 56, right: 16, top: 48, bottom: 32 },
+    // Top: the legend (0–16), the unit (24–36), then the label lane over the plot’s edge (44–56).
+    grid: { left: 56, right: 16, top: SPC_GRID_TOP, bottom: 32 },
     // One row (scrolling when narrow): a wrapped second row ran into the label lane and the unit.
     // Line samples 16 px wide (section 5).
     legend: {
@@ -357,9 +365,9 @@ export function spcChartOption(input: SpcChartInput): EChartsCoreOption {
       {
         type: 'value',
         name: unit,
-        // Ends at the axis line, left of the label lane (which starts at the plot's left edge), and
-        // low enough to clear the legend.
-        nameGap: 8,
+        // A row of its own above the label lane: beside it, an episode starting at the first point
+        // read as one word with the unit ("Pa/minRule 1", #393 review F5); under the legend.
+        nameGap: SPC_UNIT_GAP,
         nameTextStyle: { ...axisText, align: 'right' },
         scale: zones,
         ...(zones ? {} : { min: 0 }),

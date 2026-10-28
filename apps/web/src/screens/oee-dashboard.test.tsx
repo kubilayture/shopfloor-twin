@@ -599,7 +599,7 @@ describe('OEE dashboard', () => {
       expect((select as HTMLSelectElement).value).toBe('2020-01-06/A');
     });
     expect((select as HTMLSelectElement).selectedOptions[0]?.textContent).toBe(
-      'Mon 6 Jan, shift A',
+      'Mon 06 Jan, shift A',
     );
   });
 

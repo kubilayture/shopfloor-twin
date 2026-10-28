@@ -59,6 +59,7 @@ import { stateStyle } from '../domain/states.ts';
 import { formatClockSeconds } from '../domain/time.ts';
 import { upsertRecord } from '../live/live-cache.ts';
 import { useLiveDowntime, useLiveSubscription } from '../live/live-context.tsx';
+import { countOf } from '../domain/words.ts';
 
 /**
  * Downtime coding (#122; UX-5a, #326): the shift's downtime records in a `DataTable`, uncoded
@@ -80,9 +81,6 @@ const PANEL_TITLE_ID = 'coding-panel-title';
  * until the link moves the focus to it.
  */
 const LIST_END_ID = 'downtime-list-end';
-
-const plural = (count: number, word: string): string =>
-  `${String(count)} ${word}${count === 1 ? '' : 's'}`;
 
 /** A record's state as a badge, its cause code beside it. */
 function StateWithCause({ record }: { readonly record: DowntimeRecordDto }) {
@@ -854,7 +852,7 @@ export function DowntimeCoding() {
         summary={
           list.data ? (
             <span data-testid="downtime-summary">
-              {plural(shown.length, 'record')}, {uncodedCount} with uncoded time; uncoded first
+              {countOf(shown.length, 'record')}, {uncodedCount} with uncoded time; uncoded first
             </span>
           ) : undefined
         }
@@ -918,7 +916,7 @@ export function DowntimeCoding() {
               skipToDetails={beside ? PANEL_TITLE_ID : LIST_END_ID}
               skipLabel={beside ? undefined : 'Skip past the records'}
               announceRemoval={(left) =>
-                `The record left the list; ${left === 0 ? 'no records remain' : `${plural(left, 'record')} ${left === 1 ? 'remains' : 'remain'}`}.`
+                `The record left the list; ${left === 0 ? 'no records remain' : `${countOf(left, 'record')} ${left === 1 ? 'remains' : 'remain'}`}.`
               }
               narrow="stack"
               loading={loading ? 'Loading downtime…' : undefined}

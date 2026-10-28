@@ -64,7 +64,8 @@ const STYLES: Readonly<Record<string, StateStyle>> = {
     abnormal: false,
     className:
       'bg-state-planned-stop-fill text-state-planned-stop-ink border-state-planned-stop-border',
-    band: 'bg-state-planned-stop-fill border-y-4 border-state-planned-stop-border',
+    // A double edge (its glyph is ‖): its fill and edge alone sit close to Running's (#345 review).
+    band: 'bg-state-planned-stop-fill border-y-4 border-double border-state-planned-stop-border',
     icon: 'pause',
   },
   Maintenance: {

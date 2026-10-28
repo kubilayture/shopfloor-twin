@@ -61,6 +61,8 @@ interface EChartsModel {
 }
 
 interface Rect {
+  readonly y: number;
+  readonly height: number;
   clone(): Rect;
   applyTransform(m: unknown): void;
   intersect(other: Rect): boolean;
@@ -274,6 +276,46 @@ describe('SPC chart rendering (#308)', () => {
       // A live update, as EChartsView applies it, still draws every marker.
       applyOption(chart, themedOption(spcChartOption(input('I', 501)), read), shape);
       expect(markers(chart)).toEqual({ count: 501, shown: 501 });
+    },
+  );
+
+  it.each([1440, 390])(
+    'keeps the unit apart from a rule label at the first point, at %i px (#393 review F5)',
+    (width) => {
+      const read = readTokens();
+      chart = init(document.createElement('div'), echartsTheme(read, 'system-ui'), {
+        renderer: 'svg',
+        width,
+        height: 240,
+      });
+      const drawn = input('I', 60);
+      const first = drawn.points[0];
+      if (!first) throw new Error('no point');
+      const episode = {
+        ...signal(9, { chart: 'I', status: 'final', extentFinal: true }),
+        first: { ...signal(9).first, at: first.at, plantAt: first.at },
+        last: { ...signal(9).last, at: drawn.points[3]?.at ?? first.at },
+      };
+      applyOption(
+        chart,
+        themedOption(spcChartOption({ ...drawn, signals: [episode] }), read),
+        undefined,
+      );
+      const unit = chart
+        .getZr()
+        .storage.getDisplayList()
+        .find((el) => (el as unknown as { style?: { text?: string } }).style?.text === 'Pa/min') as
+        TextEl | undefined;
+      if (!unit) throw new Error('no unit');
+      const unitRect = unit.getBoundingRect().clone();
+      unitRect.applyTransform(unit.getComputedTransform());
+      const shown = laneLabels(chart).filter((l) => !l.hidden);
+      expect(shown.length).toBeGreaterThan(0);
+      for (const label of shown) expect(unitRect.intersect(label.rect)).toBe(false);
+      // A row of its own: wholly above the lane's labels.
+      expect(Math.max(...shown.map((l) => l.rect.y))).toBeGreaterThanOrEqual(
+        unitRect.y + unitRect.height,
+      );
     },
   );
 });

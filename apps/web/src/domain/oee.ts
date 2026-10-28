@@ -7,6 +7,7 @@ import type {
   Ratio,
 } from '@shopfloor/contracts/mes-api';
 import { fraction, multiply, toDecimal, type Fraction } from '@shopfloor/oee-core';
+import { countOf } from './words.ts';
 
 /**
  * OEE values are shown as the MES sends them (ADR-0021): exact fractions and four-decimal strings,
@@ -171,7 +172,7 @@ export function bucketFlags(bucket: OeeBucketDto): BucketFlag[] {
   if (bucket.incidents > 0) {
     flags.push({
       key: 'incidents',
-      text: `${String(bucket.incidents)} incident${bucket.incidents === 1 ? '' : 's'}`,
+      text: countOf(bucket.incidents, 'incident'),
       title: 'Sequence gaps reported over its hours',
     });
   }
@@ -290,7 +291,7 @@ function revisionFlags(value: {
   if (n > 0) {
     flags.push({
       key: 'incidents',
-      text: `${String(n)} incident${n === 1 ? '' : 's'}`,
+      text: countOf(n, 'incident'),
       title: 'Sequence gaps written off under it (ADR-0018)',
       tone: 'notice',
     });

@@ -237,6 +237,30 @@ describe('alarm KPI page', () => {
     expect(screen.queryByTestId('kpi-hourly')).toBeNull();
   });
 
+  it('names a stretch outside every shift by its span, not by the raw key (#339)', async () => {
+    const server = mes({
+      shift: {
+        plant: [
+          kpiBucket(),
+          kpiBucket({
+            key: 'no-shift/2026-10-17T03:00:00.000Z',
+            from: '2026-10-17T03:00:00.000Z',
+            to: '2026-10-19T03:00:00.000Z',
+            raises: 0,
+          }),
+        ],
+      },
+    });
+    vi.stubGlobal('fetch', server.fetch);
+    await renderApp('/alarms/kpi?bucket=shift');
+    await waitFor(() => {
+      expect(screen.getByTestId('kpi-buckets').textContent).toContain('No shift');
+    });
+    const table = screen.getByTestId('kpi-buckets');
+    expect(table.textContent).toContain('No shiftSat 17 Oct, 06:00 – Mon 19 Oct, 06:00');
+    expect(table.textContent).not.toContain('no-shift/');
+  });
+
   /** The hour rows of the bucket table, in order, by test id. */
   const hourRows = (table: HTMLElement) =>
     [...table.querySelectorAll<HTMLElement>('tbody tr')].map((row) => row.dataset.testid);

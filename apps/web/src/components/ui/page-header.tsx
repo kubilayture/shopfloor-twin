@@ -57,6 +57,35 @@ export interface PageHeaderProps {
  */
 export const BACK_LINK_ACTIVE = { exact: true, includeSearch: true } as const;
 
+/**
+ * The way back to the parent ("‹ All orders", 3.3), one element for every page: the header's, and
+ * a detail page's while it loads (no `h1` yet). Never marked as the current page (the router's
+ * fuzzy match would otherwise mark "‹ All orders" on an order); not printed (the shift report's
+ * A4).
+ */
+export function BackLink({
+  back,
+  className = '',
+  testId,
+}: {
+  readonly back: PageHeaderBack;
+  readonly className?: string;
+  readonly testId?: string;
+}) {
+  return (
+    <p className={`text-sm print:hidden ${className}`.trim()}>
+      <Link
+        {...back.link}
+        activeOptions={BACK_LINK_ACTIVE}
+        className="text-link underline-offset-4 hover:underline"
+        data-testid={testId}
+      >
+        ‹ {back.label}
+      </Link>
+    </p>
+  );
+}
+
 const TITLE_SIZE = { default: 'text-xl', dashboard: 'text-2xl' } as const;
 
 export function PageHeader({
@@ -80,27 +109,14 @@ export function PageHeader({
     // A `div`, not a `header`: the top bar is the page's one banner.
     <div data-testid={testId} className="mb-6">
       <div className="border-b border-line-subtle pb-4">
-        {back ? (
-          // The way back is navigation: not printed (UX-5b, the shift report's A4).
-          <p className="mb-1 text-sm print:hidden">
-            <Link
-              {...back.link}
-              // A back link is never the page: the router's fuzzy match would mark the parent
-              // ("‹ SPC charts" on a chart) `aria-current="page"` on every detail page.
-              activeOptions={BACK_LINK_ACTIVE}
-              className="text-link underline-offset-4 hover:underline"
-            >
-              ‹ {back.label}
-            </Link>
-          </p>
-        ) : null}
+        {back ? <BackLink back={back} className="mb-1" /> : null}
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
             <h1
               ref={heading}
               id={id}
               tabIndex={-1}
-              className={`${TITLE_SIZE[size]} min-w-0 font-bold text-ink`}
+              className={`${TITLE_SIZE[size]} min-w-0 font-semibold text-ink`}
             >
               {title}
             </h1>

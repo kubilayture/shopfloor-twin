@@ -24,6 +24,7 @@ import {
 } from './oee-options.ts';
 import { CENTRE_DASH, SPC_COLORS, spcChartOption } from './spc-options.ts';
 import {
+  axisValueText,
   CHART_TOKEN_NAMES,
   CHART_TOKENS,
   echartsTheme,
@@ -235,9 +236,13 @@ describe('chart theme (UX-1f, design system section 5)', () => {
     expect(axis.axisLabel.height).toBe(2 * (axis.axisLabel.lineHeight as number));
   });
 
-  it('puts the flood threshold label at the end of its line, not over the plot (K-03)', () => {
-    const [, peak] = OPTIONS.alarm.series as { markLine: { label: { position: string } } }[];
-    expect(peak?.markLine.label.position).toBe('insideEndTop');
+  it('names the flood threshold in the legend, never as a label over the plot (K-03, #339)', () => {
+    const [, peak, threshold] = OPTIONS.alarm.series as {
+      name?: string;
+      markLine?: { label: { show: boolean } };
+    }[];
+    expect(peak?.markLine?.label.show).toBe(false);
+    expect(threshold?.name).toMatch(/^Flood threshold \(\d+\)$/);
   });
 
   it('colours SPC by role: neutral points, alarm diamonds, dashed limits, dotted zones', () => {
@@ -434,5 +439,35 @@ describe('chart theme (UX-1f, design system section 5)', () => {
       expect(model.getComponent('xAxis').get(['splitNumber'])).toBe(ticks);
       expect(chart.renderToSVGString()).toMatch(/>0<\/text>/);
     });
+
+    it('writes value ticks as the tables write numbers: grouped from 10,000 only (#339)', () => {
+      const draw = (minutes: number) => {
+        chart?.dispose();
+        chart = init(document.createElement('div'), echartsTheme(read, FONT), {
+          renderer: 'svg',
+          width: 900,
+          height: 200,
+        });
+        const pareto = paretoOption({
+          reasons: [
+            { reason: 'A', name: 'Starved', loss: 'external', ms: minutes * 60_000, records: 8 },
+          ],
+        });
+        chart.setOption(themedOption(pareto.option, read), { notMerge: true });
+        return chart.renderToSVGString();
+      };
+      const shift = draw(1800);
+      expect(shift).toMatch(/>1500<\/text>/);
+      expect(shift).not.toMatch(/\d,\d{3}</);
+      expect(draw(30_000)).toMatch(/>20,000<\/text>/);
+    });
+  });
+
+  it('writes an axis value with its own decimals, grouped from 10,000, with a true minus', () => {
+    expect(axisValueText(0)).toBe('0');
+    expect(axisValueText(1800)).toBe('1800');
+    expect(axisValueText(12_000)).toBe('12,000');
+    expect(axisValueText(2.5)).toBe('2.5');
+    expect(axisValueText(-120)).toBe('\u2212120');
   });
 });

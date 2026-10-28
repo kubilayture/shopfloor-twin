@@ -47,7 +47,7 @@ import { EmptyState } from '../components/ui/empty-state.tsx';
 import { Missing } from '../components/ui/format.tsx';
 import { Icon } from '../components/ui/icons.tsx';
 import { Forbidden, NotFound } from '../components/ui/not-found.tsx';
-import { PageHeader } from '../components/ui/page-header.tsx';
+import { BackLink, PageHeader } from '../components/ui/page-header.tsx';
 import { Section } from '../components/ui/section.tsx';
 import { SectionNav, type SectionNavItem } from '../components/ui/section-nav.tsx';
 import { Skeleton } from '../components/ui/skeleton.tsx';
@@ -75,6 +75,7 @@ import {
   SerialLink,
   SubjectLink as TraceSubjectLink,
 } from './trace-common.tsx';
+import { countOf } from '../domain/words.ts';
 
 // `/quality/holds`, `/quality/holds/new` and `/quality/holds/$id` (#203, plan "Web", ADR-0035):
 // the holds with filters, opening a hold on a lot, serial, carton or order (from a trace page, an
@@ -115,11 +116,8 @@ export function SubjectLink({ subject }: { readonly subject: HoldSubjectDto }) {
   );
 }
 
-const plural = (count: number, word: string): string =>
-  `${String(count)} ${word}${count === 1 ? '' : 's'}`;
-
 const scopeText = (scope: HoldDto['scope']): string =>
-  `${plural(scope.units, 'unit')}, ${plural(scope.cartons, 'carton')}, ${plural(scope.orders, 'order')}`;
+  `${countOf(scope.units, 'unit')}, ${countOf(scope.cartons, 'carton')}, ${countOf(scope.orders, 'order')}`;
 
 // ---- The list ----
 
@@ -364,7 +362,7 @@ export function HoldList() {
             </form>
           </>
         }
-        summary={read.data ? plural(holds.length, 'hold') : undefined}
+        summary={read.data ? countOf(holds.length, 'hold') : undefined}
       />
       {read.data?.truncated ? (
         <Callout tone="warn" role="status" data-testid="holds-truncated" className="mb-4">
@@ -476,16 +474,16 @@ function Suggestion({
         </h2>
         <p className="mt-1 text-ink-secondary">
           {suggestion.chart}, rule {suggestion.rule}, on {suggestion.characteristic}: the{' '}
-          {suggestion.readings} readings (every pass) from{' '}
+          {countOf(suggestion.readings, 'reading')} (every pass) from{' '}
           <span data-testid="hold-suggestion-from">{timeOf(suggestion.from.at)}</span> (
           {suggestion.after ? (
             <>after the last in-control point at {timeOf(suggestion.after.at)}</>
           ) : (
             'the start of its segment'
           )}
-          ) through {timeOf(suggestion.through.at)}: {plural(suggestion.units.length, 'unit')} in{' '}
-          {plural(suggestion.orders.length, 'order')} and{' '}
-          {plural(suggestion.cartons.length, 'carton')}.
+          ) through {timeOf(suggestion.through.at)}: {countOf(suggestion.units.length, 'unit')} in{' '}
+          {countOf(suggestion.orders.length, 'order')} and{' '}
+          {countOf(suggestion.cartons.length, 'carton')}.
         </p>
       </div>
       {suggestion.final ? null : (
@@ -783,7 +781,7 @@ export function HoldOpen() {
             data-testid="open-submit"
             loading={write.isPending}
           >
-            {fromSignal !== undefined ? `Open ${plural(selected.size, 'hold')}` : 'Open the hold'}
+            {fromSignal !== undefined ? `Open ${countOf(selected.size, 'hold')}` : 'Open the hold'}
           </Button>
         </div>
       </form>
@@ -1286,7 +1284,7 @@ function Units({ detail }: { readonly detail: HoldDetailDto }) {
       description={
         detail.unitsTruncated
           ? undefined
-          : `${plural(detail.units.length, 'unit')}, by run and part.`
+          : `${countOf(detail.units.length, 'unit')}, by run and part.`
       }
     >
       {detail.unitsTruncated ? (
@@ -1333,7 +1331,7 @@ type Transition = HoldDetailDto['transitions'][number];
 function Notification({ notification }: { readonly notification: Transition['notification'] }) {
   if (notification === null) return <>not notified</>;
   const refused = notification.status === 'refused' || notification.status === 'conflict';
-  const attempts = plural(notification.attempts, 'attempt');
+  const attempts = countOf(notification.attempts, 'attempt');
   return (
     <>
       {refused ? (
@@ -1573,11 +1571,7 @@ function HoldDetail({ id }: { readonly id: string }) {
     // No `h1` until the hold is read: the heading takes the focus when it mounts.
     return (
       <div className="flex flex-col gap-6" data-testid="hold-detail" data-hold={id}>
-        <p className="text-sm">
-          <Link {...BACK.link} className="text-link underline-offset-4 hover:underline">
-            ‹ {BACK.label}
-          </Link>
-        </p>
+        <BackLink back={BACK} />
         <Skeleton shape="card" label="Loading the hold…" />
       </div>
     );
@@ -1639,7 +1633,7 @@ function HoldDetail({ id }: { readonly id: string }) {
         meta={<HoldFacts hold={hold} />}
       />
       {!canHold && !canRelease ? (
-        <Callout tone="info" data-testid="hold-read-only" className="mb-4">
+        <Callout tone="neutral" data-testid="hold-read-only" className="mb-4">
           Your role cannot change holds: shown read-only.
         </Callout>
       ) : null}

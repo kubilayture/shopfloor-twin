@@ -337,7 +337,7 @@ function UnitChoice({
 }) {
   return (
     <div className="mb-6" data-testid="serial-units" data-count={String(trace.units.length)}>
-      <Callout tone="info" title={chosen === undefined ? 'Which one?' : 'Showing one of them'}>
+      <Callout tone="neutral" title={chosen === undefined ? 'Which one?' : 'Showing one of them'}>
         {trace.units.length} units carry serial <Code>{trace.serial}</Code>: the simulator restarts
         its serial counter with every run.
         {chosen === undefined ? ' Choose the unit to trace.' : ''}

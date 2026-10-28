@@ -1,6 +1,7 @@
 import { ALARM_VIEWS } from '@shopfloor/contracts/mes-api';
 import { createRoute } from '@tanstack/react-router';
 import type { AlarmViewName } from '../api/client.ts';
+import { ALARM_SORTS, type AlarmSort } from '../domain/alarms.ts';
 import { AlarmKpi } from '../screens/alarm-kpi.tsx';
 import { AlarmList } from '../screens/alarm-list.tsx';
 import { rootRoute } from './root.tsx';
@@ -16,6 +17,8 @@ export interface AlarmSearch {
   readonly view?: AlarmViewName | undefined;
   /** The occurrence whose panel is open (`{equipment}~{epoch}~{seq}`). */
   readonly alarm?: string | undefined;
+  /** The rows' order (#371); `priority` when absent, so a shared link keeps the order. */
+  readonly sort?: AlarmSort | undefined;
 }
 
 export const alarmsRoute = createRoute({
@@ -26,6 +29,9 @@ export const alarmsRoute = createRoute({
       ? (search.view as AlarmViewName)
       : undefined,
     alarm: matching(search.alarm, OCCURRENCE_ID),
+    sort: (ALARM_SORTS as readonly unknown[]).includes(search.sort)
+      ? (search.sort as AlarmSort)
+      : undefined,
   }),
   staticData: { title: 'Alarms' },
   component: AlarmList,

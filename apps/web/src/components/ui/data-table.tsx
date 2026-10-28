@@ -392,9 +392,26 @@ function sectionHeading(element: HTMLElement): HTMLElement | null {
 }
 
 /**
+ * The control at `spot` in `row`: the same cell, the same place in it (a row without a checkbox
+ * does not shift its actions); else the row's first control.
+ */
+function sameControl(row: HTMLElement, spot: FocusSpot): HTMLElement | undefined {
+  const cell = spot.cell !== undefined ? cellOf(row, spot.cell) : undefined;
+  const inCell = cell ? controlsIn(cell) : [];
+  return inCell[Math.min(spot.index, inCell.length - 1)] ?? controlsIn(row)[0];
+}
+
+const sameOrder = (a: readonly string[], b: readonly string[]): boolean =>
+  a.length === b.length && a.every((key, index) => key === b[index]);
+
+/**
  * Keeps the focus in the table when the row it was in disappears: the same control in the next
  * row that is still there, else the previous one, else the section's heading. Only when the focus
  * was lost with the row (on `body`), never taken from somewhere the user moved it to.
+ *
+ * When the rows are reordered (a live change of the sort key, #371) the browser can drop the
+ * focus to `body` as the focused row's node moves: the focus goes back to the same control in
+ * the same row, without an announcement, since nothing left.
  */
 function useFocusAfterRemoval(
   root: RefObject<HTMLElement | null>,
@@ -411,10 +428,19 @@ function useFocusAfterRemoval(
     previous.current = keys;
     const was = spot.current;
     const container = root.current;
-    if (!was || !container || keys.includes(was.key)) return;
+    if (!was || !container) return;
+    const lost = () => {
+      const active = document.activeElement;
+      return active === null || active === document.body || !active.isConnected;
+    };
+    if (keys.includes(was.key)) {
+      if (sameOrder(before, keys) || !lost()) return;
+      const row = rowElement(container, was.key);
+      if (row) sameControl(row, was)?.focus();
+      return;
+    }
     spot.current = null;
-    const active = document.activeElement;
-    if (active !== null && active !== document.body && active.isConnected) return;
+    if (!lost()) return;
     const at = before.indexOf(was.key);
     const remaining = new Set(keys);
     const after = before.slice(at + 1).find((key) => remaining.has(key));
@@ -424,12 +450,8 @@ function useFocusAfterRemoval(
       .find((key) => remaining.has(key));
     const target = after ?? prior;
     const row = target === undefined ? undefined : rowElement(container, target);
-    // The same control: the same cell, the same place in it (a row without a checkbox does not
-    // shift its actions); else the row's first control; else the section heading.
-    const cell = row && was.cell !== undefined ? cellOf(row, was.cell) : undefined;
-    const inCell = cell ? controlsIn(cell) : [];
-    const control =
-      inCell[Math.min(was.index, inCell.length - 1)] ?? (row ? controlsIn(row)[0] : undefined);
+    // The same control in that row; else the section heading.
+    const control = row ? sameControl(row, was) : undefined;
     (control ?? sectionHeading(container))?.focus();
     if (announce) setStatus(announce(total));
   }, [keys, total, root, announce, setStatus]);

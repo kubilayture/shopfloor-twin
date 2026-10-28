@@ -32,6 +32,8 @@ import {
   shelvePresets,
   scopeKey,
   shelfFailure,
+  defaultSort,
+  sortAlarms,
   stateText,
   viewOf,
 } from './alarms.ts';
@@ -86,6 +88,55 @@ describe('alarm partition', () => {
   it('lists newest raise first in each view', () => {
     const set = mergeAlarms([[occurrence(1), occurrence(3)], [occurrence(2)]], [], undefined);
     expect(partition(set).active.map((item) => item.seq)).toEqual([3, 2, 1]);
+  });
+});
+
+describe('alarm list order (#371)', () => {
+  const low = occurrence(4, { priority: 'low' });
+  const high = occurrence(1, { priority: 'high' });
+  const medium = occurrence(3);
+  const newerHigh = occurrence(2, { priority: 'high' });
+  const list = [low, high, medium, newerHigh];
+  const seqs = (items: readonly { seq: number }[]) => items.map((item) => item.seq);
+
+  it('sorts by priority, highest first, then newest raise first within one', () => {
+    expect(seqs(sortAlarms(list, 'priority'))).toEqual([2, 1, 3, 4]);
+  });
+
+  it('sorts by raise time alone, newest first, whatever the priority', () => {
+    expect(seqs(sortAlarms(list, 'raised'))).toEqual([4, 3, 2, 1]);
+  });
+
+  it('puts the still-active alarms of a priority before its cleared ones, then by time', () => {
+    const cleared = (seq: number, state: 'unacked-cleared' | 'closed') =>
+      occurrence(seq, {
+        priority: 'high',
+        state,
+        active: false,
+        endedAt: '2026-10-15T06:00:00.000Z',
+      });
+    const newCleared = cleared(9, 'unacked-cleared');
+    const newClosed = cleared(8, 'closed');
+    const acked = occurrence(5, { priority: 'high', state: 'acked-active', acknowledged: ACK });
+    const sorted = sortAlarms([newCleared, newClosed, high, acked, medium], 'priority');
+    expect(seqs(sorted)).toEqual([5, 1, 9, 8, 3]);
+    // By raise time the cleared ones keep their place.
+    expect(seqs(sortAlarms([high, newCleared, acked], 'raised'))).toEqual([9, 5, 1]);
+  });
+
+  it('defaults the history to raise time and the live views to priority', () => {
+    expect(defaultSort('history')).toBe('raised');
+    expect(defaultSort('active')).toBe('priority');
+    expect(defaultSort('acknowledged')).toBe('priority');
+    expect(defaultSort('shelved')).toBe('priority');
+  });
+
+  it('breaks a tie of priority and raise time by id, and leaves the given list alone', () => {
+    const twin = occurrence(1, { priority: 'high', equipment: 'cnc-02', raisedAt: high.raisedAt });
+    const given = [high, twin];
+    expect(ids(sortAlarms(given, 'priority'))).toEqual([twin.id, high.id]);
+    expect(ids(sortAlarms([twin, high], 'priority'))).toEqual([twin.id, high.id]);
+    expect(given).toEqual([high, twin]);
   });
 });
 

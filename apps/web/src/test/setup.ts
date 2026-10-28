@@ -1,5 +1,6 @@
 import { cleanup, configure } from '@testing-library/react';
 import { afterEach } from 'vitest';
+import { LOGOUT_PENDING_KEY } from '../auth/pending-logout.ts';
 
 // Role queries otherwise compute every element's style to skip hidden ones, which makes them
 // slow in jsdom, the more so on a busy CI runner; these tests render no hidden content to skip.
@@ -11,6 +12,13 @@ afterEach(() => {
   cleanup();
   modalDialogs.length = 0;
   autoPopovers.length = 0;
+  // Each test is a new tab: a logout one left on its way (`LOGOUT_PENDING_KEY`, #390) must not
+  // end the next test's session.
+  try {
+    globalThis.sessionStorage.removeItem(LOGOUT_PENDING_KEY);
+  } catch {
+    // no storage, or a test's stand-in that refuses
+  }
 });
 
 // jsdom has no layout; the router restores scroll positions on navigation.

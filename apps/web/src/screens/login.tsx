@@ -22,6 +22,9 @@ import {
 } from '../domain/identity.ts';
 import type { LoginReason } from '../routes/identity.ts';
 
+/** The login shows its form at the latest this long after the read of the session began. */
+export const SESSION_CHECK_MAX_MS = 3_000;
+
 const REASON_TEXT: Readonly<Record<LoginReason, string>> = {
   ended: 'Your session ended. Log in again to carry on.',
   idle: 'You were logged out after a while without use. Log in again to carry on.',
@@ -383,10 +386,13 @@ export function ChangePasswordForm({
 function LoginCard({
   heading,
   footer,
+  busy = false,
   children,
 }: {
   readonly heading?: ReactNode;
   readonly footer?: ReactNode;
+  /** The card waits on something (`aria-busy` on `main`). */
+  readonly busy?: boolean;
   readonly children: ReactNode;
 }) {
   const headingRef = useHeadingFocus<HTMLHeadingElement>();
@@ -399,7 +405,12 @@ function LoginCard({
     headingRef.current?.focus();
   }, [heading, headingRef]);
   return (
-    <main id="main" tabIndex={-1} className="min-h-screen bg-canvas px-4 py-12 text-ink md:py-20">
+    <main
+      id="main"
+      tabIndex={-1}
+      aria-busy={busy || undefined}
+      className="min-h-screen bg-canvas px-4 py-12 text-ink md:py-20"
+    >
       <div className="mx-auto w-full max-w-md overflow-hidden rounded-lg border border-line bg-surface">
         <div className="bg-topbar px-6 py-4 text-topbar-ink" data-surface="dark">
           <p className="text-base font-semibold">{PRODUCT_NAME}</p>
@@ -450,9 +461,34 @@ export function Login() {
   const [typed, setTyped] = useState<string | undefined>(undefined);
   const { session } = auth;
   const target = redirect ?? '/';
+  // A MES that never answers the read: the form after `SESSION_CHECK_MAX_MS` all the same.
+  const reading = session === undefined;
+  const [waited, setWaited] = useState(false);
+  useEffect(() => {
+    if (!reading) return;
+    const timer = setTimeout(() => {
+      setWaited(true);
+    }, SESSION_CHECK_MAX_MS);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [reading]);
 
   if (session && !session.user.mustChangePassword) {
     return <BackTo href={target} />;
+  }
+  // While the session is read, no form: a session found takes the page on (`BackTo`) and would
+  // drop what was typed (#390). A read that failed once (the MES unreachable or 5xx, before any
+  // retry) or takes too long shows the form; the login then says what is wrong.
+  if (reading && !auth.readFailed && !waited) {
+    return (
+      <LoginCard busy>
+        <p role="status" className="flex items-center gap-2 text-sm text-ink-secondary">
+          <Icon name="spinner" size={16} className="motion-safe:animate-spin" />
+          Checking your session…
+        </p>
+      </LoginCard>
+    );
   }
   if (session?.user.mustChangePassword === true) {
     return (

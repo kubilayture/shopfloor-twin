@@ -87,6 +87,15 @@ const ICONS = {
       <path d="M10 6v4l2.75 2.25" />
     </>,
   ),
+  // The theme switch (UX-12, #336): System, Light, Dark.
+  monitor: line(<path d="M3 4h14v9H3zM7.5 16.5h5M10 13v3.5" />),
+  sun: line(
+    <>
+      <circle cx={10} cy={10} r={3.25} />
+      <path d="M10 2.5v1.75M10 15.75v1.75M2.5 10h1.75M15.75 10h1.75M4.7 4.7l1.25 1.25M14.05 14.05l1.25 1.25M4.7 15.3l1.25-1.25M14.05 5.95l1.25-1.25" />
+    </>,
+  ),
+  moon: line(<path d="M16.5 12.25A7 7 0 0 1 7.75 3.5a7 7 0 1 0 8.75 8.75z" />),
 
   // The state and priority glyphs of design system 2.4 and 2.5 not in the list above.
   /** ⟳ Setup. */

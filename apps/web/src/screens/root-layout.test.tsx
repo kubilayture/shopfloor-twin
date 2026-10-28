@@ -174,6 +174,15 @@ describe('the top bar (G-01, G-04)', () => {
     expect(within(banner).getByRole('button', { name: 'Log out' })).toBe(
       screen.getByTestId('logout'),
     );
+    // The theme switch (UX-12) between the user name and Log out, in the user area.
+    const theme = within(banner).getByRole('button', { name: 'Theme: System' });
+    const area = within(banner).getByTestId('user-menu');
+    expect([...area.querySelectorAll(':scope > a, :scope > button')]).toEqual([
+      account,
+      theme,
+      screen.getByTestId('logout'),
+    ]);
+    expect(theme.getAttribute('aria-haspopup')).toBe('menu');
     expect(within(banner).getByTestId('connection-status').dataset.status).toBe('open');
     // The navigation is not in the top bar any more.
     expect(within(banner).queryByTestId('nav-overview')).toBeNull();

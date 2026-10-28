@@ -1,11 +1,9 @@
 import { Link, useRouterState, type LinkOptions } from '@tanstack/react-router';
 import type { ReactNode } from 'react';
-import { useHeadingFocus } from '../heading-focus.ts';
 import { buttonClass } from './button.tsx';
 import { Code } from './code.tsx';
 import { EmptyState } from './empty-state.tsx';
-import { Icon } from './icons.tsx';
-import { BACK_LINK_ACTIVE } from './page-header.tsx';
+import { PageHeader } from './page-header.tsx';
 
 /**
  * The pages for what is not there (UX-1e, #317; design system 4.11, G-21, N-07), one pattern:
@@ -23,36 +21,27 @@ export interface BackLink {
   readonly label: string;
 }
 
-function BackTo({ back }: { readonly back: BackLink }) {
-  return (
-    <Link
-      to={back.to}
-      activeOptions={BACK_LINK_ACTIVE}
-      className="inline-flex min-h-6 items-center gap-1 text-sm text-link underline-offset-4 hover:underline"
-    >
-      <Icon name="chevron-left" size={16} />
-      {back.label}
-    </Link>
-  );
-}
-
 function MissingPage({
   back,
   heading,
+  documentTitle,
   children,
 }: {
   readonly back: BackLink;
   readonly heading: ReactNode;
+  readonly documentTitle: string;
   readonly children: ReactNode;
 }) {
-  const ref = useHeadingFocus<HTMLHeadingElement>();
+  // The same header as every other page (3.3): "‹ <parent>", the `h1` focused after a navigation.
+  // A `section`, as before: a unit test finds the page by `closest('section')`.
   return (
-    <section className="flex flex-col gap-1">
-      <BackTo back={back} />
-      <h1 ref={ref} tabIndex={-1} className="text-xl font-semibold text-ink">
-        {heading}
-      </h1>
-      <div className="mt-6 rounded-lg border border-line bg-surface">{children}</div>
+    <section>
+      <PageHeader
+        title={heading}
+        documentTitle={documentTitle}
+        back={{ label: back.label, link: { to: back.to } }}
+      />
+      <div className="rounded-lg border border-line bg-surface">{children}</div>
     </section>
   );
 }
@@ -73,6 +62,7 @@ export function NotFound({ kind, id, back, detail, testId }: NotFoundProps) {
   return (
     <MissingPage
       back={back}
+      documentTitle={`${capitalised(kind)} ${id}`}
       heading={
         <>
           {capitalised(kind)} <Code>{id}</Code>
@@ -99,7 +89,7 @@ export function PageNotFound() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const back: BackLink = { to: '/', label: 'Plant overview' };
   return (
-    <MissingPage back={back} heading="Page not found">
+    <MissingPage back={back} heading="Page not found" documentTitle="Page not found">
       <EmptyState
         size="page"
         icon="search"

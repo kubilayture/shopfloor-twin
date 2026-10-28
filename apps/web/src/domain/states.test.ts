@@ -149,3 +149,20 @@ describe('abnormalTone and worstTone (UX-7)', () => {
     expect(worstTone([])).toBeUndefined();
   });
 });
+
+describe('timeline bands (#339)', () => {
+  it('keeps the near-equal normal fills apart by their edges', () => {
+    // Running solid in its dark edge, Planned stop a double edge (its glyph ‖), Off a light one.
+    expect(stateStyle('Running').band).toContain('border-state-running-border');
+    expect(stateStyle('Running').band).not.toContain('border-double');
+    expect(stateStyle('PlannedStop').band).toContain('border-double');
+    expect(stateStyle('Off').band).not.toContain('border-double');
+    const edges = ['Running', 'PlannedStop', 'Off', 'Idle', 'Setup'].map((state) =>
+      stateStyle(state)
+        .band.split(' ')
+        .filter((c) => c.startsWith('border-') && c !== 'border-y-4')
+        .join(' '),
+    );
+    expect(new Set(edges).size).toBe(edges.length);
+  });
+});

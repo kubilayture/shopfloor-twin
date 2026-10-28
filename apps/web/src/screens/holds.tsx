@@ -47,7 +47,7 @@ import { EmptyState } from '../components/ui/empty-state.tsx';
 import { Missing } from '../components/ui/format.tsx';
 import { Icon } from '../components/ui/icons.tsx';
 import { Forbidden, NotFound } from '../components/ui/not-found.tsx';
-import { PageHeader } from '../components/ui/page-header.tsx';
+import { BackLink, PageHeader } from '../components/ui/page-header.tsx';
 import { Section } from '../components/ui/section.tsx';
 import { SectionNav, type SectionNavItem } from '../components/ui/section-nav.tsx';
 import { Skeleton } from '../components/ui/skeleton.tsx';
@@ -1573,11 +1573,7 @@ function HoldDetail({ id }: { readonly id: string }) {
     // No `h1` until the hold is read: the heading takes the focus when it mounts.
     return (
       <div className="flex flex-col gap-6" data-testid="hold-detail" data-hold={id}>
-        <p className="text-sm">
-          <Link {...BACK.link} className="text-link underline-offset-4 hover:underline">
-            ‹ {BACK.label}
-          </Link>
-        </p>
+        <BackLink back={BACK} />
         <Skeleton shape="card" label="Loading the hold…" />
       </div>
     );
@@ -1639,7 +1635,7 @@ function HoldDetail({ id }: { readonly id: string }) {
         meta={<HoldFacts hold={hold} />}
       />
       {!canHold && !canRelease ? (
-        <Callout tone="info" data-testid="hold-read-only" className="mb-4">
+        <Callout tone="neutral" data-testid="hold-read-only" className="mb-4">
           Your role cannot change holds: shown read-only.
         </Callout>
       ) : null}

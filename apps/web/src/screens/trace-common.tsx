@@ -21,7 +21,7 @@ import { DataTable } from '../components/ui/data-table.tsx';
 import { EmptyState } from '../components/ui/empty-state.tsx';
 import { Missing } from '../components/ui/format.tsx';
 import { NotFound } from '../components/ui/not-found.tsx';
-import { PageHeader, type PageHeaderBack } from '../components/ui/page-header.tsx';
+import { BackLink, PageHeader, type PageHeaderBack } from '../components/ui/page-header.tsx';
 import { Section } from '../components/ui/section.tsx';
 import { Skeleton } from '../components/ui/skeleton.tsx';
 import {
@@ -105,16 +105,7 @@ export function idTitle(kind: string, id: string): ReactNode {
 export function TraceLoading({ label }: { readonly label: string }) {
   return (
     <div className="flex flex-col gap-6">
-      <p className="text-sm">
-        <Link
-          to="/trace"
-          search={{}}
-          className="text-link underline-offset-4 hover:underline"
-          data-testid="trace-back"
-        >
-          ‹ {TRACE_BACK.label}
-        </Link>
-      </p>
+      <BackLink back={TRACE_BACK} testId="trace-back" />
       <Skeleton shape="table" label={label} />
     </div>
   );

@@ -64,7 +64,7 @@ export function TrendChart({
           className="flex items-center justify-center"
           style={{ minHeight: CHART_SIZES.compact }}
         >
-          <EmptyState title="No samples in this range." body={empty} icon="clock" />
+          <EmptyState title="No samples in this range" body={empty} icon="clock" />
         </div>
       ) : (
         <div

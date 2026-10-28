@@ -427,7 +427,7 @@ describe('a hold’s detail', () => {
     const state = qualityState({ details: { [HOLD_ID]: holdDetail() } });
     vi.stubGlobal('fetch', qualityMes(state).fetch);
     const app = await renderApp(`/quality/holds/${HOLD_ID}`, { session: sessionOf(['operator']) });
-    expect(await screen.findByTestId('hold-read-only')).toBeTruthy();
+    expect((await screen.findByTestId('hold-read-only')).className).toContain('bg-neutral-soft');
     await settle(() => {
       app.history.push(`/quality/holds/${HOLD_ID_2}`);
     });
@@ -654,7 +654,7 @@ describe('the holds screens on the design system (UX-9b, #333)', () => {
     const missing = await screen.findByTestId('hold-missing');
     expect(missing.textContent).toContain('The MES has no hold with this id.');
     expect(screen.getByRole('heading', { level: 1, name: `Hold ${HOLD_ID_2}` })).toBeTruthy();
-    expect(screen.getByRole('link', { name: 'All holds' }).getAttribute('href')).toBe(
+    expect(screen.getByRole('link', { name: '‹ All holds' }).getAttribute('href')).toBe(
       '/quality/holds',
     );
     await settle(() => {

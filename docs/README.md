@@ -53,11 +53,12 @@ Every document of the repository, what it is for, when it changes and whether a 
 
 ## User interface
 
-| Document                                     | Purpose                                                                                                                                                  | Updated when                                                           | Checked by |
-| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | ---------- |
-| [`ux/audit.md`](ux/audit.md)                 | The web app's UX audit at v1.0.0 (UX-0): every defect per screen with severity, category and screenshot                                                  | A record of its time; the plan's issues mark the ids they close        | –          |
-| [`ux/design-system.md`](ux/design-system.md) | Tokens (colour, type, spacing, radius, elevation, z-index, motion), the shell and navigation, components, chart theme, content and a11y rules, dark mode | A visual or interaction rule changes (before the code that follows it) | –          |
-| [`ux/ux-plan.md`](ux/ux-plan.md)             | The UX overhaul's issues (UX-B1 … UX-F3): scope, acceptance, tests to keep green, gate, dependencies                                                     | An issue is added, split or re-scoped                                  | –          |
+| Document                                               | Purpose                                                                                                                                                  | Updated when                                                           | Checked by |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | ---------- |
+| [`ux/audit.md`](ux/audit.md)                           | The web app's UX audit at v1.0.0 (UX-0): every defect per screen with severity, category and screenshot                                                  | A record of its time; the plan's issues mark the ids they close        | –          |
+| [`ux/design-system.md`](ux/design-system.md)           | Tokens (colour, type, spacing, radius, elevation, z-index, motion), the shell and navigation, components, chart theme, content and a11y rules, dark mode | A visual or interaction rule changes (before the code that follows it) | –          |
+| [`ux/consistency-review.md`](ux/consistency-review.md) | The overhaul's last review (UX-F3): every screen in both themes at three widths, compared side by side; what was found and fixed or decided              | A later review records its own                                         | –          |
+| [`ux/ux-plan.md`](ux/ux-plan.md)                       | The UX overhaul's issues (UX-B1 … UX-F3): scope, acceptance, tests to keep green, gate, dependencies                                                     | An issue is added, split or re-scoped                                  | –          |
 
 ## Phases and learning
 

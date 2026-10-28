@@ -89,7 +89,7 @@ describe('TrendChart (UX-1f)', () => {
 
   it('shows an empty state at the compact height without samples', () => {
     render(<TrendChart label="Spindle load" unit="%" window={WINDOW} data={[[], [], [], []]} />);
-    const empty = screen.getByText('No samples in this range.');
+    const empty = screen.getByText('No samples in this range');
     expect(empty.closest('[data-empty]')?.parentElement?.style.minHeight).toBe('240px');
     expect(screen.queryByRole('img')).toBeNull();
   });

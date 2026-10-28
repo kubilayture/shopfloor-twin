@@ -2,8 +2,9 @@
  * Lists the raw colours still in the web app (UX-1a, #314; `docs/ux/design-system.md` section 8):
  * per file under `apps/web/src`, the Tailwind palette classes (`bg-slate-50`, `hover:text-white`,
  * `border-red-700/40`) and the hex colours (`#b91c1c`). A screen on the design tokens has none:
- * it says `bg-surface`, `text-ink`, `border-alarm-border`. Report only: it always exits 0, so the
- * screens can move to the tokens one issue at a time; UX-F3 makes it a failing check.
+ * it says `bg-surface`, `text-ink`, `border-alarm-border`. A failing check in `pnpm verify` since
+ * UX-F3 (#339): every screen is on the tokens, so any raw colour exits 1 with the files that hold
+ * it (it was a report while the screens moved one issue at a time).
  *
  * Skipped: the token files themselves (`src/index.css` and `src/components/ui/tokens.ts`, where
  * the raw values belong) and tests (`*.test.ts(x)`, `src/test/`), whose fixtures may name colours.
@@ -151,7 +152,7 @@ export function formatReport(reports: readonly FileReport[]): string {
   const row = (a: number | string, b: number | string, file: string) =>
     `${String(a).padStart(7)} ${String(b).padStart(5)}  ${file}`;
   return [
-    'check-ui-tokens: raw colours in apps/web/src (report only; design system section 8)',
+    'check-ui-tokens: raw colours in apps/web/src (none allowed; design system section 8)',
     row('classes', 'hex', 'file'),
     ...reports.map((report) => row(report.classes.length, report.hexes.length, report.file)),
     row(classes, hexes, `total in ${String(reports.length)} files`),
@@ -160,5 +161,15 @@ export function formatReport(reports: readonly FileReport[]): string {
 
 if (import.meta.main) {
   const root = resolve(process.argv[2] ?? join(import.meta.dirname, '..'));
-  console.log(formatReport(scan(root)));
+  const reports = scan(root);
+  if (reports.length === 0) {
+    console.log('check-ui-tokens: no raw colour in apps/web/src');
+  } else {
+    console.error(formatReport(reports));
+    console.error(
+      'check-ui-tokens: use the semantic tokens (bg-surface, text-ink, border-alarm-border …) ' +
+        'instead; raw values belong in src/index.css and src/components/ui/tokens.ts only',
+    );
+    process.exitCode = 1;
+  }
 }

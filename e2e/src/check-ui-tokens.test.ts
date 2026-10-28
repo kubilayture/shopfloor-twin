@@ -80,7 +80,7 @@ describe('scan and formatReport', () => {
       { file: 'src/screens/b.tsx', classes: ['bg-red-700'], hexes: [] },
     ]);
     expect(formatReport(reports).split('\n')).toEqual([
-      'check-ui-tokens: raw colours in apps/web/src (report only; design system section 8)',
+      'check-ui-tokens: raw colours in apps/web/src (none allowed; design system section 8)',
       'classes   hex  file',
       '      2     1  src/screens/a.tsx',
       '      0     1  src/chart/c.ts',
@@ -89,20 +89,20 @@ describe('scan and formatReport', () => {
     ]);
   });
 
-  it('runs as a report that always exits 0, on the repository and on a tree full of raw colours', () => {
+  it('passes on the repository, which has no raw colour left, and fails on one (UX-F3, #339)', () => {
     const repo = spawnSync(process.execPath, [join(REPO, 'scripts/check-ui-tokens.ts'), REPO], {
       encoding: 'utf8',
     });
     expect(repo.status, repo.stderr).toBe(0);
-    expect(repo.stdout).toMatch(/^check-ui-tokens: raw colours in apps\/web\/src/);
-    expect(repo.stdout).toMatch(/\d+ +\d+ {2}total in \d+ files\n$/);
-    expect(repo.stdout).not.toContain('src/index.css');
+    expect(repo.stdout).toBe('check-ui-tokens: no raw colour in apps/web/src\n');
 
     const root = webTree({ 'src/a.tsx': `"bg-slate-50 '#000000'"` });
     const raw = spawnSync(process.execPath, [join(REPO, 'scripts/check-ui-tokens.ts'), root], {
       encoding: 'utf8',
     });
-    expect(raw.status, raw.stderr).toBe(0);
-    expect(raw.stdout).toContain('      1     1  src/a.tsx');
+    expect(raw.status).toBe(1);
+    expect(raw.stderr).toContain('      1     1  src/a.tsx');
+    expect(raw.stderr).toContain('use the semantic tokens');
+    expect(raw.stdout).toBe('');
   });
 });

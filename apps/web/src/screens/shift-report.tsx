@@ -49,7 +49,7 @@ import { EmptyState } from '../components/ui/empty-state.tsx';
 import { Missing, Percent, PlantTime, Ratio, WallTime } from '../components/ui/format.tsx';
 import { Icon } from '../components/ui/icons.tsx';
 import { NotFound } from '../components/ui/not-found.tsx';
-import { PageHeader } from '../components/ui/page-header.tsx';
+import { BackLink, PageHeader } from '../components/ui/page-header.tsx';
 import { Section } from '../components/ui/section.tsx';
 import { SectionNav, type SectionNavItem } from '../components/ui/section-nav.tsx';
 import { Skeleton } from '../components/ui/skeleton.tsx';
@@ -398,11 +398,7 @@ function oeeColumns(
     header: title,
     numeric: true,
     cell: (row) => (
-      <Percent
-        ratio={row.bucket?.result[key]}
-        na={row.bucket ? NA_REASON[key] : NO_DATA}
-        className={key === 'oee' ? 'font-semibold' : undefined}
-      />
+      <Percent ratio={row.bucket?.result[key]} na={row.bucket ? NA_REASON[key] : NO_DATA} />
     ),
   });
   return [
@@ -1400,11 +1396,7 @@ export function ShiftReport() {
       {report.isPending ? (
         // No `h1` until the report is read: the heading takes the focus when it mounts.
         <div className="flex flex-col gap-6">
-          <p className="text-sm">
-            <Link {...BACK.link} className="text-link underline-offset-4 hover:underline">
-              ‹ {BACK.label}
-            </Link>
-          </p>
+          <BackLink back={BACK} />
           <Skeleton shape="card" label="Loading the report…" />
         </div>
       ) : null}

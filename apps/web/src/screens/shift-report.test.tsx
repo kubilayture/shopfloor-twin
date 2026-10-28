@@ -370,7 +370,7 @@ describe('shift report', () => {
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Shift 2026-10-15/A');
     const page = missing.closest('section');
     expect(
-      page && within(page).getByRole('link', { name: 'Shift reports' }).getAttribute('href'),
+      page && within(page).getByRole('link', { name: '‹ Shift reports' }).getAttribute('href'),
     ).toBe('/shifts');
     view.unmount();
 

@@ -407,7 +407,7 @@ function LoginCard({
         </div>
         <div className="flex flex-col gap-4 p-6">
           {heading === undefined ? null : (
-            <h1 ref={headingRef} tabIndex={-1} className="text-xl font-bold">
+            <h1 ref={headingRef} tabIndex={-1} className="text-xl font-semibold">
               {heading}
             </h1>
           )}

@@ -6,7 +6,7 @@ import { flushOverlayEvents } from '../../test/overlay.ts';
 import { QueryError } from '../query-error.tsx';
 import { Disclosure } from './disclosure.tsx';
 import { EmptyState } from './empty-state.tsx';
-import { ErrorState, isNetworkError, isRetryable } from './error-state.tsx';
+import { ErrorState, errorDetail, isNetworkError, isRetryable } from './error-state.tsx';
 import { SectionNav } from './section-nav.tsx';
 import { SKELETON_DELAY_MS, Skeleton } from './skeleton.tsx';
 import { InfoTip, TOOLTIP_DELAY_MS, Tooltip } from './tooltip.tsx';
@@ -197,6 +197,25 @@ describe('ErrorState', () => {
     );
     expect(screen.getByRole('alert').textContent).toContain('Could not load the run.');
     expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+  });
+});
+
+describe('errorDetail (#339)', () => {
+  it("says a bare status in words, never as an HTTP code, and keeps the MES's own detail", () => {
+    expect(errorDetail(new ApiError('HTTP 502', 502))).toBe('The MES cannot be reached.');
+    expect(errorDetail(new ApiError('HTTP 503', 503))).toBe(
+      'The MES is not available at the moment.',
+    );
+    expect(errorDetail(new ApiError('HTTP 504', 504))).toBe('The MES did not answer in time.');
+    expect(errorDetail(new ApiError('HTTP 418', 418))).toBe(
+      'The MES answered without saying why (status 418).',
+    );
+    expect(errorDetail(new ApiError('Service Unavailable: shifts are not available', 503))).toBe(
+      'Service Unavailable: shifts are not available',
+    );
+    expect(errorDetail('nope')).toBe('Unknown error');
+    render(<ErrorState what="the orders" error={new ApiError('HTTP 500', 500)} />);
+    expect(screen.getByRole('alert').textContent).not.toContain('HTTP');
   });
 });
 

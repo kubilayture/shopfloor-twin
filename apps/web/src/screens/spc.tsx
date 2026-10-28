@@ -28,6 +28,7 @@ import { QueryError } from '../components/query-error.tsx';
 import {
   CommentInput,
   FailureMessage,
+  SIGNAL_LOOK,
   SignalStatusBadge,
   plantBeside,
   timeOf,
@@ -46,11 +47,7 @@ import { EmptyState } from '../components/ui/empty-state.tsx';
 import { Missing } from '../components/ui/format.tsx';
 import { Icon } from '../components/ui/icons.tsx';
 import { NotFound } from '../components/ui/not-found.tsx';
-import {
-  BACK_LINK_ACTIVE,
-  PageHeader,
-  type PageHeaderBack,
-} from '../components/ui/page-header.tsx';
+import { BackLink, PageHeader, type PageHeaderBack } from '../components/ui/page-header.tsx';
 import { PlantTimeInput, readPlantTime } from '../components/ui/plant-time-input.tsx';
 import { Section } from '../components/ui/section.tsx';
 import { SectionNav, type SectionNavItem } from '../components/ui/section-nav.tsx';
@@ -503,7 +500,8 @@ function pointColumns(
         </>
       ),
       numeric: true,
-      cell: (p) => <span className="font-mono">{spcValueText(p.value, precision, places)}</span>,
+      // Numbers in the sans font, tabular (2.7, G-15): monospace is for identifiers only.
+      cell: (p) => <span className="tabular-nums">{spcValueText(p.value, precision, places)}</span>,
     },
     {
       key: 'rules',
@@ -999,7 +997,8 @@ function Signals({
           'data-row-version': String(s.rowVersion),
         })}
         // Not yet acknowledged is what needs a person: the bar, as the list's count badge.
-        rowTone={(s) => (canAcknowledgeSignal(s) ? 'warn' : undefined)}
+        // The bar in the episode's own tone, as its badge (2.6): provisional `warn`, final `alarm`.
+        rowTone={(s) => (canAcknowledgeSignal(s) ? SIGNAL_LOOK[s.status].tone : undefined)}
         {...(hasActions ? { actions: rowActions } : {})}
         narrow="stack"
         skipToDetails={hasActions && shown.length > 0 ? 'spc-limits-title' : undefined}
@@ -1261,7 +1260,7 @@ function LimitsForm({
 /** One column per value (C-07): the I and X̄ limits as lower, centre, upper; MR and R upper. */
 function limitColumns(precision: SpcPrecision): readonly Column<LimitVersionDto>[] {
   const stat = (v: LimitVersionDto['charts']['I']['centre']) => (
-    <span className="font-mono">{spcValueText(v, precision, precision.statistic)}</span>
+    <span className="tabular-nums">{spcValueText(v, precision, precision.statistic)}</span>
   );
   const value = (
     key: string,
@@ -1522,15 +1521,7 @@ function SpcChartScreen({ id, search }: { readonly id: string; readonly search: 
     // No `h1` until the chart is read: the heading takes the focus when it mounts.
     return (
       <div className="flex flex-col gap-6" data-testid="spc-chart-page" data-characteristic={id}>
-        <p className="text-sm">
-          <Link
-            {...BACK.link}
-            activeOptions={BACK_LINK_ACTIVE}
-            className="text-link underline-offset-4 hover:underline"
-          >
-            ‹ {BACK.label}
-          </Link>
-        </p>
+        <BackLink back={BACK} />
         <Skeleton shape="chart" label="Loading the charts…" />
       </div>
     );

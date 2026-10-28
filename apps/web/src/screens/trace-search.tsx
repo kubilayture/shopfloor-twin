@@ -214,7 +214,7 @@ function Results({ q }: { readonly q: string }) {
         ]}
       />
       {cut.length > 0 ? (
-        <Callout tone="info" className="mt-3">
+        <Callout tone="neutral" className="mt-3">
           {cut.map((kind) => (
             <p key={kind} data-testid={`trace-more-${kind}`}>
               Only the first {GENEALOGY_LIMITS.search} {KIND_TEXT[kind].many} are shown: type more

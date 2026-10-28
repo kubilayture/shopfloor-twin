@@ -354,7 +354,7 @@ function TerminalHeader({
             {clock ? (
               <>
                 Plant time{' '}
-                <time dateTime={clock.watermark} className="font-semibold">
+                <time dateTime={clock.watermark} className="font-semibold tabular-nums">
                   {formatPlantTime(clock.watermark)}
                 </time>
               </>

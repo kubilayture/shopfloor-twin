@@ -240,7 +240,7 @@ function Relogin({ lost }: { readonly lost: LostSession }) {
       className="fixed inset-0 z-lock flex items-start justify-center overflow-y-auto bg-backdrop px-4 py-16"
     >
       <div className="w-full max-w-md rounded-lg border border-line bg-surface p-6 text-ink shadow-elevation-3">
-        <h1 id={titleId} className="text-xl font-bold">
+        <h1 id={titleId} className="text-xl font-semibold">
           {lost.reason === 'idle' ? 'Logged out after a while without use' : 'Your session ended'}
         </h1>
         <p className="mt-2 text-sm text-ink-secondary">

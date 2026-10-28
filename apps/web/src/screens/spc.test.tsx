@@ -87,6 +87,13 @@ describe('SPC chart page', () => {
     const row1 = screen.getByTestId('signal-row-1');
     expect(row1.dataset.extentFinal).toBe('true');
     expect(within(row1).getByTestId('signal-finality').textContent).toBe('Final, extent final');
+    // An unacknowledged episode's bar is in its badge's tone (#339): final alarm, provisional warn.
+    const bar = (row: HTMLElement) => row.firstElementChild?.className ?? '';
+    expect(bar(row1)).toContain('var(--color-alarm-border)');
+    expect(bar(row2)).toContain('var(--color-warn-border)');
+    // Values in the sans font, tabular (G-15): no monospace number in the table.
+    expect(screen.getByTestId('spc-values-I').querySelector('.font-mono')).toBeNull();
+    expect(screen.getByTestId('spc-values-I').querySelector('.tabular-nums')).not.toBeNull();
     expect(screen.getByTestId('limit-version-1').dataset.createdBy).toBe('system');
     // A pushed episode grows, another opens, a provisional one is removed.
     await app.push({

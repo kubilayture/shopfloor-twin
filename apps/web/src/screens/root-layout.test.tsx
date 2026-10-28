@@ -201,6 +201,8 @@ describe('the top bar (G-01, G-04)', () => {
     expect(time?.textContent).toBe(formatPlantTime(PLANT.clock.watermark));
     expect(time?.getAttribute('title')).toBe(time?.textContent);
     expect(time?.querySelector('span')?.className).toBe('hidden sm:inline');
+    // Its digits are the app's one number face: sans, tabular, not monospace (2.7, G-15).
+    expect(time?.className.split(' ')).toEqual(['font-semibold', 'tabular-nums']);
     // The prefix is for screen readers only below `lg`.
     expect(clock.querySelector('span')?.className).toMatch(/^sr-only .*lg:not-sr-only/);
   });

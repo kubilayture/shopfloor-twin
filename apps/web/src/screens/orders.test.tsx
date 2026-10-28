@@ -717,6 +717,8 @@ describe('orders on the design system (UX-6a, #328)', () => {
     await renderApp('/orders/PO-1001', { session: sessionOf(['operator']) });
     const note = await screen.findByTestId('order-read-only');
     expect(note.textContent).toBe('Your role cannot change orders: they are shown read-only.');
+    // A neutral line, as every read-only note (design system 4.13, #339): not a state colour.
+    expect(note.className).toContain('bg-neutral-soft');
     expect(screen.queryAllByRole('button', { name: /Release|Cancel order|Dispatch/ })).toEqual([]);
   });
 
@@ -780,7 +782,7 @@ describe('orders on the design system (UX-6a, #328)', () => {
     await renderApp('/orders/PO-404');
     expect(await screen.findByRole('heading', { level: 1, name: 'Order PO-404' })).toBeTruthy();
     expect(screen.getByRole('heading', { level: 2, name: 'No order PO-404' })).toBeTruthy();
-    expect(screen.getByRole('link', { name: 'All orders' }).getAttribute('href')).toBe('/orders');
+    expect(screen.getByRole('link', { name: '‹ All orders' }).getAttribute('href')).toBe('/orders');
     expect(screen.queryByRole('alert')).toBeNull();
   });
 

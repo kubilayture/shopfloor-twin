@@ -14,7 +14,7 @@ const CURRENT_SHIFT_REFRESH_MS = 15_000;
 const shiftDay = new Intl.DateTimeFormat('en-GB', {
   timeZone: 'UTC',
   weekday: 'short',
-  day: 'numeric',
+  day: '2-digit',
   month: 'short',
 });
 

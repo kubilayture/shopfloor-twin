@@ -185,11 +185,7 @@ function PlantClock() {
         {site ? `${site.name} plant time` : 'Plant time'}:{' '}
       </span>
       {clock ? (
-        <time
-          dateTime={clock.watermark}
-          title={full}
-          className="font-mono font-semibold tabular-nums"
-        >
+        <time dateTime={clock.watermark} title={full} className="font-semibold tabular-nums">
           {cut > 0 ? (
             <>
               <span className="hidden sm:inline">{full.slice(0, cut + 2)}</span>

@@ -302,6 +302,14 @@ function bucketColumns(
             </span>
             {row.bucket ? null : <span className="text-xs text-ink-secondary">{QUIET}</span>}
           </span>
+        ) : row.key.startsWith('no-shift') ? (
+          // A stretch outside every shift (a weekend): its span, not the MES's raw key (#339).
+          <span className="flex flex-col">
+            <span>No shift</span>
+            <span className="text-xs text-ink-secondary">
+              <ShiftSpan start={row.from} end={row.to} />
+            </span>
+          </span>
         ) : (
           shiftKeyLabel(row.key)
         ),
@@ -490,10 +498,10 @@ function BucketTable({
             !loaded
               ? undefined
               : rows.length === 0
-                ? 'No hour of this shift has begun yet.'
+                ? 'No hour of this shift has begun yet'
                 : live
-                  ? 'No alarm raised in this shift so far.'
-                  : 'No alarm raised in this shift.'
+                  ? 'No alarm raised in this shift so far'
+                  : 'No alarm raised in this shift'
           }
         >
           {option ? <HourLegend /> : null}

@@ -16,6 +16,7 @@ registerModules([...ECHARTS_MODULES, SVGRenderer]);
 let chart: EChartsType | undefined;
 let host: HTMLDivElement | undefined;
 afterEach(() => {
+  vi.useRealTimers();
   chart?.dispose();
   chart = undefined;
   host?.remove();
@@ -23,6 +24,8 @@ afterEach(() => {
 });
 
 function draw(): EChartsType {
+  // ECharts' own timers (the tooltip's `_keepShow`, its `hideDelay`) run when `settle` says (#386).
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
   host = document.createElement('div');
   document.body.append(host);
   chart = init(host, null, { renderer: 'svg', width: 400, height: 300 });
@@ -66,13 +69,21 @@ interface HourlyCase {
 /** What the chart draws, tooltip included, as text. */
 const drawn = () => host?.textContent ?? '';
 
-/** The tooltip comes back a task after an update (ECharts' `_keepShow`). */
-const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+/**
+ * Runs ECharts' pending timers, then draws what they changed. The tooltip comes back a task after
+ * an update (`_keepShow`, a 0 ms timeout) and is hidden after `hideDelay`; zrender draws it on its
+ * next animation frame, which jsdom runs every 16.7 ms on a real interval. A fixed sleep raced that
+ * frame and lost under load (#386): ECharts' timers are fake here and the frame is drawn now.
+ */
+function settle(instance: EChartsType) {
+  vi.runAllTimers();
+  instance.getZr().flush();
+}
 
-async function hoverCurrentHour(instance: EChartsType) {
+function hoverCurrentHour(instance: EChartsType) {
   // The pointer over the current hour's bar (the third category of three).
   instance.dispatchAction({ type: 'showTip', x: 330, y: 150 });
-  await settle();
+  settle(instance);
   expect(drawn()).toContain('Good');
   expect(drawn()).toContain('3.25');
 }
@@ -107,12 +118,12 @@ describe('EChartsView updates (#356)', () => {
     expect(categoryCount({ series: [] })).toBe(0);
   });
 
-  it('keeps the hover tooltip across a live update, with the new value', async () => {
+  it('keeps the hover tooltip across a live update, with the new value', () => {
     const instance = draw();
     const applied = applyOption(instance, hourly(3.25), undefined);
-    await hoverCurrentHour(instance);
+    hoverCurrentHour(instance);
     applyOption(instance, hourly(4.75), applied);
-    await settle();
+    settle(instance);
     expect(drawn()).toContain('4.75');
     expect(drawn()).not.toContain('3.25');
     expect(drawn()).toContain('Good');
@@ -144,13 +155,13 @@ describe('EChartsView updates (#356)', () => {
     );
   });
 
-  it('hides the tooltip when the categories shrink, rather than show it with dashes', async () => {
+  it('hides the tooltip when the categories shrink, rather than show it with dashes', () => {
     const instance = draw();
     const applied = applyOption(instance, hourly(3.25), undefined);
-    await hoverCurrentHour(instance);
+    hoverCurrentHour(instance);
     applyOption(instance, hourly(4.75, { hours: 1 }), applied);
     // ECharts hides a tooltip after its `hideDelay` (100 ms).
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    settle(instance);
     expect(drawn()).not.toContain('Good');
     expect(drawn()).not.toContain('Scrap');
     expect((instance.getOption() as { xAxis: { data: string[] }[] }).xAxis[0]?.data).toEqual([
@@ -158,13 +169,13 @@ describe('EChartsView updates (#356)', () => {
     ]);
   });
 
-  it('clears a series left out, and its tooltip, without failing', async () => {
+  it('clears a series left out, and its tooltip, without failing', () => {
     const instance = draw();
     const applied = applyOption(instance, hourly(3.25), undefined);
-    await hoverCurrentHour(instance);
+    hoverCurrentHour(instance);
     expect(drawn()).toContain('Scrap');
     applyOption(instance, hourly(4.75, { second: false }), applied);
-    await settle();
+    settle(instance);
     const option = instance.getOption() as { series: { name: string }[] };
     expect(option.series.map((series) => series.name)).toEqual(['Good']);
     expect(drawn()).not.toContain('Scrap');

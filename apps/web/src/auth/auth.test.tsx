@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { liveKeys, type LiveAlarms } from '../live/live-cache.ts';
 import { occurrence } from '../test/alarm-fixtures.ts';
@@ -7,6 +7,7 @@ import { sessionOf } from '../test/fixtures.ts';
 import { renderApp, settle } from '../test/render-app.tsx';
 import { RESTART_AFTER_4403_MS, forgetLegacyStorage, sessionKey } from './auth.tsx';
 import { ACTIVITY_STORAGE_KEY, KEEPALIVE_MS } from './idle.ts';
+import { Restarts } from './restarts.ts';
 
 // The review of PR #186 (#170): re-login over a kept draft, another user after a lost session,
 // the idle timeout's keepalive and warning, and the legacy storage keys.
@@ -39,6 +40,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -245,8 +247,14 @@ describe('a 4403 close (#341 review, UX-7 review M2)', () => {
     expect(screen.getByTestId('connection-status').dataset.status).toBe('open');
   });
 
-  it('starts it again at most once per 30 s, so repeated 4403 closes cannot loop', async () => {
-    const mes = fakeMes({ signedIn: true, roles: ['supervisor'] });
+  /**
+   * The app with a supervisor's session, its live client open and a first 4403 restart done, under
+   * fake timers that also follow real time (Testing Library's waits): `later` moves the clock.
+   */
+  async function restartedOnce(options: Parameters<typeof fakeMes>[0] = {}) {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'], shouldAdvanceTime: true });
+    const refused = vi.spyOn(Restarts.prototype, 'refused');
+    const mes = fakeMes({ signedIn: true, roles: ['supervisor'], ...options });
     vi.stubGlobal('fetch', mes.fetch);
     const app = await renderApp('/', { session: 'fetch' });
     await app.open();
@@ -255,24 +263,127 @@ describe('a 4403 close (#341 review, UX-7 review M2)', () => {
       expect(app.factory.sockets).toHaveLength(2);
     });
     await app.open();
-    // Refused again at once: the session is read again, the client is not started again.
-    const reads = sessionReads(mes.calls);
-    await app.drop(4403);
-    await waitFor(() => {
-      expect(sessionReads(mes.calls)).toBeGreaterThan(reads);
-    });
-    await settle(() => undefined);
+    const restarts = refused.mock.contexts[0] as Restarts;
+    const later = (ms: number) =>
+      act(async () => {
+        await vi.advanceTimersByTimeAsync(ms);
+      });
+    /** A second 4403 1 s after the first: put off, the session read again. */
+    const refusedAgain = async () => {
+      await later(1_000);
+      const reads = sessionReads(mes.calls);
+      await app.drop(4403);
+      await waitFor(() => {
+        expect(sessionReads(mes.calls)).toBeGreaterThan(reads);
+      });
+      await settle(() => undefined);
+      expect(app.factory.sockets).toHaveLength(2);
+      expect(app.live.status).toBe('stopped');
+      expect(restarts.pending).toBe(true);
+    };
+    return { app, mes, restarts, later, refusedAgain };
+  }
+
+  it('puts a second 4403 within 30 s off to the end of the 30 s, then starts it once (#387)', async () => {
+    const { app, later, refusedAgain } = await restartedOnce();
+    await refusedAgain();
+    // Not before the 30 s are up (5 s spare for the real time the test takes)...
+    await later(RESTART_AFTER_4403_MS - 1_000 - 5_000);
     expect(app.factory.sockets).toHaveLength(2);
-    expect(app.live.status).toBe('stopped');
-    // After the interval, a 4403 starts it again.
-    const now = Date.now();
-    vi.spyOn(Date, 'now').mockReturnValue(now + RESTART_AFTER_4403_MS);
+    // ...then once, and the client connects again.
+    await later(10_000);
+    expect(app.factory.sockets).toHaveLength(3);
+    await app.open();
+    expect(screen.getByTestId('connection-status').dataset.status).toBe('open');
+    // The interval runs from that restart: a 4403 now is put off again, not started at once.
+    await app.drop(4403);
+    await settle(() => undefined);
+    expect(app.factory.sockets).toHaveLength(3);
+  });
+
+  it('starts at once again after 30 s, dropping the restart put off', async () => {
+    const { app, restarts, later, refusedAgain } = await restartedOnce();
+    await refusedAgain();
+    expect(app.factory.sockets).toHaveLength(2);
+    // A start meanwhile (here the live client's own, as after a reconnect) makes it moot: the
+    // next 4403 past the interval starts the client itself.
+    vi.setSystemTime(Date.now() + RESTART_AFTER_4403_MS);
     app.live.start();
     await app.open();
     await app.drop(4403);
     await waitFor(() => {
       expect(app.factory.sockets).toHaveLength(4);
     });
+    expect(restarts.pending).toBe(false);
+    await later(2 * RESTART_AFTER_4403_MS);
+    expect(app.factory.sockets).toHaveLength(4);
+  });
+
+  it('drops the restart put off on logout', async () => {
+    const { app, restarts, later, refusedAgain } = await restartedOnce();
+    await refusedAgain();
+    fireEvent.click(screen.getByTestId('logout'));
+    await waitFor(() => {
+      expect(app.history.location.pathname).toBe('/login');
+    });
+    expect(restarts.pending).toBe(false);
+    await later(2 * RESTART_AFTER_4403_MS);
+    expect(app.factory.sockets).toHaveLength(2);
+    expect(app.live.status).toBe('stopped');
+  });
+
+  it('drops the restart put off when the session ends or the app unmounts', async () => {
+    const lost = await restartedOnce();
+    await lost.refusedAgain();
+    // The MES ended the session: the next read of the page is refused (401).
+    lost.mes.end();
+    await settle(() => {
+      void lost.app.queryClient.invalidateQueries({
+        predicate: (query) => query.queryKey[0] !== sessionKey[0],
+      });
+    });
+    await waitFor(() => {
+      expect(lost.app.history.location.pathname).toBe('/login');
+    });
+    expect(screen.getByTestId('login-reason').dataset.reason).toBe('ended');
+    expect(lost.restarts.pending).toBe(false);
+    lost.app.unmount();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+
+    const unmounted = await restartedOnce();
+    await unmounted.refusedAgain();
+    unmounted.app.unmount();
+    expect(unmounted.restarts.pending).toBe(false);
+  });
+
+  it('drops the restart put off when a session read back changed starts the client now', async () => {
+    let roles: Parameters<typeof sessionOf>[0] = ['supervisor'];
+    const { app, mes, restarts, later } = await restartedOnce({ session: () => sessionOf(roles) });
+    await later(1_000);
+    // An admin changed the roles: the 4403's read of the session sees them, and the desk starts
+    // the client for the new session at once (its effect on the session).
+    roles = ['supervisor', 'quality'];
+    const reads = sessionReads(mes.calls);
+    await app.drop(4403);
+    await waitFor(() => {
+      expect(app.factory.sockets).toHaveLength(3);
+    });
+    expect(sessionReads(mes.calls)).toBeGreaterThan(reads);
+    expect(restarts.pending).toBe(false);
+  });
+
+  it('starts a restart put off only for a session that may read', async () => {
+    let mustChangePassword = false;
+    const { app, later, refusedAgain } = await restartedOnce({
+      session: () => sessionOf(['supervisor'], { mustChangePassword }),
+    });
+    // An admin set a temporary password meanwhile: the 4403's read of the session sees it.
+    mustChangePassword = true;
+    await refusedAgain();
+    await later(2 * RESTART_AFTER_4403_MS);
+    expect(app.factory.sockets).toHaveLength(2);
+    expect(app.live.status).toBe('stopped');
   });
 
   it('does not start it again when the session read back has ended', async () => {

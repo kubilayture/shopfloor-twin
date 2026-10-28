@@ -14,6 +14,7 @@ import {
 import { getSession, logout } from '../api/identity.ts';
 import { forgetCharts } from '../api/quality.ts';
 import { authEventsFor } from './events.ts';
+import { Restarts } from './restarts.ts';
 import { useLiveClient } from '../live/live-context.tsx';
 
 /** The session query: the caller's session, or null without one (ADR-0026, #170). */
@@ -157,24 +158,33 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
     if (session) lastUser.current = session.user.username;
   }, [session]);
 
-  /** When a 4403 close last started the live client again (`RESTART_AFTER_4403_MS`). */
-  const lastRestart = useRef(Number.NEGATIVE_INFINITY);
+  /** When 4403 closes start the live client again (`RESTART_AFTER_4403_MS`, #387). */
+  const [restarts] = useState(() => new Restarts(RESTART_AFTER_4403_MS));
+  useEffect(
+    () => () => {
+      restarts.cancel();
+    },
+    [restarts],
+  );
 
   const startLive = useCallback(() => {
+    // A start now (a login, a session read back changed, a 4403's restart) makes one put off moot.
+    restarts.cancel();
     const current = queryClient.getQueryData<SessionDto | null>(sessionKey);
     if (current && !current.user.mustChangePassword) live.start();
-  }, [queryClient, live]);
+  }, [queryClient, live, restarts]);
 
   const sessionLost = useCallback(
     (reason: LostReason) => {
       const current = queryClient.getQueryData<SessionDto | null>(sessionKey);
       if (!current) return;
+      restarts.cancel();
       live.stop();
       setLost({ username: current.user.username, held: current, reason, keepPage: drafts.any() });
       setEnded(reason);
       queryClient.setQueryData(sessionKey, null);
     },
-    [queryClient, live, drafts],
+    [queryClient, live, drafts, restarts],
   );
 
   const loggedIn = useCallback(
@@ -207,6 +217,7 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
     setLost(undefined);
     setEnded('logout');
     queryClient.setQueryData(sessionKey, null);
+    restarts.cancel();
     live.stop();
     setLoggingOut(true);
     try {
@@ -218,7 +229,7 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
     }
     // Only if nobody logged in meanwhile: their reads must stay.
     if (generation.current === mine) forgetData(queryClient);
-  }, [queryClient, live]);
+  }, [queryClient, live, restarts]);
 
   const refresh = useCallback(async () => {
     const next = await getSession();
@@ -242,11 +253,9 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
         // starts it again (`startLive` checks). Here, not in the screens' effects on the session:
         // a session read back unchanged keeps its reference, so those effects would not run
         // (#341 review, UX-7 review M2), and the desk and the terminal would stay "Offline".
-        // At most once per `RESTART_AFTER_4403_MS`: should the MES keep refusing a session that
-        // `/session` says may read, the client is not started again in a loop (UX-7 review).
-        const now = Date.now();
-        const again = now - lastRestart.current >= RESTART_AFTER_4403_MS;
-        if (again) lastRestart.current = now;
+        // At most once per `RESTART_AFTER_4403_MS` (`Restarts`): a 4403 inside it puts the
+        // restart off to its end, so the client is not started in a loop, nor left stopped.
+        const again = restarts.refused(startLive);
         void queryClient.invalidateQueries({ queryKey: sessionKey }).then(() => {
           if (again) startLive();
         });
@@ -256,7 +265,7 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
       stopEvents();
       stopLive();
     };
-  }, [queryClient, live, sessionLost, startLive]);
+  }, [queryClient, live, sessionLost, startLive, restarts]);
 
   const value = useMemo<Auth>(
     () => ({

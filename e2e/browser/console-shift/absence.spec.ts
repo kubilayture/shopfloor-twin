@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { account, logIn } from '../login.ts';
 import {
+  confirm,
   describeRecords,
   downtime,
   eventually,
@@ -50,6 +51,7 @@ test('both ASM-01 operators of shift B absent: ASM-01 Idle NO-OPERATOR from its 
   await page.getByTestId('absent-shift').selectOption(SHIFT.id);
   for (const op of OPERATORS) await page.getByTestId(`absent-${op}`).check();
   await page.getByTestId('absent-submit').click();
+  await confirm(page, 'confirm-absent', 'Mark absent');
   await outcome(
     page,
     'absent-outcome',

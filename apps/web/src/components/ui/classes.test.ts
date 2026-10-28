@@ -73,6 +73,9 @@ const FILES = [
   'screens/shift-list.tsx',
   'screens/shift-report.tsx',
   'screens/handover-notes.tsx',
+  // The simulation console and the users (UX-10, #334).
+  'screens/console.tsx',
+  'screens/users.tsx',
 ];
 
 /** Utility prefixes: a literal with one of these is a class list. */
@@ -208,6 +211,8 @@ for (const word of ['report-section', 'break']) NOT_CLASSES.add(word);
 
 /** UX-4b (#325): the alarm KPIs' `data-measure` name, which starts like a `max-*` class. */
 NOT_CLASSES.add('max-time-to-ack');
+/** UX-10 (#334): the console's repair time unit, `unit="min"`. */
+NOT_CLASSES.add('min');
 
 const CLASSES = [...new Set([...FILES.flatMap(harvest), ...PASSED_IN])]
   .filter((c) => !NOT_CLASSES.has(c))

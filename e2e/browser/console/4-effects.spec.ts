@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { account, logIn } from '../login.ts';
 import {
   alarmsRaised,
+  confirm,
   describeRecords,
   downtime,
   eventually,
@@ -88,6 +89,7 @@ test('a blocked OP10 lot starves OP10 with MATERIAL:, an injected failure raises
   await page.getByTestId('failure-at').fill('');
   await page.getByTestId('failure-repair').fill(String(FAILURE.repairMinutes));
   await page.getByTestId('failure-inject').click();
+  await confirm(page, 'confirm-failure', 'Inject failure');
   await outcome(
     page,
     'failure-outcome',

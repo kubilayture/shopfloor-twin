@@ -134,7 +134,13 @@ function focusedNow():
   const y = Math.min(Math.max(r.top + Math.min(r.height / 2, 8), 0), window.innerHeight - 1);
   const top = onScreen ? document.elementFromPoint(x, y) : null;
   const covered = top !== null && top !== el && !el.contains(top) && !top.contains(el);
-  const table = el.closest('table');
+  // A table's own focusable scroll frame (DataTable's named region, when the table is wider than
+  // the screen) is a stop of that table: it is the first of its Tab run, right after a skip link.
+  const table =
+    el.closest('table') ??
+    (el.getAttribute('role') === 'region' && el.querySelectorAll('table').length === 1
+      ? el.querySelector('table')
+      : null);
   const tables = [...document.querySelectorAll('table')];
   // A skip link ("Skip past the units", G-33): the first table between it and its target.
   const href = el instanceof HTMLAnchorElement ? (el.getAttribute('href') ?? '') : '';

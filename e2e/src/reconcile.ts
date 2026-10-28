@@ -104,11 +104,12 @@
  * pass's deadline); its report goes to A11Y_RESULTS (default e2e/results/a11y/; a folder outside
  * e2e/results survives the next run's cleanup, for a before/after pair). Off by default, so the
  * gate's run is unchanged. Its variables (A11Y_ROUTES, A11Y_ROLES, A11Y_WIDTHS, A11Y_STATES,
- * A11Y_THEMES, A11Y_BUDGET_MS) are checked before anything starts: a typo fails in seconds. The
+ * A11Y_THEMES, A11Y_BUDGET_MS) are checked before anything starts: a typo fails in seconds, and so
+ * do RECONCILE_BROWSER=0 and a last pass without the other roles' users (`a11yPreflight`). The
  * harness is left out when the pass has already failed.
- * The pass fails when the harness's gate does (`gateVerdict` in a11y-report.ts: a critical or
- * serious rule, a page not measured, a shared title, a failed overlay check, the touch-scroll check
- * not run or failing, a write) or when it cannot run.
+ * The pass fails when the harness's gate does (`gateVerdict` in a11y-report.ts) or its report is
+ * missing, unreadable or older than the run, whatever Playwright's exit code (`a11yOutcome`); a
+ * narrowed run passes as "partial run, not the gate".
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -176,13 +177,7 @@ import {
 } from './shift-checks.ts';
 import { pruneBuildCache } from '@shopfloor/test-kit/heavy-lock';
 import { ROUTES as A11Y_ROUTES } from '../browser/a11y/routes.ts';
-import {
-  budgetFromEnv,
-  filterFromEnv,
-  gateVerdict,
-  validateRoutes,
-  type A11yReport,
-} from './a11y-report.ts';
+import { a11yOutcome, a11yPreflight } from './a11y-report.ts';
 import { REPO, Stack, removeImages } from './stack.ts';
 import { episodeIdentity, traceConfigOf, type TraceSectionJson } from './trace-shapes.ts';
 
@@ -294,17 +289,13 @@ const withBrowser = process.env.RECONCILE_BROWSER !== '0';
 const withA11y = process.env.RECONCILE_A11Y === '1';
 let A11Y_BUDGET_MS = 0;
 if (withA11y) {
+  // A gate that cannot run is refused before any stack starts (UX-F1 review): a typo, no browser,
+  // or a last pass without the other roles' users.
   try {
-    A11Y_BUDGET_MS = budgetFromEnv(process.env);
-    validateRoutes(filterFromEnv(process.env), A11Y_ROUTES);
+    A11Y_BUDGET_MS = a11yPreflight(process.env, passNames.at(-1), A11Y_ROUTES);
   } catch (error) {
     console.error(`RECONCILE_A11Y=1: ${error instanceof Error ? error.message : String(error)}`);
     process.exit(2);
-  }
-  if (!withBrowser) {
-    console.warn(
-      'RECONCILE_A11Y=1 with RECONCILE_BROWSER=0: no browser, so the harness does not run',
-    );
   }
 }
 /** Where the harness writes; relative to where the command was started. */
@@ -419,7 +410,7 @@ interface Report {
   incidents?: unknown[];
   rejectedMessages?: number;
   /** UX-1g (#321): the visual and accessibility harness's exit code and where its report is. */
-  a11y?: { exitCode: number; report: string };
+  a11y?: { exitCode: number; report: string; outcome: string };
   /** The live checks: the overview (#100), the OEE dashboard (#123) and the alarms (#147). */
   browser?: { exitCode: number; report?: unknown; oee?: unknown; alarms?: unknown };
   /**
@@ -1457,6 +1448,7 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
           log('the pass already failed: the accessibility harness is left out');
         } else if (a11y) {
           log(`the visual and accessibility harness (budget ${String(A11Y_BUDGET_MS)} ms)`);
+          const launchedAt = Date.now();
           const exitCode = await runBrowser('a11y', {
             RECONCILE_WEB_URL: webUrl,
             RECONCILE_RESULTS: RESULTS_DIR,
@@ -1469,19 +1461,16 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
             ...browserLogin,
           });
           const a11yReport = join(A11Y_RESULTS, 'report.json');
-          report.a11y = { exitCode, report: a11yReport };
-          if (exitCode !== 0) {
-            // The gate's reasons when the harness wrote its report; else it could not run.
-            const failures = await readFile(a11yReport, 'utf8').then(
-              (text) => gateVerdict(JSON.parse(text) as A11yReport).failures,
-              () => undefined,
-            );
-            fail(
-              failures === undefined || failures.length === 0
-                ? `the accessibility harness could not run (Playwright exit ${String(exitCode)})`
-                : `the accessibility gate failed (${join(A11Y_RESULTS, 'summary.md')}): ${failures.join('; ')}`,
-            );
-          }
+          // The report is read whatever the exit code: a run that wrote none, an older one or a
+          // red verdict fails the pass (UX-F1 review); a narrowed run says it is not the gate.
+          const outcome = a11yOutcome(
+            await readFile(a11yReport, 'utf8').catch(() => undefined),
+            exitCode,
+            launchedAt,
+          );
+          report.a11y = { exitCode, report: a11yReport, outcome: outcome.message };
+          log(`accessibility: ${outcome.message} (${join(A11Y_RESULTS, 'summary.md')})`);
+          if (!outcome.ok) fail(outcome.message);
           phase('a11y');
         }
       })(),

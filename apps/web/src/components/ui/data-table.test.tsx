@@ -832,6 +832,8 @@ describe('DataTable row actions and focus', () => {
     const skip = screen.getByRole('link', { name: 'Skip to the details' });
     expect(skip.getAttribute('href')).toBe('#alarm-detail');
     expect(skip.className).toMatch(/\bsr-only focus:not-sr-only\b/);
+    // It moves the focus itself: the UX-F1 harness relies on the mark to count a run as skipped.
+    expect(skip.hasAttribute('data-skip-link')).toBe(true);
     expect(
       skip.compareDocumentPosition(screen.getByRole('table')) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();

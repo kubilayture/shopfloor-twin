@@ -106,6 +106,12 @@ export interface KeyboardSample {
   readonly longestTableRun: number;
   /** The longest run that begins right after a skip link past its table (reported apart). */
   readonly skippedByLinkRun?: number;
+  /** Stops without a visible focus indicator (2.4.7); absent in a report from before UX-F1. */
+  readonly hidden?: readonly string[];
+  /** Stops off screen or on a zero-size element (2.4.7). */
+  readonly offScreen?: readonly string[];
+  /** Stops covered by another element, a sticky bar (2.4.11). */
+  readonly covered?: readonly string[];
   readonly findings: readonly string[];
   /** The page could not be sampled (or the budget left it): a run that did not happen. */
   readonly error?: string;
@@ -162,6 +168,11 @@ export interface A11yReport {
   };
   readonly keyboard: readonly KeyboardSample[];
   readonly overlays: readonly OverlayCheck[];
+  /**
+   * The pages whose own overlays were looked for (at `OVERLAY_WIDTH`), each once, whether or not
+   * it opens any: the gate requires one per supervisor data route.
+   */
+  readonly overlayScans: readonly { readonly route: string; readonly width: number }[];
   readonly touchScroll: readonly TouchScrollCheck[];
   /**
    * Requests other than GET and HEAD the harness caused, the login excepted: it must read only,
@@ -306,7 +317,10 @@ const isImpact = (value: unknown): value is Impact =>
 
 export const zeroCounts = (): ImpactCounts => ({ critical: 0, serious: 0, moderate: 0, minor: 0 });
 
-/** axe's violations, worst first, with counts by impact (one per rule; no impact counts minor). */
+/**
+ * axe's violations, worst first, with counts by impact (one per rule). A missing or unknown impact
+ * (a future axe's new level) counts as serious: the gate fails closed (UX-F1 review).
+ */
 export function fromAxe(result: AxeResultLike): {
   counts: ImpactCounts;
   violations: Violation[];
@@ -314,7 +328,7 @@ export function fromAxe(result: AxeResultLike): {
   const violations = result.violations
     .map((v): Violation => ({
       id: v.id,
-      impact: isImpact(v.impact) ? v.impact : 'minor',
+      impact: isImpact(v.impact) ? v.impact : 'serious',
       help: v.help,
       nodes: v.nodes.length,
       targets: v.nodes.slice(0, 3).map((n) => n.target.map(String).join(' ')),
@@ -379,6 +393,127 @@ export const longestTableRun = (stops: readonly Pick<FocusStop, 'inTable' | 'ski
 /** A run of this many stops inside one table is a G-33 finding. */
 export const TABLE_RUN_LIMIT = 10;
 
+/** Keyboard sampling widths: the desktop and the phone (the drawer layout). */
+export const KEYBOARD_WIDTHS = [1440, 390] as const;
+/** The width each page's own overlays are checked at. */
+export const OVERLAY_WIDTH = 1440;
+/** The nav drawer is checked below the `xl` breakpoint (1280 px), at these widths. */
+export const DRAWER_WIDTHS = [1024, 390] as const;
+/** The engines of the touch-scroll check behind the open drawer; the gate needs both. */
+export const TOUCH_ENGINES = ['Chromium, phone emulation', 'WebKit, iPhone 15 profile'] as const;
+
+/** What the page says about a focused link that may skip past a table (`probe.ts`). */
+export interface SkipFacts {
+  /** The index of the first table between the link and its target; -1 when none or no target. */
+  readonly table: number;
+  /** The target is rendered: it has a box, is not `hidden` or `display: none`, not inert. */
+  readonly targetRendered: boolean;
+  /** The target takes the focus: focusable itself, or the link moves the focus to it. */
+  readonly targetFocusable: boolean;
+}
+
+/**
+ * The table a focused link skips past (G-33), or `null`: only a link whose target lies past a
+ * table and is rendered and takes the focus offers a way past the run (UX-F1 review: a link into
+ * a closed panel moves nothing).
+ */
+export const skipTableOf = (facts: SkipFacts): number | null =>
+  facts.table >= 0 && facts.targetRendered && facts.targetFocusable ? facts.table : null;
+
+/** The filter variables a run was narrowed by: any of them makes it a partial run. */
+export function narrowedBy(filter: A11yFilter): string[] {
+  return [
+    filter.routes.length > 0 ? `A11Y_ROUTES=${filter.routes.join(',')}` : '',
+    filter.roles.length > 0 ? `A11Y_ROLES=${filter.roles.join(',')}` : '',
+    filter.widths.length > 0 ? `A11Y_WIDTHS=${filter.widths.join(',')}` : '',
+    filter.states.length > 0 ? `A11Y_STATES=${filter.states.join(',')}` : '',
+    filter.themes !== undefined && filter.themes.length > 0
+      ? `A11Y_THEMES=${filter.themes.join(',')}`
+      : '',
+  ].filter((t) => t !== '');
+}
+
+/** The passes whose stack has a user per role (the orders pass makes them; quality follows it). */
+export const PASSES_WITH_ROLES: readonly string[] = ['orders', 'quality'];
+
+/**
+ * The reconciliation's checks before any stack starts when `RECONCILE_A11Y=1` (UX-F1): the
+ * variables, a browser (`RECONCILE_BROWSER=0` would leave the gate out and the run green), and a
+ * last pass with a user per role unless `A11Y_ROLES` keeps to the supervisor and signed out (on
+ * `alarms` the other roles have no account, and every run would be red). Throws the reason.
+ */
+export function a11yPreflight(
+  env: Readonly<Record<string, string | undefined>>,
+  lastPass: string | undefined,
+  routes: readonly { readonly id: string; readonly path: string }[],
+): number {
+  const budget = budgetFromEnv(env);
+  const filter = filterFromEnv(env);
+  validateRoutes(filter, routes);
+  if (env.RECONCILE_BROWSER === '0') {
+    throw new Error(
+      'RECONCILE_BROWSER=0 leaves out the browser, so the accessibility gate cannot run',
+    );
+  }
+  const needAccounts = rolesOf(filter).filter((r) => r !== 'supervisor' && r !== 'signed-out');
+  if (needAccounts.length > 0 && !PASSES_WITH_ROLES.includes(lastPass ?? '')) {
+    throw new Error(
+      `the last pass (${lastPass ?? 'none'}) has no account for ${needAccounts.join(', ')}: end RECONCILE_PASSES with ${PASSES_WITH_ROLES.join(' or ')}, or narrow A11Y_ROLES to supervisor,signed-out`,
+    );
+  }
+  return budget;
+}
+
+/**
+ * The reconciliation's reading of a harness run (UX-F1): the report must be there, written by
+ * this run (`startedAt` not before `launchedAt`), and its verdict must hold whatever Playwright's
+ * exit code said. `ok` false fails the pass with `message`; a partial run passes and says so.
+ */
+export function a11yOutcome(
+  reportText: string | undefined,
+  exitCode: number,
+  launchedAt: number,
+): { ok: boolean; message: string } {
+  let report: A11yReport;
+  try {
+    if (reportText === undefined) throw new Error('no report.json');
+    report = JSON.parse(reportText) as A11yReport;
+    if (typeof report.startedAt !== 'string' || !Array.isArray(report.entries))
+      throw new Error('report.json is not a harness report');
+  } catch (error) {
+    return {
+      ok: false,
+      message: `the accessibility harness wrote no readable report (Playwright exit ${String(exitCode)}: ${error instanceof Error ? error.message : String(error)})`,
+    };
+  }
+  if (Date.parse(report.startedAt) < launchedAt - 1000) {
+    return {
+      ok: false,
+      message: `report.json is from an earlier run (started ${report.startedAt}; Playwright exit ${String(exitCode)})`,
+    };
+  }
+  const verdict = gateVerdict(report);
+  if (verdict.failures.length > 0) {
+    return {
+      ok: false,
+      message: `the accessibility gate failed: ${verdict.failures.join('; ')}`,
+    };
+  }
+  if (exitCode !== 0) {
+    return {
+      ok: false,
+      message: `the accessibility harness failed (Playwright exit ${String(exitCode)})`,
+    };
+  }
+  return {
+    ok: true,
+    message:
+      verdict.partial.length > 0
+        ? `partial run, not the gate (narrowed: ${verdict.partial.join(' ')})`
+        : 'gate passed',
+  };
+}
+
 /** A page's key: a missing theme is `light`, so a report from before the field still matches. */
 export const entryKey = (e: Pick<Entry, 'route' | 'state' | 'role' | 'width' | 'theme'>): string =>
   `${e.route}|${e.state}|${e.role}|${String(e.width)}|${e.theme ?? 'light'}`;
@@ -406,9 +541,11 @@ export function summarize(report: A11yReport): string {
   const verdict = gateVerdict(report);
   out.push('# Visual and accessibility harness (UX-1g, gate UX-F1)', '');
   out.push(
-    verdict.failures.length === 0
-      ? '**Gate: passed.** Every planned page measured; no critical or serious rule; titles distinct; overlays, the drawer and touch scrolling behind it checked; no write.'
-      : `**Gate: failed** (${String(verdict.failures.length)}):`,
+    verdict.partial.length > 0
+      ? `**Partial run: not the gate** (narrowed: ${verdict.partial.join(' ')}). Only the unfiltered run counts as the gate; ${verdict.failures.length === 0 ? 'nothing failed in what it planned.' : `in what it planned, ${String(verdict.failures.length)} failed:`}`
+      : verdict.failures.length === 0
+        ? '**Gate: passed.** Every planned page measured; no critical or serious rule; titles distinct; keyboard, overlays, the drawer and touch scrolling behind it checked; no write.'
+        : `**Gate: failed** (${String(verdict.failures.length)}):`,
     '',
   );
   if (verdict.failures.length > 0) {
@@ -695,29 +832,62 @@ const pageName = (e: Entry) =>
 export interface GateVerdict {
   /** Each reason the gate fails; empty when it passes. */
   readonly failures: readonly string[];
-  /** What is reported but does not fail it: moderate and minor rules, keyboard findings. */
+  /** What is reported but does not fail it: moderate and minor rules, sideways scrolling. */
   readonly listed: readonly string[];
+  /**
+   * The filter variables the run was narrowed by: a partial run, never the gate, even with no
+   * failure (only the unfiltered run counts).
+   */
+  readonly partial: readonly string[];
+}
+
+/** The keyboard findings that fail the gate, from a sample's structured lists. */
+function keyboardFailures(k: KeyboardSample): string[] {
+  const where = `${k.route} at ${String(k.width)}`;
+  const out: string[] = [];
+  if ((k.hidden ?? []).length > 0)
+    out.push(`no visible focus indicator (2.4.7) on ${where}: ${examples(k.hidden ?? [])}`);
+  if ((k.offScreen ?? []).length > 0)
+    out.push(
+      `focus off screen or on a zero-size element (2.4.7) on ${where}: ${examples(k.offScreen ?? [])}`,
+    );
+  if ((k.covered ?? []).length > 0)
+    out.push(
+      `focused element covered by another (2.4.11) on ${where}: ${examples(k.covered ?? [])}`,
+    );
+  if (k.longestTableRun >= TABLE_RUN_LIMIT)
+    out.push(
+      `${String(k.longestTableRun)} stops inside one table before leaving it (G-33) on ${where}`,
+    );
+  return out;
 }
 
 /**
  * The accessibility gate (UX-F1, #337) over a harness report. It fails on:
- * - a run that did not measure everything it planned: nothing planned, a page that failed to load
- *   or measure, a page measured before it settled, a page the budget left, a role whose login
- *   failed, a combination skipped for want of an id, or a count that does not add up;
+ * - a run that did not measure everything it planned: nothing planned (a shell-only run aside),
+ *   a page that failed to load or measure, a page measured before it settled, a page the budget
+ *   left, a role whose login failed, a combination skipped, or a count that does not add up;
  * - any critical or serious axe rule on any page (every route, state, role, width and theme);
  * - a title shared by two routes (G-05);
- * - an overlay or nav drawer check that failed or could not run;
- * - a touch-scroll check behind the open drawer that did not run, or found the page scrolling;
- *   none at all on a run that includes the shell;
- * - a keyboard sample that could not be taken;
+ * - a check the plan includes that is missing, did not run or failed: a keyboard sample per
+ *   supervisor data route at each of `KEYBOARD_WIDTHS` in the run, an overlay scan per such
+ *   route at `OVERLAY_WIDTH`, and with the shell the nav drawer at each of `DRAWER_WIDTHS` and
+ *   touch scrolling behind it in both `TOUCH_ENGINES`;
+ * - a keyboard finding: no visible focus or focus off screen (2.4.7), focus covered (2.4.11), a
+ *   long Tab run through one table no skip link offers a way past (G-33);
  * - any write the harness caused.
- * Moderate and minor rules, keyboard findings and sideways scrolling are listed, not failed.
+ * Moderate and minor rules and sideways scrolling are listed. A run narrowed by any filter is
+ * `partial`: not the gate, whatever its failures.
  */
 export function gateVerdict(report: A11yReport): GateVerdict {
   const failures: string[] = [];
   const listed: string[] = [];
+  const partial = narrowedBy(report.filter);
   const c = report.coverage;
-  if (c.planned === 0) failures.push('nothing was planned: the run measured no page');
+  const shell = report.filter.routes.length === 0 || report.filter.routes.includes(SHELL);
+  const shellOnly =
+    report.filter.routes.length > 0 && report.filter.routes.every((r) => r === SHELL);
+  if (c.planned === 0 && !shellOnly) failures.push('nothing was planned: the run measured no page');
   if (c.failed > 0) {
     const failed = report.entries.filter((e) => e.error !== undefined);
     failures.push(
@@ -776,16 +946,47 @@ export function gateVerdict(report: A11yReport): GateVerdict {
   for (const d of report.titles.duplicates) {
     failures.push(`the title "${d.title}" is shared by ${d.routes.join(', ')} (G-05)`);
   }
+
+  // The checks the plan includes, each required (the verdict does not trust the spec's flow).
+  const widths = report.filter.widths.length > 0 ? report.filter.widths : WIDTHS;
+  const supervisorRoutes = [
+    ...new Set(
+      report.entries
+        .filter((e) => e.role === 'supervisor' && e.state === 'data')
+        .map((e) => e.route),
+    ),
+  ].sort();
+  const missingKeyboard = supervisorRoutes.flatMap((route) =>
+    KEYBOARD_WIDTHS.filter((w) => widths.includes(w))
+      .filter((w) => !report.keyboard.some((k) => k.route === route && k.width === w))
+      .map((w) => `${route} at ${String(w)}`),
+  );
+  if (missingKeyboard.length > 0)
+    failures.push(`keyboard samples missing: ${examples(missingKeyboard)}`);
+  const missingScans = widths.includes(OVERLAY_WIDTH)
+    ? supervisorRoutes.filter(
+        (route) => !report.overlayScans.some((o) => o.route === route && o.width === OVERLAY_WIDTH),
+      )
+    : [];
+  if (missingScans.length > 0) failures.push(`overlay checks missing: ${examples(missingScans)}`);
+  if (shell) {
+    const drawers = DRAWER_WIDTHS.filter((w) => widths.includes(w)).filter(
+      (w) => !report.overlays.some((o) => o.kind === 'nav drawer' && o.width === w),
+    );
+    if (drawers.length > 0)
+      failures.push(`nav drawer checks missing at ${drawers.map(String).join(', ')}`);
+    const engines = TOUCH_ENGINES.filter((e) => !report.touchScroll.some((t) => t.engine === e));
+    if (engines.length > 0)
+      failures.push(
+        `touch scrolling behind the open nav drawer was not checked in ${engines.join(', ')}`,
+      );
+  }
   for (const o of report.overlays) {
     if (o.findings.length > 0) {
       failures.push(
         `${o.kind} "${o.trigger}" on ${o.route} at ${String(o.width)}: ${o.findings.join('; ')}`,
       );
     }
-  }
-  const shell = report.filter.routes.length === 0 || report.filter.routes.includes(SHELL);
-  if (shell && report.touchScroll.length === 0) {
-    failures.push('touch scrolling behind the open nav drawer was not checked');
   }
   for (const t of report.touchScroll) {
     if (!t.ran) failures.push(`touch scroll (${t.engine}) did not run: ${t.findings.join('; ')}`);
@@ -797,9 +998,7 @@ export function gateVerdict(report: A11yReport): GateVerdict {
       failures.push(
         `the keyboard sample of ${k.route} at ${String(k.width)} was not taken: ${k.error}`,
       );
-    } else if (k.findings.length > 0) {
-      listed.push(`keyboard, ${k.route} at ${String(k.width)}: ${k.findings.join('; ')}`);
-    }
+    } else failures.push(...keyboardFailures(k));
   }
   if (report.writes.length > 0) {
     failures.push(
@@ -812,5 +1011,5 @@ export function gateVerdict(report: A11yReport): GateVerdict {
       `${String(wide.length)} pages wider than the viewport: ${examples(wide.map(pageName))}`,
     );
   }
-  return { failures, listed };
+  return { failures, listed, partial };
 }

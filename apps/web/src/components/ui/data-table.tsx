@@ -722,6 +722,9 @@ export function DataTable<Row>({
     skipToDetails === undefined ? null : (
       <a
         href={`#${skipToDetails}`}
+        // The link moves the focus to its target (made focusable here): the UX-F1 harness counts a
+        // Tab run past it as skipped only for such a link, or a focusable target.
+        data-skip-link=""
         onClick={(event) => {
           const target = document.getElementById(skipToDetails);
           if (!target) return;

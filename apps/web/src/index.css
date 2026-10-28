@@ -387,6 +387,8 @@
    */
   html[data-nav-open] {
     overflow: hidden;
+    /* With classic scrollbars the hidden root's scrollbar keeps its place: no sideways shift. */
+    scrollbar-gutter: stable;
   }
   html[data-nav-open] body {
     position: fixed;

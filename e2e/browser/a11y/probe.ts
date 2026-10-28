@@ -2,7 +2,9 @@ import { AxeBuilder } from '@axe-core/playwright';
 import type { Locator, Page } from '@playwright/test';
 import {
   fromAxe,
+  skipTableOf,
   tableRuns,
+  type SkipFacts,
   TABLE_RUN_LIMIT,
   type FocusStop,
   type ImpactCounts,
@@ -104,8 +106,10 @@ export async function screenshot(page: Page, path: string, width: number): Promi
   });
 }
 
-/** The focused element as the report shows it; `null` on the body. */
-function focusedNow(): (FocusStop & { onScreen: boolean; covered: boolean }) | null {
+/** The focused element as the report shows it, with the facts of a skip link; `null` on the body. */
+function focusedNow():
+  | (Omit<FocusStop, 'skipsTable'> & { onScreen: boolean; covered: boolean; skip: SkipFacts })
+  | null {
   const el = document.activeElement;
   if (!(el instanceof HTMLElement) || el === document.body) return null;
   const cs = getComputedStyle(el);
@@ -137,7 +141,7 @@ function focusedNow(): (FocusStop & { onScreen: boolean; covered: boolean }) | n
   const target = href.startsWith('#')
     ? document.getElementById(decodeURIComponent(href.slice(1)))
     : null;
-  const past =
+  const table_ =
     target === null
       ? -1
       : tables.findIndex(
@@ -165,7 +169,21 @@ function focusedNow(): (FocusStop & { onScreen: boolean; covered: boolean }) | n
     region,
     visible: outline || ring || pseudo,
     inTable: table ? tables.indexOf(table) : null,
-    skipsTable: past === -1 ? null : past,
+    // Whether the link can take the focus anywhere: its target rendered (a box, not inert) and
+    // focusable, or a skip link that moves the focus to it (`data-skip-link`, DataTable).
+    skip: {
+      table: table_,
+      targetRendered:
+        target !== null &&
+        target.getClientRects().length > 0 &&
+        getComputedStyle(target).visibility !== 'hidden' &&
+        target.closest('[inert]') === null,
+      targetFocusable:
+        target !== null &&
+        (target.hasAttribute('tabindex') ||
+          (target instanceof HTMLElement && target.tabIndex >= 0) ||
+          el.hasAttribute('data-skip-link')),
+    },
     onScreen,
     covered,
   };
@@ -183,6 +201,9 @@ export async function sampleKeyboard(
   stops: FocusStop[];
   longestTableRun: number;
   skippedByLinkRun: number;
+  hidden: string[];
+  offScreen: string[];
+  covered: string[];
   findings: string[];
 }> {
   await page.evaluate(() => {
@@ -206,7 +227,8 @@ export async function sampleKeyboard(
     // Wrapped round to the first stop: the page's whole order was seen.
     if (stops.length > 0 && stop.element === stops[0]?.element && stop.region === stops[0].region)
       break;
-    const { onScreen, covered: isCovered, ...kept } = stop;
+    const { onScreen, covered: isCovered, skip, ...rest } = stop;
+    const kept: FocusStop = { ...rest, skipsTable: skipTableOf(skip) };
     stops.push(kept);
     if (!kept.visible) hidden.push(kept.element);
     if (!onScreen) offScreen.push(kept.element);
@@ -226,7 +248,15 @@ export async function sampleKeyboard(
   const runs = tableRuns(stops);
   if (runs.longest >= TABLE_RUN_LIMIT)
     findings.push(`${String(runs.longest)} stops inside one table before leaving it (G-33)`);
-  return { stops, longestTableRun: runs.longest, skippedByLinkRun: runs.skippedByLink, findings };
+  return {
+    stops,
+    longestTableRun: runs.longest,
+    skippedByLinkRun: runs.skippedByLink,
+    hidden,
+    offScreen,
+    covered,
+    findings,
+  };
 }
 
 /** The visible overlay opened last, marked `data-a11y-overlay`; its kind and whether modal. */

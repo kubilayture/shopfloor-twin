@@ -12,6 +12,10 @@ import {
 import {
   budgetFromEnv,
   duplicateTitles,
+  DRAWER_WIDTHS,
+  KEYBOARD_WIDTHS,
+  OVERLAY_WIDTH,
+  TOUCH_ENGINES,
   entryKey,
   filterFromEnv,
   gateVerdict,
@@ -83,10 +87,6 @@ const RESULTS = process.env.A11Y_RESULTS
   ? resolve(process.env.INIT_CWD ?? process.cwd(), process.env.A11Y_RESULTS)
   : join(import.meta.dirname, '../../results/a11y');
 const SCREENS = 'screens';
-/** Keyboard sampling widths: the desktop and the phone (the drawer layout). */
-const KEYBOARD_WIDTHS = [1440, 390];
-/** The drawer is checked below the `xl` breakpoint (1280 px). */
-const DRAWER_WIDTHS = [1024, 390];
 
 interface Item {
   readonly route: RouteSpec;
@@ -142,6 +142,7 @@ test('visual and accessibility harness (gate)', async ({ browser }) => {
   const writes: string[] = [];
   const keyboard: KeyboardSample[] = [];
   const overlays: OverlayCheck[] = [];
+  const overlayScans: { route: string; width: number }[] = [];
   const touchScroll: TouchScrollCheck[] = [];
   const titles: Record<string, string> = {};
   let axeVersion = '';
@@ -180,6 +181,7 @@ test('visual and accessibility harness (gate)', async ({ browser }) => {
       titles: { byRoute: titles, duplicates: duplicateTitles(titles) },
       keyboard,
       overlays,
+      overlayScans,
       touchScroll,
       writes,
     };
@@ -438,11 +440,6 @@ test('visual and accessibility harness (gate)', async ({ browser }) => {
         await settle(page);
         const k = await sampleKeyboard(page);
         keyboard.push({ route: item.route.id, role: 'supervisor', width, ...k });
-        if (width === 1440) {
-          await page.goto(item.url);
-          await settle(page);
-          overlays.push(...(await checkOverlays(page, item.route.id, width)));
-        }
       } catch (error) {
         keyboard.push({
           route: item.route.id,
@@ -454,6 +451,25 @@ test('visual and accessibility harness (gate)', async ({ browser }) => {
           error: `could not be sampled: ${message(error)}`,
         });
       }
+      // The overlays the page opens, once, at the desktop width; a scan that fails is an overlay
+      // finding, and a scan left out is missing from `overlayScans` (both fail the gate).
+      if (width === OVERLAY_WIDTH) {
+        try {
+          await page.goto(item.url);
+          await settle(page);
+          overlays.push(...(await checkOverlays(page, item.route.id, width)));
+          overlayScans.push({ route: item.route.id, width });
+        } catch (error) {
+          overlays.push({
+            route: item.route.id,
+            width,
+            kind: 'page overlays',
+            trigger: '-',
+            checks: {},
+            findings: [`could not be checked: ${message(error)}`],
+          });
+        }
+      }
     }
   }
 
@@ -461,7 +477,7 @@ test('visual and accessibility harness (gate)', async ({ browser }) => {
   // is recorded as not run (a gate failure).
   if (shell && overBudget()) {
     stoppedByBudget = true;
-    for (const engine of ['Chromium, phone emulation', 'WebKit, iPhone 15 profile']) {
+    for (const engine of TOUCH_ENGINES) {
       touchScroll.push({
         engine,
         route: '-',
@@ -629,7 +645,7 @@ async function lockProof(
  * (`lockProof`).
  */
 async function chromiumTouchScroll(browser: Browser, writes: string[]): Promise<TouchScrollCheck> {
-  const engine = 'Chromium, phone emulation';
+  const engine = TOUCH_ENGINES[0];
   const context = await browser.newContext({
     viewport: { width: 390, height: 844 },
     isMobile: true,
@@ -687,7 +703,7 @@ async function chromiumTouchScroll(browser: Browser, writes: string[]): Promise<
  * itself offline; the drawer does not depend on it.
  */
 async function webkitTouchScroll(writes: string[]): Promise<TouchScrollCheck> {
-  const engine = 'WebKit, iPhone 15 profile';
+  const engine = TOUCH_ENGINES[1];
   let browser: Browser;
   try {
     browser = await webkit.launch();

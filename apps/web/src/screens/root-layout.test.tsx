@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EQUIPMENT, PLANT, fakeFetch, json, sessionOf } from '../test/fixtures.ts';
@@ -321,6 +323,37 @@ describe('the nav drawer below xl', () => {
     } finally {
       Reflect.deleteProperty(window, 'scrollY');
     }
+  });
+
+  it('restores the scroll position only on the same page and query: another view starts at the top', async () => {
+    stubWidth(false);
+    vi.stubGlobal('fetch', fakeFetch(api));
+    const app = await renderApp('/alarms?view=history');
+    const scrollTo = vi.spyOn(window, 'scrollTo');
+    Object.defineProperty(window, 'scrollY', { configurable: true, value: 600 });
+    try {
+      fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+      scrollTo.mockClear();
+      // The nav's Alarms link: the same pathname, another query (the nav ignores the search).
+      await settle(() => {
+        fireEvent.click(screen.getByTestId('nav-alarms'));
+      });
+      await waitFor(() => {
+        expect(app.history.location.search).toBe('');
+      });
+      expect(app.history.location.pathname).toBe('/alarms');
+      expect(document.documentElement.hasAttribute('data-nav-open')).toBe(false);
+      expect(scrollTo).not.toHaveBeenCalledWith({ top: 600, behavior: 'instant' });
+    } finally {
+      Reflect.deleteProperty(window, 'scrollY');
+    }
+  });
+
+  it("keeps the scrollbar's place while the drawer locks the page (no sideways shift)", () => {
+    const css = readFileSync(join(import.meta.dirname, '..', 'index.css'), 'utf8');
+    const rule = /html\[data-nav-open\] \{([^}]*)\}/.exec(css)?.[1] ?? '';
+    expect(rule).toMatch(/overflow: hidden;/);
+    expect(rule).toMatch(/scrollbar-gutter: stable;/);
   });
 
   it('gives the focus to the menu button when the layout narrows under a focused nav link', async () => {

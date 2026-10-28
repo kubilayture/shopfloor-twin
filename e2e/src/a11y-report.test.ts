@@ -16,6 +16,11 @@ import {
   themeWidths,
   themesOf,
   DEFAULT_BUDGET_MS,
+  TOUCH_ENGINES,
+  a11yOutcome,
+  a11yPreflight,
+  narrowedBy,
+  skipTableOf,
   routeSelected,
   validateRoutes,
   budgetFromEnv,
@@ -24,6 +29,9 @@ import {
   zeroCounts,
   type A11yReport,
   type Entry,
+  type KeyboardSample,
+  type OverlayCheck,
+  type TouchScrollCheck,
 } from './a11y-report.ts';
 import { REPO } from './stack.ts';
 
@@ -73,10 +81,60 @@ const report = (entries: Entry[], over: Partial<A11yReport> = {}): A11yReport =>
   titles: { byRoute: {}, duplicates: [] },
   keyboard: [],
   overlays: [],
+  overlayScans: [],
   touchScroll: [],
   writes: [],
   ...over,
 });
+
+/** A keyboard sample with nothing found. */
+const sample = (
+  route: string,
+  width: number,
+  over: Partial<KeyboardSample> = {},
+): KeyboardSample => ({
+  route,
+  role: 'supervisor',
+  width,
+  stops: [],
+  longestTableRun: 0,
+  skippedByLinkRun: 0,
+  hidden: [],
+  offScreen: [],
+  covered: [],
+  findings: [],
+  ...over,
+});
+/** The nav drawer's check at a width, passed. */
+const drawer = (width: number): OverlayCheck => ({
+  route: 'overview',
+  width,
+  kind: 'nav drawer',
+  trigger: 'Menu',
+  checks: { opens: true },
+  findings: [],
+});
+/** A touch-scroll check that ran clean. */
+const ran = (engine: string): TouchScrollCheck => ({
+  engine,
+  route: '/orders',
+  ran: true,
+  detail: {},
+  findings: [],
+});
+/**
+ * An unfiltered run that passes: measured in full, no serious rule, and every check its plan
+ * includes (the supervisor's orders data page: keyboard at 1440 and 390, overlays at 1440; the
+ * drawer at 1024 and 390; touch scrolling in both engines).
+ */
+const green = (over: Partial<A11yReport> = {}, entries = [entry(), entry({ width: 390 })]) =>
+  report(entries, {
+    keyboard: [sample('orders', 1440), sample('orders', 390)],
+    overlayScans: [{ route: 'orders', width: 1440 }],
+    overlays: [drawer(1024), drawer(390)],
+    touchScroll: TOUCH_ENGINES.map(ran),
+    ...over,
+  });
 
 describe('filterFromEnv', () => {
   it('reads comma lists and leaves absent ones empty (all)', () => {
@@ -210,11 +268,12 @@ describe('routeSelected', () => {
 });
 
 describe('fromAxe', () => {
-  it('sorts worst first, counts one per rule and treats a missing impact as minor', () => {
+  it('sorts worst first, counts one per rule and treats a missing or unknown impact as serious', () => {
     const { counts, violations } = fromAxe({
       violations: [
         { id: 'region', impact: 'moderate', help: 'r', nodes: [{ target: ['main'] }] },
         { id: 'odd', impact: null, help: 'o', nodes: [] },
+        { id: 'new', impact: 'severe', help: 'n', nodes: [] },
         {
           id: 'color-contrast',
           impact: 'serious',
@@ -232,12 +291,13 @@ describe('fromAxe', () => {
     expect(violations.map((v) => [v.id, v.impact, v.nodes])).toEqual([
       ['aria-valid-attr', 'critical', 1],
       ['color-contrast', 'serious', 4],
+      ['new', 'serious', 0],
+      ['odd', 'serious', 0],
       ['region', 'moderate', 1],
-      ['odd', 'minor', 0],
     ]);
     expect(violations[0]?.targets).toEqual(['#i span']);
     expect(violations[1]?.targets).toHaveLength(3);
-    expect(counts).toEqual({ critical: 1, serious: 1, moderate: 1, minor: 1 });
+    expect(counts).toEqual({ critical: 1, serious: 3, moderate: 1, minor: 0 });
   });
 });
 
@@ -487,29 +547,19 @@ describe('the route catalogue', () => {
 });
 
 describe('gateVerdict', () => {
-  const ran = (engine: string) => ({
-    engine,
-    route: '/orders',
-    ran: true,
-    detail: {},
-    findings: [],
-  });
-  /** A run that passes: measured in full, no serious rule, both touch checks run clean. */
-  const green = (over: Partial<A11yReport> = {}, entries = [entry(), entry({ width: 390 })]) =>
-    report(entries, {
-      touchScroll: [ran('Chromium, phone emulation'), ran('WebKit, iPhone 15 profile')],
-      ...over,
-    });
   const coverage = green().coverage;
+  const only = (over: Partial<A11yReport>, entries?: Entry[]) =>
+    gateVerdict(entries === undefined ? green(over) : green(over, entries)).failures;
 
   it('passes a full clean run, and one with moderate and minor rules only, listing them', () => {
-    expect(gateVerdict(green())).toEqual({ failures: [], listed: [] });
+    expect(gateVerdict(green())).toEqual({ failures: [], listed: [], partial: [] });
     const mild = gateVerdict(
       green({}, [
         entry({
           counts: { ...zeroCounts(), moderate: 1, minor: 1 },
           violations: [violation('region', 'moderate'), violation('empty-table-header', 'minor')],
         }),
+        entry({ width: 390 }),
       ]),
     );
     expect(mild.failures).toEqual([]);
@@ -521,8 +571,8 @@ describe('gateVerdict', () => {
 
   it('fails on a critical or a serious rule on any page, theme included', () => {
     for (const impact of ['critical', 'serious'] as const) {
-      const { failures } = gateVerdict(
-        green({}, [
+      expect(
+        only({}, [
           entry(),
           entry({
             width: 390,
@@ -531,16 +581,12 @@ describe('gateVerdict', () => {
             violations: [violation('color-contrast', impact)],
           }),
         ]),
-      );
-      expect(failures).toEqual([
-        `color-contrast (${impact}) on 1 pages: orders data supervisor 390 dark`,
-      ]);
+      ).toEqual([`color-contrast (${impact}) on 1 pages: orders data supervisor 390 dark`]);
     }
   });
 
   it('fails a run that did not measure everything it planned', () => {
     const cases: [Partial<A11yReport>, RegExp][] = [
-      [{ coverage: { ...coverage, planned: 0, measured: 0 } }, /nothing was planned/],
       [{ coverage: { ...coverage, notReachedPages: 7, planned: 9 } }, /budget .* ran out: 7/],
       [{ stoppedByBudget: true }, /budget .* ran out: 0/],
       [
@@ -564,59 +610,149 @@ describe('gateVerdict', () => {
         /1 route × state × role combinations skipped: lot data operator \(no id\)/,
       ],
       [{ coverage: { ...coverage, planned: 3 } }, /2 of 3 planned pages measured, and 1 not/],
-      [{ touchScroll: [] }, /touch scrolling behind the open nav drawer was not checked/],
       [
-        { touchScroll: [{ ...ran('WebKit'), ran: false, findings: ['WebKit did not launch'] }] },
-        /touch scroll \(WebKit\) did not run: WebKit did not launch/,
+        {
+          touchScroll: [
+            ran(TOUCH_ENGINES[0]),
+            { ...ran(TOUCH_ENGINES[1]), ran: false, findings: ['WebKit did not launch'] },
+          ],
+        },
+        /touch scroll \(WebKit, iPhone 15 profile\) did not run: WebKit did not launch/,
       ],
       [
         {
           keyboard: [
-            {
-              route: 'orders',
-              role: 'supervisor',
-              width: 1440,
-              stops: [],
-              longestTableRun: 0,
-              findings: [],
-              error: 'not reached within the budget',
-            },
+            sample('orders', 1440, { error: 'not reached within the budget' }),
+            sample('orders', 390),
           ],
         },
         /keyboard sample of orders at 1440 was not taken: not reached/,
       ],
     ];
     for (const [over, failure] of cases) {
-      const { failures } = gateVerdict(green(over));
+      const failures = only(over);
       expect(failures, failure.source).toHaveLength(1);
       expect(failures[0]).toMatch(failure);
     }
+    expect(gateVerdict(report([])).failures[0]).toMatch(/nothing was planned/);
   });
 
   it('fails on a page that failed to load or was measured before it settled', () => {
-    const failed = gateVerdict(
-      green({ coverage: { ...coverage, measured: 1, failed: 1 } }, [
+    expect(
+      only({ coverage: { ...coverage, measured: 1, failed: 1 } }, [
         entry(),
         entry({ width: 390, theme: 'dark', error: 'the dark theme did not apply' }),
       ]),
-    );
-    expect(failed.failures).toEqual([
+    ).toEqual([
       '1 pages failed to load or measure: orders data supervisor 390 dark (the dark theme did not apply)',
     ]);
-    const unsettled = gateVerdict(green({}, [entry(), entry({ width: 390, ready: false })]));
-    expect(unsettled.failures).toEqual([
+    expect(only({}, [entry(), entry({ width: 390, ready: false })])).toEqual([
       '1 pages were measured before they settled (still loading): orders data supervisor 390 light',
     ]);
   });
 
+  it('requires every check the plan includes, whatever the spec did (review P2)', () => {
+    expect(only({ keyboard: [] })).toEqual([
+      'keyboard samples missing: orders at 1440, orders at 390',
+    ]);
+    expect(only({ keyboard: [sample('orders', 390)] })).toEqual([
+      'keyboard samples missing: orders at 1440',
+    ]);
+    expect(only({ overlayScans: [] })).toEqual(['overlay checks missing: orders']);
+    expect(only({ overlays: [drawer(390)] })).toEqual(['nav drawer checks missing at 1024']);
+    expect(only({ overlays: [] })).toEqual(['nav drawer checks missing at 1024, 390']);
+    expect(only({ touchScroll: [ran(TOUCH_ENGINES[0])] })).toEqual([
+      'touch scrolling behind the open nav drawer was not checked in WebKit, iPhone 15 profile',
+    ]);
+    expect(only({ touchScroll: [] })).toEqual([
+      'touch scrolling behind the open nav drawer was not checked in Chromium, phone emulation, WebKit, iPhone 15 profile',
+    ]);
+    // A drawer is a `nav drawer` check: another overlay at its width does not stand for it.
+    expect(
+      only({
+        overlays: [drawer(1024), { ...drawer(390), kind: 'menu', route: 'orders' }],
+      }),
+    ).toEqual(['nav drawer checks missing at 390']);
+    // A route that is not the supervisor's data page needs none; another such route does.
+    expect(
+      only({}, [entry(), entry({ width: 390 }), entry({ route: 'oee', state: 'empty' })]),
+    ).toEqual([]);
+    expect(
+      only({}, [entry(), entry({ width: 390 }), entry({ role: 'operator', route: 'oee' })]),
+    ).toEqual([]);
+    expect(only({}, [entry(), entry({ width: 390 }), entry({ route: 'oee' })])).toEqual([
+      'keyboard samples missing: oee at 1440, oee at 390',
+      'overlay checks missing: oee',
+    ]);
+  });
+
+  it('expects the checks of the widths and routes a narrowed run has, and calls it partial', () => {
+    // A11Y_WIDTHS=1280: no keyboard, overlay or drawer width in the run, so none expected, but
+    // the touch checks still are (the shell is in), and the run is no gate (review P1, finding 2).
+    const at1280 = gateVerdict(
+      report([entry({ width: 1280 })], {
+        filter: { routes: [], roles: [], widths: [1280], states: [] },
+        touchScroll: TOUCH_ENGINES.map(ran),
+      }),
+    );
+    expect(at1280).toEqual({ failures: [], listed: [], partial: ['A11Y_WIDTHS=1280'] });
+    // Routes without the shell: no drawer or touch check expected.
+    const orders = gateVerdict(
+      green(
+        {
+          filter: { routes: ['orders'], roles: [], widths: [], states: [] },
+          overlays: [],
+          touchScroll: [],
+        },
+        [entry(), entry({ width: 390 })],
+      ),
+    );
+    expect(orders.failures).toEqual([]);
+    expect(orders.partial).toEqual(['A11Y_ROUTES=orders']);
+    // The shell alone: no page, still a run (the drawer and both touch checks).
+    const shell = gateVerdict(
+      report([], {
+        filter: { routes: ['shell'], roles: [], widths: [], states: [] },
+        coverage: { ...coverage, planned: 0, measured: 0 },
+        overlays: [drawer(1024), drawer(390)],
+        touchScroll: TOUCH_ENGINES.map(ran),
+      }),
+    );
+    expect(shell.failures).toEqual([]);
+    // The shell with a route that planned nothing is no shell-only run.
+    expect(
+      gateVerdict(
+        report([], {
+          filter: { routes: ['shell', 'orders'], roles: [], widths: [], states: [] },
+          coverage: { ...coverage, planned: 0, measured: 0 },
+          overlays: [drawer(1024), drawer(390)],
+          touchScroll: TOUCH_ENGINES.map(ran),
+        }),
+      ).failures,
+    ).toEqual(['nothing was planned: the run measured no page']);
+    expect(
+      gateVerdict(
+        report([], {
+          filter: { routes: ['shell'], roles: [], widths: [], states: [] },
+          coverage: { ...coverage, planned: 0, measured: 0 },
+        }),
+      ).failures,
+    ).toEqual([
+      'nav drawer checks missing at 1024, 390',
+      'touch scrolling behind the open nav drawer was not checked in Chromium, phone emulation, WebKit, iPhone 15 profile',
+    ]);
+  });
+
   it('fails on a shared title, an overlay check, a touch scroll that moved the page and a write', () => {
-    const { failures } = gateVerdict(
-      green({
+    expect(
+      only({
         titles: {
           byRoute: { orders: 'Orders', order: 'Orders' },
           duplicates: [{ title: 'Orders', routes: ['order', 'orders'] }],
         },
         overlays: [
+          drawer(1024),
+          drawer(390),
           {
             route: 'alarms',
             width: 1440,
@@ -625,26 +761,17 @@ describe('gateVerdict', () => {
             checks: { escapeCloses: true, focusReturns: false },
             findings: ['focusReturns: no'],
           },
-          {
-            route: 'alarms',
-            width: 1440,
-            kind: 'menu',
-            trigger: 'More',
-            checks: { escapeCloses: true },
-            findings: [],
-          },
         ],
         touchScroll: [
-          ran('Chromium, phone emulation'),
+          ran(TOUCH_ENGINES[0]),
           {
-            ...ran('WebKit, iPhone 15 profile'),
+            ...ran(TOUCH_ENGINES[1]),
             findings: ['with the drawer open the page can still scroll 900 px'],
           },
         ],
         writes: ['POST /api/v1/alarms/x/ack'],
       }),
-    );
-    expect(failures).toEqual([
+    ).toEqual([
       'the title "Orders" is shared by order, orders (G-05)',
       'modal dialog "Acknowledge" on alarms at 1440: focusReturns: no',
       'touch scroll (WebKit, iPhone 15 profile, /orders): with the drawer open the page can still scroll 900 px',
@@ -652,26 +779,29 @@ describe('gateVerdict', () => {
     ]);
   });
 
-  it('lists keyboard findings and sideways scrolling without failing; a run without the shell needs no touch check', () => {
-    const verdict = gateVerdict(
-      report([entry({ overflowX: true })], {
-        filter: { routes: ['orders'], roles: [], widths: [], states: [] },
-        keyboard: [
-          {
-            route: 'orders',
-            role: 'supervisor',
-            width: 390,
-            stops: [],
-            longestTableRun: 12,
-            skippedByLinkRun: 0,
-            findings: ['12 stops inside one table before leaving it (G-33)'],
-          },
-        ],
-      }),
-    );
+  it('fails on a hidden or off-screen focus (2.4.7), a covered one (2.4.11) and a G-33 run', () => {
+    const k = (over: Partial<KeyboardSample>) =>
+      only({ keyboard: [sample('orders', 1440), sample('orders', 390, over)] });
+    expect(k({ hidden: ['button "Save"'] })).toEqual([
+      'no visible focus indicator (2.4.7) on orders at 390: button "Save"',
+    ]);
+    expect(k({ offScreen: ['a "Next"'] })).toEqual([
+      'focus off screen or on a zero-size element (2.4.7) on orders at 390: a "Next"',
+    ]);
+    expect(k({ covered: ['a "PO-1"'] })).toEqual([
+      'focused element covered by another (2.4.11) on orders at 390: a "PO-1"',
+    ]);
+    expect(k({ longestTableRun: 10 })).toEqual([
+      '10 stops inside one table before leaving it (G-33) on orders at 390',
+    ]);
+    // Under the limit, or behind a skip link, it is no finding.
+    expect(k({ longestTableRun: 9, skippedByLinkRun: 30 })).toEqual([]);
+  });
+
+  it('lists sideways scrolling without failing', () => {
+    const verdict = gateVerdict(green({}, [entry({ overflowX: true }), entry({ width: 390 })]));
     expect(verdict.failures).toEqual([]);
     expect(verdict.listed).toEqual([
-      'keyboard, orders at 390: 12 stops inside one table before leaving it (G-33)',
       '1 pages wider than the viewport: orders data supervisor 1440 light',
     ]);
   });
@@ -684,26 +814,120 @@ describe('gateVerdict', () => {
         violations: [violation('color-contrast', 'serious')],
       }),
     );
-    const [failure] = gateVerdict(green({}, many)).failures;
+    const [failure] = only({}, [entry(), entry({ width: 390 }), ...many]);
     expect(failure).toMatch(/^color-contrast \(serious\) on 8 pages: .*404 light, and 3 more$/);
+  });
+});
+
+describe('narrowedBy', () => {
+  it('names every filter variable set, so a narrowed run is never the gate', () => {
+    expect(narrowedBy({ routes: [], roles: [], widths: [], states: [] })).toEqual([]);
+    expect(narrowedBy({ routes: [], roles: [], widths: [], states: [], themes: [] })).toEqual([]);
+    expect(
+      narrowedBy({
+        routes: ['orders', 'shell'],
+        roles: ['operator'],
+        widths: [390],
+        states: ['empty'],
+        themes: ['dark'],
+      }),
+    ).toEqual([
+      'A11Y_ROUTES=orders,shell',
+      'A11Y_ROLES=operator',
+      'A11Y_WIDTHS=390',
+      'A11Y_STATES=empty',
+      'A11Y_THEMES=dark',
+    ]);
+  });
+});
+
+describe('skipTableOf (G-33)', () => {
+  it('exempts a run only behind a link whose target is past a table, rendered and focusable', () => {
+    const facts = { table: 2, targetRendered: true, targetFocusable: true };
+    expect(skipTableOf(facts)).toBe(2);
+    expect(skipTableOf({ ...facts, table: -1 })).toBeNull();
+    expect(skipTableOf({ ...facts, targetRendered: false })).toBeNull();
+    expect(skipTableOf({ ...facts, targetFocusable: false })).toBeNull();
+    expect(skipTableOf({ ...facts, table: 0 })).toBe(0);
+  });
+});
+
+describe('a11yPreflight', () => {
+  const routes = [{ id: 'orders', path: '/orders' }];
+
+  it('returns the budget for a run that can be gated', () => {
+    expect(a11yPreflight({}, 'quality', routes)).toBe(DEFAULT_BUDGET_MS);
+    expect(a11yPreflight({ A11Y_BUDGET_MS: '60000' }, 'orders', routes)).toBe(60_000);
+    expect(a11yPreflight({ A11Y_ROLES: 'supervisor,signed-out' }, 'alarms', routes)).toBe(
+      DEFAULT_BUDGET_MS,
+    );
+  });
+
+  it('refuses no browser, a last pass without the roles, and a typo', () => {
+    expect(() => a11yPreflight({ RECONCILE_BROWSER: '0' }, 'quality', routes)).toThrow(
+      /RECONCILE_BROWSER=0 leaves out the browser/,
+    );
+    expect(() => a11yPreflight({}, 'alarms', routes)).toThrow(
+      /the last pass \(alarms\) has no account for operator, quality, maintenance, admin/,
+    );
+    expect(() => a11yPreflight({ A11Y_ROLES: 'operator' }, undefined, routes)).toThrow(
+      /the last pass \(none\) has no account for operator/,
+    );
+    expect(() => a11yPreflight({ A11Y_ROUTES: 'ordrs' }, 'quality', routes)).toThrow(/no route/);
+    expect(() => a11yPreflight({ A11Y_BUDGET_MS: '0' }, 'quality', routes)).toThrow(
+      /A11Y_BUDGET_MS/,
+    );
+  });
+});
+
+describe('a11yOutcome', () => {
+  const launched = Date.parse('2026-10-24T00:00:00.000Z');
+  const text = (r: A11yReport) => JSON.stringify(r);
+
+  it('passes a green report of this run, and says when it is partial', () => {
+    expect(a11yOutcome(text(green()), 0, launched)).toEqual({ ok: true, message: 'gate passed' });
+    expect(
+      a11yOutcome(
+        text(
+          green({ filter: { routes: [], roles: [], widths: [], states: [], themes: ['dark'] } }),
+        ),
+        0,
+        launched,
+      ),
+    ).toEqual({ ok: true, message: 'partial run, not the gate (narrowed: A11Y_THEMES=dark)' });
+  });
+
+  it('fails without a readable report of this run, on a red verdict, or a failed Playwright', () => {
+    expect(a11yOutcome(undefined, 0, launched)).toEqual({
+      ok: false,
+      message:
+        'the accessibility harness wrote no readable report (Playwright exit 0: no report.json)',
+    });
+    expect(a11yOutcome('{', 0, launched).ok).toBe(false);
+    expect(a11yOutcome('{}', 0, launched).message).toMatch(/not a harness report/);
+    expect(a11yOutcome(text(green()), 0, launched + 60_000).message).toMatch(/from an earlier run/);
+    expect(a11yOutcome(text(green({ writes: ['POST /x'] })), 0, launched)).toEqual({
+      ok: false,
+      message: 'the accessibility gate failed: the harness caused 1 writes: POST /x',
+    });
+    expect(a11yOutcome(text(green()), 1, launched)).toEqual({
+      ok: false,
+      message: 'the accessibility harness failed (Playwright exit 1)',
+    });
   });
 });
 
 describe('summarize, the verdict', () => {
   it('opens with the gate: passed, or failed with each reason, then what is listed', () => {
-    const touch = (engine: string) => ({ engine, route: '/', ran: true, detail: {}, findings: [] });
-    const clean = report([entry()], { touchScroll: [touch('a'), touch('b')] });
-    expect(summarize(clean)).toContain('**Gate: passed.**');
+    expect(summarize(green())).toContain('**Gate: passed.**');
     const md = summarize(
-      report(
-        [
-          entry({
-            counts: { ...zeroCounts(), serious: 1, moderate: 1 },
-            violations: [violation('color-contrast', 'serious'), violation('region', 'moderate')],
-          }),
-        ],
-        { touchScroll: [touch('a')] },
-      ),
+      green({}, [
+        entry({
+          counts: { ...zeroCounts(), serious: 1, moderate: 1 },
+          violations: [violation('color-contrast', 'serious'), violation('region', 'moderate')],
+        }),
+        entry({ width: 390 }),
+      ]),
     );
     expect(md).toContain('**Gate: failed** (1):');
     expect(md).toContain(
@@ -712,21 +936,21 @@ describe('summarize, the verdict', () => {
     expect(md).toContain('Listed, not failed:\n\n- region (moderate) on 1 pages');
   });
 
+  it('calls a narrowed run partial, never passed', () => {
+    const narrowed = green({ filter: { routes: ['orders'], roles: [], widths: [], states: [] } });
+    const md = summarize(narrowed);
+    expect(md).toContain(
+      '**Partial run: not the gate** (narrowed: A11Y_ROUTES=orders). Only the unfiltered run counts as the gate; nothing failed in what it planned.',
+    );
+    expect(md).not.toContain('Gate: passed');
+    expect(summarize({ ...narrowed, writes: ['POST /x'] })).toContain(
+      'in what it planned, 1 failed:',
+    );
+  });
+
   it('shows the run skipped by a link apart from the G-33 run', () => {
     const md = summarize(
-      report([], {
-        keyboard: [
-          {
-            route: 'lot',
-            role: 'supervisor',
-            width: 390,
-            stops: [],
-            longestTableRun: 2,
-            skippedByLinkRun: 35,
-            findings: [],
-          },
-        ],
-      }),
+      report([], { keyboard: [sample('lot', 390, { longestTableRun: 2, skippedByLinkRun: 35 })] }),
     );
     expect(md).toContain('| lot | 390 | 0 | 2 | 35 | – |');
   });

@@ -413,8 +413,33 @@ describe('alarm list', () => {
     await renderApp('/alarms');
     const alerts = await screen.findAllByText(/Could not load the active alarms/);
     expect(alerts).toHaveLength(1);
-    expect(screen.getAllByText(/database down/).length).toBeGreaterThan(0);
+    // One error for the three failed lists (#394), in the tab panel, not one per tab count.
+    const alert = screen.getByRole('alert');
+    expect(screen.getAllByRole('alert')).toEqual([alert]);
+    expect(alert.textContent).toContain(
+      'Could not load the active alarms, the acknowledged alarms and the shelved alarms.',
+    );
+    expect(within(screen.getByTestId('alarm-list')).getByRole('alert')).toBe(alert);
+    expect(screen.getAllByText(/database down/)).toHaveLength(1);
     expect(screen.queryByTestId('ack-selected')).toBeNull();
+  });
+
+  it('says the other tabs’ failed lists in one error above the tabs, the shown one in its panel (#394)', async () => {
+    const server = mes(empty());
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(requestUrl(input), 'http://localhost');
+      return url.pathname === '/api/v1/alarms' && url.searchParams.get('view') !== 'active'
+        ? Promise.resolve(problem(503, 'Service Unavailable', 'database down', '/api/v1/alarms'))
+        : server.fetch(input, init);
+    });
+    await renderApp('/alarms');
+    await screen.findByTestId('alarm-list-empty');
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain(
+      'Could not load the acknowledged alarms and the shelved alarms.',
+    );
+    expect(screen.getAllByRole('alert')).toEqual([alert]);
+    expect(within(screen.getByTestId('alarm-list')).queryByRole('alert')).toBeNull();
   });
 
   it('shows a flood banner per position while an episode is open', async () => {

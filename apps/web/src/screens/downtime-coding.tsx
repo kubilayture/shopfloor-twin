@@ -20,6 +20,12 @@ import {
 import { queryKeys, usePlantClock } from '../api/queries.ts';
 import { LossBadge } from '../components/loss-badge.tsx';
 import { QueryError } from '../components/query-error.tsx';
+import {
+  ScreenError,
+  queryRead,
+  useScreenErrors,
+  selectionRead,
+} from '../components/screen-error.tsx';
 import { ShiftPicker, useShiftSelection } from '../components/shift-picker.tsx';
 import { StateBadge } from '../components/state-badge.tsx';
 import { Badge } from '../components/ui/badge.tsx';
@@ -789,13 +795,19 @@ export function DowntimeCoding() {
     );
   };
 
-  const failed = selection.error
-    ? { what: 'the shifts', error: selection.error, retry: selection.retry }
-    : shift.isError
-      ? { what: 'the shift', error: shift.error, retry: () => void shift.refetch() }
-      : list.isError
-        ? { what: 'the downtime records', error: list.error, retry: () => void list.refetch() }
-        : undefined;
+  // One error for the screen (#394): the records' failed read (or one it waits on) takes the
+  // table's place, naming every failed read; with the records in, a failed read of the reason
+  // codes is said above them.
+  const errors = useScreenErrors([
+    selectionRead(selection),
+    queryRead('the shift', shift, 'base'),
+    queryRead('the downtime records', list, 'main'),
+    queryRead('the reason codes', reasons, 'base'),
+  ]);
+  // The records' read, or one it waits on, failed (kept while it is read again: `errors`).
+  const failed = errors.summary.some((read) => read.key !== 'the reason codes');
+  const waits =
+    (selection.error !== null && selection.error !== undefined) || shift.isError || list.isError;
   const noShift = !selection.pending && shiftKey === undefined;
   const loading =
     !noShift && (selection.pending || shift.isPending || list.isPending) && shown.length === 0;
@@ -857,13 +869,9 @@ export function DowntimeCoding() {
           ) : undefined
         }
       />
-      {reasons.isError ? (
+      {errors.summary.length > 0 && !failed ? (
         <div className="mb-4">
-          <QueryError
-            what="the reason codes"
-            error={reasons.error}
-            onRetry={() => void reasons.refetch()}
-          />
+          <ScreenError errors={errors} />
         </div>
       ) : null}
       {list.data?.truncated ? (
@@ -897,7 +905,7 @@ export function DowntimeCoding() {
       >
         <div className="min-w-0">
           {failed ? (
-            <QueryError what={failed.what} error={failed.error} onRetry={failed.retry} />
+            <ScreenError errors={errors} />
           ) : (
             <DataTable
               caption="Downtime records of the shift, uncoded first"
@@ -919,7 +927,8 @@ export function DowntimeCoding() {
                 `The record left the list; ${left === 0 ? 'no records remain' : `${countOf(left, 'record')} ${left === 1 ? 'remains' : 'remain'}`}.`
               }
               narrow="stack"
-              loading={loading ? 'Loading downtime…' : undefined}
+              // A failed read waits here while the screen's other reads are on their way.
+              loading={loading || waits ? 'Loading downtime…' : undefined}
               empty={
                 noShift ? (
                   <EmptyState

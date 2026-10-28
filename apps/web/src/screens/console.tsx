@@ -1,5 +1,5 @@
 import type { EquipmentDto } from '@shopfloor/contracts/mes-api';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { useEffect, useId, useRef, useState, type SyntheticEvent, type ReactNode } from 'react';
 import { listEquipment, getReasonCodes } from '../api/client.ts';
 import { queryKeys } from '../api/queries.ts';
@@ -33,7 +33,13 @@ import {
   type SimStatus,
 } from '../api/sim.ts';
 import { useCan } from '../auth/auth.tsx';
-import { QueryError } from '../components/query-error.tsx';
+import {
+  ScreenError,
+  SectionError,
+  queryRead,
+  useScreenErrors,
+  type ScreenErrors,
+} from '../components/screen-error.tsx';
 import { Badge } from '../components/ui/badge.tsx';
 import { Button } from '../components/ui/button.tsx';
 import { Callout } from '../components/ui/callout.tsx';
@@ -894,14 +900,11 @@ function ToolCard({ cncs }: { readonly cncs: readonly EquipmentDto[] }) {
 function FaultsSection({
   equipment,
   codes,
+  errors,
 }: {
-  readonly equipment: {
-    readonly data: readonly EquipmentDto[] | undefined;
-    readonly isError: boolean;
-    readonly error: unknown;
-    readonly refetch: () => unknown;
-  };
+  readonly equipment: { readonly data: readonly EquipmentDto[] | undefined };
   readonly codes: readonly string[];
+  readonly errors: ScreenErrors;
 }) {
   const machines = [...(equipment.data ?? [])].sort((a, b) => a.id.localeCompare(b.id));
   return (
@@ -911,12 +914,8 @@ function FaultsSection({
       testId="console-faults"
       description="Break machines, sensors and connections; the MES sees only what the machines report."
     >
-      {equipment.isError ? (
-        <QueryError
-          what="the machines"
-          error={equipment.error}
-          onRetry={() => void equipment.refetch()}
-        />
+      {errors.inSection('the machines') ? (
+        <SectionError errors={errors} readKey="the machines" />
       ) : equipment.data === undefined ? (
         <Skeleton shape="card" label="Loading the machines…" />
       ) : (
@@ -934,12 +933,13 @@ function FaultsSection({
   );
 }
 
-function MaterialsSection() {
-  const lots = useQuery({
-    queryKey: simKeys.lots,
-    queryFn: ({ signal }) => getLots(signal),
-    refetchInterval: LIST_POLL_MS,
-  });
+function MaterialsSection({
+  lots,
+  errors,
+}: {
+  readonly lots: UseQueryResult<Awaited<ReturnType<typeof getLots>>>;
+  readonly errors: ScreenErrors;
+}) {
   const lotAction = useAction(
     (lot: string, blocked: boolean) => setLotBlocked(lot, blocked),
     (r, lot, blocked) =>
@@ -975,54 +975,53 @@ function MaterialsSection() {
           <OutcomeLine outcome={lotAction.outcome} testId="lot-outcome" />
         </div>
       ) : null}
-      <DataTable
-        caption="Material lots"
-        testId="lot-table"
-        columns={columns}
-        rows={lots.data?.lots ?? []}
-        rowKey={(l) => l.lot}
-        rowTestId={(l) => `lot-${l.lot}`}
-        rowProps={(l) => ({ 'data-blocked': String(l.blocked) })}
-        rowTone={(l) => (l.blocked ? 'caution' : undefined)}
-        density="compact"
-        loading={lots.data === undefined && !lots.isError ? 'Loading the lots…' : undefined}
-        error={
-          lots.isError
-            ? { what: 'the lots', error: lots.error, onRetry: () => void lots.refetch() }
-            : undefined
-        }
-        empty={<EmptyState title="No material lots" body="The simulator holds no lot." />}
-        actions={(l) => (
-          // Both, always: an action applies at the next step, so a paused run still shows the
-          // lot as it was. The one that matches the lot's state carries the weight (N-03).
-          <>
-            <Button
-              size="sm"
-              variant={l.blocked ? 'ghost' : 'danger'}
-              data-testid={`lot-block-${l.lot}`}
-              aria-label={`Block ${l.lot}`}
-              disabled={lotAction.pending}
-              onClick={() => {
-                lotAction.act(l.lot, true);
-              }}
-            >
-              Block
-            </Button>
-            <Button
-              size="sm"
-              variant={l.blocked ? 'secondary' : 'ghost'}
-              data-testid={`lot-release-${l.lot}`}
-              aria-label={`Release ${l.lot}`}
-              disabled={lotAction.pending}
-              onClick={() => {
-                lotAction.act(l.lot, false);
-              }}
-            >
-              Release
-            </Button>
-          </>
-        )}
-      />
+      {errors.inSection('the lots') ? (
+        <SectionError errors={errors} readKey="the lots" />
+      ) : (
+        <DataTable
+          caption="Material lots"
+          testId="lot-table"
+          columns={columns}
+          rows={lots.data?.lots ?? []}
+          rowKey={(l) => l.lot}
+          rowTestId={(l) => `lot-${l.lot}`}
+          rowProps={(l) => ({ 'data-blocked': String(l.blocked) })}
+          rowTone={(l) => (l.blocked ? 'caution' : undefined)}
+          density="compact"
+          loading={lots.data === undefined ? 'Loading the lots…' : undefined}
+          empty={<EmptyState title="No material lots" body="The simulator holds no lot." />}
+          actions={(l) => (
+            // Both, always: an action applies at the next step, so a paused run still shows the
+            // lot as it was. The one that matches the lot's state carries the weight (N-03).
+            <>
+              <Button
+                size="sm"
+                variant={l.blocked ? 'ghost' : 'danger'}
+                data-testid={`lot-block-${l.lot}`}
+                aria-label={`Block ${l.lot}`}
+                disabled={lotAction.pending}
+                onClick={() => {
+                  lotAction.act(l.lot, true);
+                }}
+              >
+                Block
+              </Button>
+              <Button
+                size="sm"
+                variant={l.blocked ? 'secondary' : 'ghost'}
+                data-testid={`lot-release-${l.lot}`}
+                aria-label={`Release ${l.lot}`}
+                disabled={lotAction.pending}
+                onClick={() => {
+                  lotAction.act(l.lot, false);
+                }}
+              >
+                Release
+              </Button>
+            </>
+          )}
+        />
+      )}
     </Section>
   );
 }
@@ -1045,12 +1044,13 @@ const OPERATOR_STATUS: Readonly<Record<SimOperator['status'], string>> = {
   'off-shift': 'Off shift',
 };
 
-function OperatorsSection() {
-  const operators = useQuery({
-    queryKey: simKeys.operators,
-    queryFn: ({ signal }) => getOperators(signal),
-    refetchInterval: LIST_POLL_MS,
-  });
+function OperatorsSection({
+  operators,
+  errors,
+}: {
+  readonly operators: UseQueryResult<Awaited<ReturnType<typeof getOperators>>>;
+  readonly errors: ScreenErrors;
+}) {
   const current = splitShift(operators.data?.currentShift ?? null);
   const shiftIds = [...new Set((operators.data?.operators ?? []).map((o) => o.shift))].sort();
   const [date, setDate] = useState<string | undefined>(undefined);
@@ -1114,12 +1114,8 @@ function OperatorsSection() {
       testId="console-operators"
       description="Mark operators absent for a whole shift: the stations they would staff stand idle."
     >
-      {operators.isError ? (
-        <QueryError
-          what="the operators"
-          error={operators.error}
-          onRetry={() => void operators.refetch()}
-        />
+      {errors.inSection('the operators') ? (
+        <SectionError errors={errors} readKey="the operators" />
       ) : operators.data === undefined ? (
         <Skeleton shape="table" label="Loading the operators…" />
       ) : (
@@ -1276,11 +1272,15 @@ function OperatorsSection() {
   );
 }
 
-function ScenarioSection({ status }: { readonly status: SimStatus | undefined }) {
-  const scenarios = useQuery({
-    queryKey: simKeys.scenarios,
-    queryFn: ({ signal }) => getScenarios(signal),
-  });
+function ScenarioSection({
+  status,
+  scenarios,
+  errors,
+}: {
+  readonly status: SimStatus | undefined;
+  readonly scenarios: UseQueryResult<Awaited<ReturnType<typeof getScenarios>>>;
+  readonly errors: ScreenErrors;
+}) {
   const scenario = useQuery({
     queryKey: simKeys.scenario,
     queryFn: ({ signal }) => getScenario(signal),
@@ -1325,44 +1325,40 @@ function ScenarioSection({ status }: { readonly status: SimStatus | undefined })
       testId="console-scenario"
       description="A committed timeline loads only while the run is idle (not started) and has no timeline, injection or action yet; then start the run."
     >
-      <DataTable
-        caption="Committed timelines"
-        testId="scenario-list"
-        narrow="stack"
-        columns={listColumns}
-        rows={scenarios.data?.scenarios ?? []}
-        rowKey={(s) => s.name}
-        density="compact"
-        loading={
-          scenarios.data === undefined && !scenarios.isError ? 'Loading the timelines…' : undefined
-        }
-        error={
-          scenarios.isError
-            ? {
-                what: 'the timelines',
-                error: scenarios.error,
-                onRetry: () => void scenarios.refetch(),
-              }
-            : undefined
-        }
-        empty={
-          <EmptyState title="No committed timeline" body="The simulator has no timeline to load." />
-        }
-        actions={(s) => (
-          <Button
-            size="sm"
-            variant="secondary"
-            data-testid={`scenario-load-${s.name}`}
-            aria-label={`Load ${s.name}`}
-            disabled={load.pending || !loadable}
-            onClick={() => {
-              load.act(s.name);
-            }}
-          >
-            Load
-          </Button>
-        )}
-      />
+      {errors.inSection('the timelines') ? (
+        <SectionError errors={errors} readKey="the timelines" />
+      ) : (
+        <DataTable
+          caption="Committed timelines"
+          testId="scenario-list"
+          narrow="stack"
+          columns={listColumns}
+          rows={scenarios.data?.scenarios ?? []}
+          rowKey={(s) => s.name}
+          density="compact"
+          loading={scenarios.data === undefined ? 'Loading the timelines…' : undefined}
+          empty={
+            <EmptyState
+              title="No committed timeline"
+              body="The simulator has no timeline to load."
+            />
+          }
+          actions={(s) => (
+            <Button
+              size="sm"
+              variant="secondary"
+              data-testid={`scenario-load-${s.name}`}
+              aria-label={`Load ${s.name}`}
+              disabled={load.pending || !loadable}
+              onClick={() => {
+                load.act(s.name);
+              }}
+            >
+              Load
+            </Button>
+          )}
+        />
+      )}
       {load.outcome ? <OutcomeLine outcome={load.outcome} testId="scenario-outcome" /> : null}
       {loaded ? (
         <div className="mt-6">
@@ -1432,21 +1428,21 @@ function LogItem({
 function List<T>({
   query,
   what,
+  errors,
   testId,
   items,
   empty,
   render,
 }: {
-  readonly query: { isError: boolean; error: unknown; data: unknown; refetch: () => unknown };
+  readonly query: { data: unknown };
   readonly what: string;
+  readonly errors: ScreenErrors;
   readonly testId: string;
   readonly items: readonly T[];
   readonly empty: { readonly title: string; readonly body: string };
   readonly render: (item: T) => ReactNode;
 }) {
-  if (query.isError) {
-    return <QueryError what={what} error={query.error} onRetry={() => void query.refetch()} />;
-  }
+  if (errors.inSection(what)) return <SectionError errors={errors} readKey={what} />;
   if (query.data === undefined)
     return <Skeleton shape="text" rows={3} label={`Loading ${what}…`} />;
   if (items.length === 0) return <EmptyState size="inline" title={empty.title} body={empty.body} />;
@@ -1572,22 +1568,19 @@ function EventsCard({ enabled }: { readonly enabled: boolean }) {
   );
 }
 
-function LogSection({ enabled }: { readonly enabled: boolean }) {
-  const actions = useQuery({
-    queryKey: simKeys.actions,
-    queryFn: ({ signal }) => getActions(signal),
-    refetchInterval: LIST_POLL_MS,
-  });
-  const injections = useQuery({
-    queryKey: simKeys.injections,
-    queryFn: ({ signal }) => getInjections(signal),
-    refetchInterval: LIST_POLL_MS,
-  });
-  const drifts = useQuery({
-    queryKey: simKeys.drifts,
-    queryFn: ({ signal }) => getDrifts(signal),
-    refetchInterval: LIST_POLL_MS,
-  });
+function LogSection({
+  enabled,
+  actions,
+  injections,
+  drifts,
+  errors,
+}: {
+  readonly enabled: boolean;
+  readonly actions: UseQueryResult<Awaited<ReturnType<typeof getActions>>>;
+  readonly injections: UseQueryResult<Awaited<ReturnType<typeof getInjections>>>;
+  readonly drifts: UseQueryResult<Awaited<ReturnType<typeof getDrifts>>>;
+  readonly errors: ScreenErrors;
+}) {
   return (
     <Section
       id="console-log-title"
@@ -1600,6 +1593,7 @@ function LogSection({ enabled }: { readonly enabled: boolean }) {
           <List
             query={actions}
             what="the actions"
+            errors={errors}
             testId="action-list"
             items={actions.data?.actions ?? []}
             empty={{
@@ -1624,6 +1618,7 @@ function LogSection({ enabled }: { readonly enabled: boolean }) {
           <List
             query={injections}
             what="the failure injections"
+            errors={errors}
             testId="injection-list"
             items={injections.data?.injections ?? []}
             empty={{ title: 'No failure injected yet', body: 'Inject one under Faults.' }}
@@ -1645,6 +1640,7 @@ function LogSection({ enabled }: { readonly enabled: boolean }) {
           <List
             query={drifts}
             what="the drifts"
+            errors={errors}
             testId="drift-list"
             items={drifts.data?.drifts ?? []}
             empty={{ title: 'No drift injected yet', body: 'Inject one under Faults.' }}
@@ -1687,6 +1683,53 @@ export function Console() {
     queryFn: ({ signal }) => getReasonCodes(signal),
     enabled: allowed,
   });
+  // Every section's read, here so the console says one error when several failed (#394): with
+  // the simulator down, one alert instead of one per section.
+  const scenarios = useQuery({
+    queryKey: simKeys.scenarios,
+    queryFn: ({ signal }) => getScenarios(signal),
+    enabled: allowed,
+  });
+  const lots = useQuery({
+    queryKey: simKeys.lots,
+    queryFn: ({ signal }) => getLots(signal),
+    refetchInterval: LIST_POLL_MS,
+    enabled: allowed,
+  });
+  const operators = useQuery({
+    queryKey: simKeys.operators,
+    queryFn: ({ signal }) => getOperators(signal),
+    refetchInterval: LIST_POLL_MS,
+    enabled: allowed,
+  });
+  const actions = useQuery({
+    queryKey: simKeys.actions,
+    queryFn: ({ signal }) => getActions(signal),
+    refetchInterval: LIST_POLL_MS,
+    enabled: allowed,
+  });
+  const injections = useQuery({
+    queryKey: simKeys.injections,
+    queryFn: ({ signal }) => getInjections(signal),
+    refetchInterval: LIST_POLL_MS,
+    enabled: allowed,
+  });
+  const drifts = useQuery({
+    queryKey: simKeys.drifts,
+    queryFn: ({ signal }) => getDrifts(signal),
+    refetchInterval: LIST_POLL_MS,
+    enabled: allowed,
+  });
+  const errors = useScreenErrors([
+    queryRead('the run', status, 'section'),
+    queryRead('the timelines', scenarios, 'section'),
+    queryRead('the machines', equipment, 'section'),
+    queryRead('the lots', lots, 'section'),
+    queryRead('the operators', operators, 'section'),
+    queryRead('the actions', actions, 'section'),
+    queryRead('the failure injections', injections, 'section'),
+    queryRead('the drifts', drifts, 'section'),
+  ]);
   // The session ended or lost sim:control (nginx's 401 or 403 on the poll): the event stream,
   // checked only at its upgrade, closes now rather than at the end of its lifetime.
   const denied =
@@ -1714,27 +1757,40 @@ export function Console() {
         </Forbidden>
       ) : (
         <>
-          <SectionNav items={CONSOLE_SECTIONS} testId="console-section-nav" />
+          {errors.whole ? null : (
+            <SectionNav items={CONSOLE_SECTIONS} testId="console-section-nav" />
+          )}
           <div className="mt-6">
-            <RunSection
-              status={status.data}
-              error={
-                status.isError ? (
-                  <div className="mb-3">
-                    <QueryError
-                      what="the run"
-                      error={status.error}
-                      onRetry={() => void status.refetch()}
-                    />
-                  </div>
-                ) : null
-              }
-            />
-            <ScenarioSection status={status.data} />
-            <FaultsSection equipment={equipment} codes={codes} />
-            <MaterialsSection />
-            <OperatorsSection />
-            <LogSection enabled={!denied} />
+            {errors.summary.length > 0 ? (
+              <div className="mb-6">
+                <ScreenError errors={errors} />
+              </div>
+            ) : null}
+            {errors.whole ? null : (
+              <>
+                <RunSection
+                  status={status.data}
+                  error={
+                    errors.inSection('the run') ? (
+                      <div className="mb-3">
+                        <SectionError errors={errors} readKey="the run" />
+                      </div>
+                    ) : null
+                  }
+                />
+                <ScenarioSection status={status.data} scenarios={scenarios} errors={errors} />
+                <FaultsSection equipment={equipment} codes={codes} errors={errors} />
+                <MaterialsSection lots={lots} errors={errors} />
+                <OperatorsSection operators={operators} errors={errors} />
+                <LogSection
+                  enabled={!denied}
+                  actions={actions}
+                  injections={injections}
+                  drifts={drifts}
+                  errors={errors}
+                />
+              </>
+            )}
           </div>
         </>
       )}

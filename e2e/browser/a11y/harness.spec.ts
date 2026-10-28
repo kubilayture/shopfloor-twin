@@ -49,10 +49,11 @@ import {
   frames,
   heightFor,
   measure,
-  menuButton,
   sampleKeyboard,
   screenshot,
-  scrollLockStyles,
+  lockProof,
+  position,
+  SCROLLED_TO,
   settle,
 } from './probe.ts';
 import { DISCOVERY, ROUTES, type RouteSpec } from './routes.ts';
@@ -555,8 +556,6 @@ async function useTheme(page: Page, theme: Theme): Promise<void> {
 
 /** A long page to scroll: the alarm history, else the orders. */
 const LONG_PAGES = ['/alarms?view=history', '/orders', '/'];
-/** Where the page is scrolled to before the drawer opens: the lock must hold it there. */
-const SCROLLED_TO = 300;
 
 async function longPage(page: Page): Promise<string | undefined> {
   for (const path of LONG_PAGES) {
@@ -569,74 +568,6 @@ async function longPage(page: Page): Promise<string | undefined> {
     if (long) return path;
   }
   return undefined;
-}
-
-/** Where the page behind is drawn: `main`'s top edge in the viewport, and the scroll position. */
-const position = (page: Page) =>
-  page.evaluate(() => ({
-    mainTop: Math.round(document.querySelector('main')?.getBoundingClientRect().top ?? 0),
-    scrollY: Math.round(window.scrollY),
-    // How far the viewport could still scroll: a touch scroll has nothing to move when it is 0.
-    range: Math.max(
-      0,
-      Math.round(document.documentElement.scrollHeight - document.documentElement.clientHeight),
-    ),
-  }));
-
-/**
- * The drawer's scroll lock, in any engine (UX-F1, #337): the page scrolled down `SCROLLED_TO`,
- * the drawer opened by a tap; `act` then tries to scroll the page behind (a touch gesture or a
- * wheel). The page must not move when the drawer opens or under `act`, must have nothing left to
- * scroll while it is open (iOS Safari scrolls a root with `overflow: hidden` under a finger, but
- * not a page with no scroll range), and must be back where it was once Escape closes it.
- */
-async function lockProof(
-  page: Page,
-  act: () => Promise<Record<string, unknown>>,
-): Promise<{ ran: boolean; detail: Record<string, unknown>; findings: string[] }> {
-  await page.evaluate((y) => {
-    window.scrollTo({ top: y, behavior: 'instant' });
-  }, SCROLLED_TO);
-  await frames(page);
-  const before = await position(page);
-  if (before.scrollY < SCROLLED_TO - 1) {
-    return {
-      ran: false,
-      detail: { before },
-      findings: [`the page did not scroll to ${String(SCROLLED_TO)} px before the drawer opened`],
-    };
-  }
-  // A tap at the button's point: a locator's tap scrolls the button into view first, and with the
-  // root's scroll padding that scrolls the page up under the sticky top bar.
-  const box = await menuButton(page).boundingBox({ timeout: 3_000 });
-  if (!box) return { ran: false, detail: { before }, findings: ['no menu button to tap'] };
-  await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
-  await frames(page, 400);
-  const open = await position(page);
-  const acted = await act();
-  const after = await position(page);
-  const styles = await scrollLockStyles(page);
-  await page.keyboard.press('Escape');
-  await frames(page, 400);
-  const closed = await position(page);
-  const findings: string[] = [];
-  if (Math.abs(open.mainTop - before.mainTop) > 1)
-    findings.push(
-      `opening the drawer moved the page behind by ${String(open.mainTop - before.mainTop)} px`,
-    );
-  if (open.range > 0)
-    findings.push(
-      `with the drawer open the page can still scroll ${String(open.range)} px (a touch scroll moves it)`,
-    );
-  if (Math.abs(after.mainTop - open.mainTop) > 1 || after.scrollY !== open.scrollY)
-    findings.push(
-      `a scroll over the open drawer moved the page behind by ${String(open.mainTop - after.mainTop)} px`,
-    );
-  if (Math.abs(closed.scrollY - before.scrollY) > 1)
-    findings.push(
-      `closing the drawer left the page at ${String(closed.scrollY)} px, not ${String(before.scrollY)} px`,
-    );
-  return { ran: true, detail: { before, open, after, closed, ...acted, ...styles }, findings };
 }
 
 /**

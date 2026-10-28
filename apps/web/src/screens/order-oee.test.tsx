@@ -6,6 +6,7 @@ import { liveKeys } from '../live/live-cache.ts';
 import { ORDER_LINE, orderJob, orderOee, result } from '../test/oee-fixtures.ts';
 import { order } from '../test/order-fixtures.ts';
 import { orderMes, orderState } from '../test/order-mes.ts';
+import { problem } from '../test/fixtures.ts';
 import { renderApp, settle } from '../test/render-app.tsx';
 
 afterEach(() => {
@@ -274,5 +275,56 @@ describe('order OEE on the order detail (#233)', () => {
     vi.stubGlobal('fetch', orderMes(orderState([order('PO-1004')])).fetch);
     await renderApp('/orders/PO-1004');
     expect((await screen.findByTestId('order-oee-missing')).textContent).toContain('no OEE');
+  });
+
+  it('lets a pushed OEE stand in for a failed read: the one error stops naming it (#394)', async () => {
+    const server = orderMes(orderState([order('PO-1002', { status: 'in-progress' })]));
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(input instanceof Request ? input.url : String(input), 'http://localhost')
+        .pathname;
+      return path === '/api/v1/oee/orders/PO-1002' || path === '/api/v1/scrap-records'
+        ? Promise.resolve(problem(400, 'Bad Request', 'refused', path))
+        : server.fetch(input, init);
+    });
+    const app = await renderApp('/orders/PO-1002');
+    await app.open();
+    const alert = await screen.findByRole('alert');
+    await waitFor(() => {
+      expect(alert.textContent).toContain('Could not load the order’s OEE and the scrap records.');
+    });
+    await app.push({ type: 'oee-order', topic: 'oee:order:PO-1002', order: running('PO-1002') });
+    expect(await screen.findByTestId('order-oee')).toBeTruthy();
+    // The scrap records are the one failure left: their section's own error.
+    await waitFor(() => {
+      expect(screen.getAllByRole('alert')).toHaveLength(1);
+    });
+    const own = screen.getByRole('alert');
+    expect(own.textContent).toContain('Could not load the scrap records.');
+    expect(own.textContent).not.toContain('OEE');
+    expect(within(screen.getByTestId('order-scrap')).getByRole('alert')).toBe(own);
+  });
+
+  it('asks nothing of an order the MES does not have: no section read, no OEE topic (#394)', async () => {
+    const server = orderMes(orderState([order('PO-1001')]));
+    const asked: string[] = [];
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
+      asked.push(
+        new URL(input instanceof Request ? input.url : String(input), 'http://localhost').pathname,
+      );
+      return server.fetch(input, init);
+    });
+    const app = await renderApp('/orders/PO-NOPE');
+    await app.open();
+    expect(await screen.findByTestId('order-missing')).toBeTruthy();
+    await settle(() => undefined);
+    expect(asked).toContain('/api/v1/orders/PO-NOPE');
+    for (const path of [
+      '/api/v1/scrap-records',
+      '/api/v1/oee/orders/PO-NOPE',
+      '/api/v1/quality/holds',
+    ]) {
+      expect(asked).not.toContain(path);
+    }
+    expect(subscribed(app)).not.toContain('oee:order:PO-NOPE');
   });
 });

@@ -4,7 +4,7 @@ import { ApiError, getOrderOee } from '../api/client.ts';
 import { queryKeys } from '../api/queries.ts';
 import { FinalityBadge } from '../components/finality-badge.tsx';
 import { NA_REASON, StatusFlags, ratioStat } from '../components/oee-ui.tsx';
-import { QueryError } from '../components/query-error.tsx';
+import { SectionError, type ScreenErrors } from '../components/screen-error.tsx';
 import { Callout } from '../components/ui/callout.tsx';
 import { Code } from '../components/ui/code.tsx';
 import { DataTable, type Column } from '../components/ui/data-table.tsx';
@@ -21,7 +21,6 @@ import {
   parseFraction,
   pickOrderOee,
 } from '../domain/oee.ts';
-import { useLiveOrderOee } from '../live/live-context.tsx';
 
 const HEAD_SOURCE_TEXT: Record<NonNullable<OrderJobOeeDto['head']['source']>, string> = {
   accepted: 'its accepted fact',
@@ -302,14 +301,35 @@ function OrderLineTile({ order }: { readonly order: OrderOeeDto }) {
  * the MES's four decimals in `data-decimal` and the exact fraction in `data-fraction` and its
  * tooltip (E-02).
  */
-export function OrderOee({ id }: { readonly id: string }) {
-  const read = useQuery({
+/** The order's OEE read: by the order's screen (#394), once the order is read. */
+export function useOrderOeeRead(id: string, enabled: boolean) {
+  return useQuery({
     queryKey: queryKeys.orderOee(id),
     queryFn: ({ signal }) => getOrderOee(id, signal),
+    enabled,
   });
-  const pushed = useLiveOrderOee(id);
+}
+
+/** The order's OEE read as the order's screen names it among its errors (#394). */
+export const ORDER_OEE_READ = 'the order’s OEE';
+
+/** No OEE for the order: an answer (`order-oee-missing`), not a failure. */
+export function noOrderOee(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404;
+}
+
+export function OrderOee({
+  read,
+  pushed,
+  errors,
+}: {
+  readonly read: ReturnType<typeof useOrderOeeRead>;
+  /** `useLiveOrderOee`'s, held by the order's screen. */
+  readonly pushed: OrderOeeDto | null | undefined;
+  readonly errors: ScreenErrors;
+}) {
   const order = pickOrderOee(read.data, pushed);
-  const missing = read.error instanceof ApiError && read.error.status === 404 && !order;
+  const missing = noOrderOee(read.error) && !order;
   return (
     <Section
       id="order-oee-title"
@@ -317,7 +337,9 @@ export function OrderOee({ id }: { readonly id: string }) {
       title="OEE and first-pass yield"
       description="Over the order’s job windows on its CNCs: each from the job’s head time (its changeover counts against this order) to its completion."
     >
-      {read.isPending && !order ? <Skeleton shape="card" label="Loading the order’s OEE…" /> : null}
+      {read.data === undefined && !order && !missing && !errors.inSection(ORDER_OEE_READ) ? (
+        <Skeleton shape="card" label="Loading the order’s OEE…" />
+      ) : null}
       {missing ? (
         <div className="rounded-lg border border-line bg-surface px-4">
           <EmptyState
@@ -328,8 +350,8 @@ export function OrderOee({ id }: { readonly id: string }) {
             body="It has one once a job of the order is accepted."
           />
         </div>
-      ) : read.isError && !order ? (
-        <QueryError what="the order’s OEE" error={read.error} onRetry={() => void read.refetch()} />
+      ) : !order ? (
+        <SectionError errors={errors} readKey={ORDER_OEE_READ} />
       ) : null}
       {order ? (
         <div

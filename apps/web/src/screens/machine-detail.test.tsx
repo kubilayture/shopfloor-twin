@@ -419,4 +419,40 @@ describe('machine detail', () => {
     expect(idle.textContent).toBe('unchanged for 20 min');
     expect(idle.className).toBe('text-ink-secondary');
   });
+
+  it('names its failed sections in one error under the header, a quiet line in each (#394)', async () => {
+    const up = routes();
+    let failing = [
+      '/api/v1/equipment/cnc-01/intervals',
+      '/api/v1/equipment/cnc-01/telemetry/metrics',
+    ];
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(input instanceof Request ? input.url : String(input), 'http://localhost')
+        .pathname;
+      return failing.includes(path)
+        ? Promise.resolve(problem(503, 'Service Unavailable', 'not ready', path))
+        : up(input, init);
+    });
+    const view = await renderApp('/equipment/cnc-01');
+    const alert = await screen.findByRole('alert');
+    await waitFor(() => {
+      expect(alert.textContent).toContain('Could not load the state intervals and the metrics.');
+    });
+    expect(screen.getAllByRole('alert')).toEqual([alert]);
+    const quiet = [...document.querySelectorAll('[data-error="quiet"]')].map((e) => e.textContent);
+    expect(quiet).toEqual([
+      'Could not load the state intervals. Service Unavailable: not ready',
+      'Could not load the metrics. Service Unavailable: not ready',
+    ]);
+    view.unmount();
+
+    // One failed section: its own error, under its heading.
+    failing = ['/api/v1/equipment/cnc-01/intervals'];
+    await renderApp('/equipment/cnc-01');
+    const own = await screen.findByRole('alert');
+    expect(own.textContent).toContain('Could not load the state intervals.');
+    expect(own.closest('section')?.querySelector('h2')?.textContent).toBe('State timeline');
+    expect(await screen.findByTestId('metrics')).toBeTruthy();
+    expect(screen.getAllByRole('alert')).toEqual([own]);
+  });
 });

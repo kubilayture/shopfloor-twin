@@ -8,6 +8,13 @@ import { plantClock, queryKeys, usePlantClock } from '../api/queries.ts';
 import { TrendChart } from '../chart/trend-chart.tsx';
 import { CauseText } from '../components/cause-text.tsx';
 import { QueryError } from '../components/query-error.tsx';
+import {
+  ScreenError,
+  SectionError,
+  queryRead,
+  useScreenErrors,
+  type ScreenErrors,
+} from '../components/screen-error.tsx';
 import { StateBadge } from '../components/state-badge.tsx';
 import { Badge } from '../components/ui/badge.tsx';
 import { Callout } from '../components/ui/callout.tsx';
@@ -308,21 +315,23 @@ function useRefetchIntervalsOnStateChange(id: string, current: CurrentStateDto |
   );
 }
 
-function StateSection({
-  id,
-  range,
-  current,
-  window,
-  clockKnown,
-}: {
-  readonly id: string;
-  readonly range: RangeKey;
-  readonly current: CurrentStateDto | undefined;
-  readonly window: Window | undefined;
-  readonly clockKnown: boolean;
-}) {
+/** The machine's sub-reads as the screen's errors name them (#394). */
+const INTERVALS_READ = 'the state intervals';
+const METRICS_READ = 'the metrics';
+const SERIES_READ = 'the telemetry trends';
+
+/**
+ * The machine's state intervals, its metrics and their trends: read by the screen (#394), so that
+ * when several fail it says one error; not asked until the machine is read.
+ */
+function useMachineReads(
+  id: string,
+  range: RangeKey,
+  machineRead: boolean,
+  clockKnown: boolean,
+  window: Window | undefined,
+) {
   const queryClient = useQueryClient();
-  useRefetchIntervalsOnStateChange(id, current);
   const rangeMs = RANGES[range].ms;
   const intervals = useQuery({
     queryKey: queryKeys.intervals(id, range),
@@ -330,9 +339,54 @@ function StateSection({
       const to = Date.parse(plantClock(queryClient)?.watermark ?? '') || Date.now();
       return getIntervals(id, { from: new Date(to - rangeMs), to: new Date(to) }, signal);
     },
-    enabled: clockKnown,
+    enabled: machineRead && clockKnown,
     refetchInterval: INTERVALS_REFRESH_MS,
   });
+  const metrics = useQuery({
+    queryKey: queryKeys.metrics(id),
+    queryFn: ({ signal }) => getMetrics(id, signal),
+    enabled: machineRead,
+  });
+  const shown = (metrics.data?.metrics ?? []).slice(0, MES_API_LIMITS.metrics);
+  const names = shown.map((metric) => metric.metric);
+  const series = useQuery({
+    queryKey: queryKeys.series(id, range, names),
+    queryFn: ({ signal }) => {
+      const to = Date.parse(plantClock(queryClient)?.watermark ?? '') || Date.now();
+      return getSeries(
+        id,
+        names,
+        { from: new Date(to - rangeMs), to: new Date(to) },
+        CHART_POINTS,
+        signal,
+      );
+    },
+    enabled: machineRead && names.length > 0 && window !== undefined,
+    refetchInterval: SERIES_REFRESH_MS,
+  });
+  return { intervals, metrics, series, shown, names };
+}
+
+type MachineReads = ReturnType<typeof useMachineReads>;
+
+function StateSection({
+  id,
+  range,
+  current,
+  window,
+  clockKnown,
+  intervals,
+  errors,
+}: {
+  readonly id: string;
+  readonly range: RangeKey;
+  readonly current: CurrentStateDto | undefined;
+  readonly window: Window | undefined;
+  readonly clockKnown: boolean;
+  readonly intervals: MachineReads['intervals'];
+  readonly errors: ScreenErrors;
+}) {
+  useRefetchIntervalsOnStateChange(id, current);
   const bands =
     window && intervals.data
       ? timelineBands(withLiveState(intervals.data.intervals, current, window.to), window)
@@ -346,16 +400,10 @@ function StateSection({
         window ? `${label}: ${plantRangeText(window.from, window.to)}` : `${label}, plant time`
       }
     >
-      {!clockKnown || intervals.isPending ? (
+      {!clockKnown || (intervals.data === undefined && !errors.inSection(INTERVALS_READ)) ? (
         <Skeleton shape="text" rows={2} label="Loading intervals…" />
       ) : null}
-      {intervals.isError ? (
-        <QueryError
-          what="the state intervals"
-          error={intervals.error}
-          onRetry={() => void intervals.refetch()}
-        />
-      ) : null}
+      <SectionError errors={errors} readKey={INTERVALS_READ} />
       {clockKnown && !window ? (
         <Card padding="compact">
           <EmptyState
@@ -487,40 +535,20 @@ function metricColumns(clock: number | undefined): readonly Column<MetricRow>[] 
 
 function TelemetrySection({
   id,
-  range,
   window,
   clock,
+  reads,
+  errors,
 }: {
   readonly id: string;
-  readonly range: RangeKey;
   readonly window: Window | undefined;
   readonly clock: number | undefined;
+  readonly reads: MachineReads;
+  readonly errors: ScreenErrors;
 }) {
-  const queryClient = useQueryClient();
   useLiveSubscription(`telemetry:${id}`);
   const live = useLiveTelemetry(id);
-  const metrics = useQuery({
-    queryKey: queryKeys.metrics(id),
-    queryFn: ({ signal }) => getMetrics(id, signal),
-  });
-  const shown = (metrics.data?.metrics ?? []).slice(0, MES_API_LIMITS.metrics);
-  const names = shown.map((metric) => metric.metric);
-  const rangeMs = RANGES[range].ms;
-  const series = useQuery({
-    queryKey: queryKeys.series(id, range, names),
-    queryFn: ({ signal }) => {
-      const to = Date.parse(plantClock(queryClient)?.watermark ?? '') || Date.now();
-      return getSeries(
-        id,
-        names,
-        { from: new Date(to - rangeMs), to: new Date(to) },
-        CHART_POINTS,
-        signal,
-      );
-    },
-    enabled: names.length > 0 && window !== undefined,
-    refetchInterval: SERIES_REFRESH_MS,
-  });
+  const { metrics, series, shown, names } = reads;
   const rows: MetricRow[] = (metrics.data?.metrics ?? []).map((metric) => ({
     metric: metric.metric,
     unit: metric.unit,
@@ -535,12 +563,8 @@ function TelemetrySection({
       description="Each metric's latest value and its trend: minimum to maximum, and the average."
     >
       <div className="flex flex-col gap-4">
-        {metrics.isError ? (
-          <QueryError
-            what="the metrics"
-            error={metrics.error}
-            onRetry={() => void metrics.refetch()}
-          />
+        {errors.inSection(METRICS_READ) ? (
+          <SectionError errors={errors} readKey={METRICS_READ} />
         ) : (
           <DataTable
             caption="Metrics and latest values"
@@ -548,7 +572,7 @@ function TelemetrySection({
             columns={metricColumns(clock)}
             rows={rows}
             rowKey={(row) => row.metric}
-            loading={metrics.isPending ? 'Loading metrics…' : undefined}
+            loading={metrics.data === undefined ? 'Loading metrics…' : undefined}
             density="compact"
             empty={
               <EmptyState
@@ -564,14 +588,11 @@ function TelemetrySection({
             Trends show the first {String(MES_API_LIMITS.metrics)} metrics.
           </p>
         ) : null}
-        {series.isError ? (
-          <QueryError
-            what="the telemetry trends"
-            error={series.error}
-            onRetry={() => void series.refetch()}
-          />
-        ) : null}
-        {names.length > 0 && window && series.isPending ? (
+        <SectionError errors={errors} readKey={SERIES_READ} />
+        {names.length > 0 &&
+        window &&
+        series.data === undefined &&
+        !errors.inSection(SERIES_READ) ? (
           <Skeleton shape="chart" label="Loading trends…" />
         ) : null}
         {window && series.data ? (
@@ -708,6 +729,15 @@ export function MachineDetail() {
   const clockMs = clock ? Date.parse(clock.watermark) : undefined;
   const window =
     clockMs === undefined ? undefined : { from: clockMs - RANGES[range].ms, to: clockMs };
+  const reads = useMachineReads(id, range, equipment.data !== undefined, known, window);
+  // The machine is the page's main read; its sections' reads are one error when several fail
+  // (#394), one section's own when only it does.
+  const errors = useScreenErrors([
+    queryRead(`machine ${id}`, equipment, 'main'),
+    queryRead(INTERVALS_READ, reads.intervals, 'section'),
+    queryRead(METRICS_READ, reads.metrics, 'section'),
+    queryRead(SERIES_READ, reads.series, 'section'),
+  ]);
 
   if (equipment.isPending) {
     // No `h1` until the machine is read: the heading takes the focus when it mounts.
@@ -750,8 +780,17 @@ export function MachineDetail() {
         connectionLost={connectionLost}
         range={range}
       />
-      <StateSection id={id} range={range} current={current} window={window} clockKnown={known} />
-      <TelemetrySection id={id} range={range} window={window} clock={clockMs} />
+      <ScreenError errors={errors} className="mb-6" />
+      <StateSection
+        id={id}
+        range={range}
+        current={current}
+        window={window}
+        clockKnown={known}
+        intervals={reads.intervals}
+        errors={errors}
+      />
+      <TelemetrySection id={id} window={window} clock={clockMs} reads={reads} errors={errors} />
     </div>
   );
 }

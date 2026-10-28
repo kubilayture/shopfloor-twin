@@ -1,6 +1,50 @@
-import { cleanup, render, screen, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
-import { ShiftPicker, ShiftSpan, shiftKeyLabel, shiftLabel } from './shift-picker.tsx';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { cleanup, render, renderHook, screen, waitFor, within } from '@testing-library/react';
+import type { ReactNode } from 'react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { json, problem } from '../test/fixtures.ts';
+import { CURRENT_SHIFT } from '../test/oee-fixtures.ts';
+import {
+  ShiftPicker,
+  ShiftSpan,
+  shiftKeyLabel,
+  shiftLabel,
+  useShiftSelection,
+} from './shift-picker.tsx';
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe('useShiftSelection: what the screen’s error reads of it (#394)', () => {
+  it('takes the list’s answer and failure into its answer time, not only the current shift’s', async () => {
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+      const path = new URL(input instanceof Request ? input.url : String(input), 'http://localhost')
+        .pathname;
+      if (path === '/api/v1/shifts/current') return json(CURRENT_SHIFT);
+      // The list fails, and later than the current shift answered.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return problem(503, 'Service Unavailable', 'shifts not ready', path);
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { readonly children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(() => useShiftSelection(undefined), { wrapper });
+    await waitFor(() => {
+      expect(result.current.error).toBeTruthy();
+    });
+    const current = client.getQueryState(['shifts', 'current']);
+    const list = client
+      .getQueryCache()
+      .findAll({ queryKey: ['shifts', 'list'] })
+      .map((query) => query.state)
+      .find((state) => state.status === 'error');
+    expect(list?.errorUpdatedAt).toBeGreaterThan(current?.dataUpdatedAt ?? Infinity);
+    expect(result.current.answeredAt).toBe(list?.errorUpdatedAt);
+    expect(result.current.failedAt).toBe(list?.errorUpdatedAt);
+  });
+});
 
 describe('shift span and shift words (moved from the OEE dashboard, UX-4b)', () => {
   it('writes a one-day shift span with the date once, and a shift outside the list in words', () => {
@@ -46,6 +90,9 @@ describe('shift span and shift words (moved from the OEE dashboard, UX-4b)', () 
           isCurrent: true,
           pending: false,
           error: null,
+          retrying: false,
+          failedAt: 0,
+          answeredAt: 0,
           retry: () => undefined,
         }}
         onChange={() => undefined}

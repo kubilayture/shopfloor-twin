@@ -923,4 +923,22 @@ describe('downtime coding on the design system (UX-5a, #326)', () => {
     expect(await screen.findByText(/Could not load the downtime records/)).toBeTruthy();
     expect(screen.queryByRole('table')).toBeNull();
   });
+
+  it('says one error when every read fails, not one for the records and one for the reasons (#394)', async () => {
+    const server = mes(
+      () => json({}),
+      () => [UNCODED],
+    );
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(requestUrl(input), 'http://localhost').pathname;
+      return path === '/api/v1/plant' || path === '/api/v1/session'
+        ? server.fetch(input, init)
+        : Promise.resolve(problem(503, 'Service Unavailable', 'starting', path));
+    });
+    await renderApp('/downtime');
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Could not load the shifts and the reason codes.');
+    expect(screen.getAllByRole('alert')).toEqual([alert]);
+    expect(screen.queryByRole('table')).toBeNull();
+  });
 });

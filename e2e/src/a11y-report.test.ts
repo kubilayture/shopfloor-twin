@@ -10,6 +10,11 @@ import {
   fromAxe,
   gateVerdict,
   iosLockFinding,
+  aboveMainChange,
+  combineLockProofs,
+  connectionSettled,
+  lockAboveChange,
+  needsRemeasure,
   longestTableRun,
   pagesPerItem,
   tableRuns,
@@ -523,6 +528,112 @@ describe('iosLockFinding', () => {
     expect(iosLockFinding({ ...base, backdropTouchAction: 'none' })).toEqual([]);
     expect(iosLockFinding({ ...base, bodyPosition: 'fixed' })).toEqual([]);
     expect(iosLockFinding({ ...base, htmlOverflowY: 'visible' })).toEqual([]);
+  });
+});
+
+describe('the drawer check’s settled page (#398)', () => {
+  it('waits until the live connection is open or shown as lost', () => {
+    expect(connectionSettled({ status: 'open', bar: false })).toBe(true);
+    expect(connectionSettled({ status: 'reconnecting', bar: true })).toBe(true);
+    expect(connectionSettled({ status: 'stopped', bar: true })).toBe(true);
+    expect(connectionSettled({ status: 'connecting', bar: false })).toBe(false);
+    expect(connectionSettled({ status: 'reconnecting', bar: false })).toBe(false);
+    expect(connectionSettled({ status: null, bar: false })).toBe(false);
+  });
+
+  it('names what changed above main between two measurements, nothing when nothing did', () => {
+    const shell = { bar: 0, topBar: 48 };
+    expect(aboveMainChange(shell, { ...shell }, 'opening')).toBeUndefined();
+    expect(aboveMainChange(shell, { bar: 78, topBar: 48 }, 'opening')).toBe(
+      'opening: the offline bar appeared (78 px)',
+    );
+    expect(aboveMainChange({ bar: 78, topBar: 48 }, shell, 'scrolling')).toBe(
+      'scrolling: the offline bar went',
+    );
+    expect(aboveMainChange({ bar: 37, topBar: 48 }, { bar: 78, topBar: 48 }, 'opening')).toBe(
+      "opening: the offline bar's height went from 37 to 78 px",
+    );
+    expect(aboveMainChange(shell, { bar: 78, topBar: 56 }, 'opening')).toBe(
+      "opening: the offline bar appeared (78 px); the top bar's height went from 48 to 56 px",
+    );
+  });
+});
+
+describe('the drawer check’s two measurements (#398)', () => {
+  const shell = { bar: 0, topBar: 48 };
+  const barred = { bar: 78, topBar: 48 };
+  const step = (above: { bar: number; topBar: number }, mainTop = -252) => ({ mainTop, above });
+  const run = (
+    above: readonly { bar: number; topBar: number }[],
+    findings: string[] = [],
+    ran = true,
+  ) => ({
+    ran,
+    detail: {
+      before: step(above[0] ?? shell),
+      open: step(above[1] ?? shell),
+      after: step(above[2] ?? shell),
+      closed: step(above[3] ?? shell),
+    },
+    findings,
+  });
+
+  it('names a change above main at any step, the closing included', () => {
+    expect(lockAboveChange(run([shell, shell, shell, shell]).detail)).toBeUndefined();
+    expect(lockAboveChange(run([shell, barred, barred, barred]).detail)).toBe(
+      'while the drawer opened: the offline bar appeared (78 px)',
+    );
+    expect(lockAboveChange(run([shell, shell, barred, barred]).detail)).toBe(
+      'while the page behind was scrolled: the offline bar appeared (78 px)',
+    );
+    expect(lockAboveChange(run([shell, shell, shell, barred]).detail)).toBe(
+      'while the drawer closed: the offline bar appeared (78 px)',
+    );
+    expect(lockAboveChange({ before: step(shell) })).toBeUndefined();
+  });
+
+  it('keeps the first measurement when nothing changed above main, findings and all', () => {
+    const first = run(
+      [shell, shell, shell, shell],
+      ['opening the drawer moved the page behind by 5 px'],
+    );
+    expect(needsRemeasure(first)).toBe(false);
+    expect(combineLockProofs(first, run([shell, shell, shell, shell]))).toBe(first);
+    // A measurement that did not run is not taken again.
+    expect(needsRemeasure(run([shell, barred, barred, barred], [], false))).toBe(false);
+  });
+
+  it('takes the second in full when the first saw the bar come, marked with why', () => {
+    const first = run(
+      [shell, barred, barred, barred],
+      ['opening the drawer moved the page behind by 78 px'],
+    );
+    expect(needsRemeasure(first)).toBe(true);
+    const second = run(
+      [barred, barred, barred, barred],
+      ['with the drawer open the page can still scroll 900 px (a touch scroll moves it)'],
+    );
+    const combined = combineLockProofs(first, second);
+    // The drawer's own finding stands; the bar's does not.
+    expect(combined.findings).toEqual(second.findings);
+    expect(combined.detail.remeasured).toBe(
+      'while the drawer opened: the offline bar appeared (78 px)',
+    );
+    expect(combined.ran).toBe(true);
+  });
+
+  it('fails a check whose page changed above main during both measurements', () => {
+    const first = run([shell, barred, barred, barred]);
+    const second = run([barred, barred, shell, shell]);
+    expect(combineLockProofs(first, second).findings).toEqual([
+      'the page above main changed during both measurements (while the page behind was scrolled: the offline bar went)',
+    ]);
+    // A second measurement that could not run stays a check not run.
+    const notRun = { ran: false, detail: {}, findings: ['no menu button to tap'] };
+    expect(combineLockProofs(first, notRun)).toMatchObject({
+      ran: false,
+      findings: ['no menu button to tap'],
+    });
   });
 });
 

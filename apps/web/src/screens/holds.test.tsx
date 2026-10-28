@@ -255,6 +255,51 @@ describe('opening a hold', () => {
     expect(await screen.findByTestId('hold-suggestion-missing')).toBeTruthy();
   });
 
+  it('says one error when the suggested scope and the reasons both fail, else each in place (#394)', async () => {
+    const server = qualityMes(qualityState({ suggestions: { 2: suggestion() } }));
+    let failing = ['/api/v1/quality/hold-reasons', '/api/v1/quality/signals/2/hold-suggestion'];
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(input instanceof Request ? input.url : String(input), 'http://localhost')
+        .pathname;
+      return failing.includes(path)
+        ? Promise.resolve(problem(503, 'Service Unavailable', 'quality not ready', path))
+        : server.fetch(input, init);
+    });
+    const view = await renderApp('/quality/holds/new?signal=2', { session: QUALITY });
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Could not load the suggested scope and the hold reasons.');
+    expect(screen.getAllByRole('alert')).toEqual([alert]);
+    // At the top of the form, before what it could not fill.
+    const form = screen.getByTestId('hold-open-form');
+    expect(form.firstElementChild).toBe(alert);
+    view.unmount();
+
+    // Only the reasons: the suggestion is shown, the reasons say it under their select.
+    failing = ['/api/v1/quality/hold-reasons'];
+    await renderApp('/quality/holds/new?signal=2', { session: QUALITY });
+    await screen.findByTestId('hold-suggestion');
+    const own = await screen.findByRole('alert');
+    expect(own.textContent).toContain('Could not load the hold reasons.');
+    expect(screen.getByTestId('hold-open-form').firstElementChild).not.toBe(own);
+  });
+
+  it('says an unknown episode politely while the reasons’ error is the one alert (#394)', async () => {
+    const server = qualityMes(qualityState());
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(input instanceof Request ? input.url : String(input), 'http://localhost')
+        .pathname;
+      return path === '/api/v1/quality/hold-reasons'
+        ? Promise.resolve(problem(503, 'Service Unavailable', 'quality not ready', path))
+        : server.fetch(input, init);
+    });
+    await renderApp('/quality/holds/new?signal=9', { session: QUALITY });
+    const missing = await screen.findByTestId('hold-suggestion-missing');
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Could not load the hold reasons.');
+    expect(screen.getAllByRole('alert')).toEqual([alert]);
+    expect(missing.getAttribute('role')).toBe('status');
+  });
+
   it('refuses the form to a role without quality:hold', async () => {
     vi.stubGlobal('fetch', qualityMes(qualityState()).fetch);
     await renderApp('/quality/holds/new?kind=lot&id=K1', { session: sessionOf(['operator']) });

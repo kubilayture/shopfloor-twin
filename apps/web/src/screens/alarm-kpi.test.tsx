@@ -511,4 +511,84 @@ describe('alarm KPI page', () => {
     expect(await screen.findByText(/Could not load the alarm scopes/)).toBeTruthy();
     expect(screen.getByText(/alarms not ready/)).toBeTruthy();
   });
+
+  /** The `<section>` a heading names. */
+  function section(name: string): HTMLElement {
+    const found = screen.getByRole('heading', { name }).closest('section');
+    if (!found) throw new Error(`no section for ${name}`);
+    return found;
+  }
+
+  /** The KPI server with these paths answering 503. */
+  function failing(paths: readonly string[]) {
+    const server = mes({});
+    const down = { on: true };
+    const fetch = (input: RequestInfo | URL) => {
+      const path = new URL(requestUrl(input), 'http://localhost').pathname;
+      return down.on && paths.includes(path)
+        ? Promise.resolve(problem(503, 'Service Unavailable', 'KPIs not ready', path))
+        : server.fetch(input);
+    };
+    return { server, down, fetch };
+  }
+
+  it('says one error when every KPI read fails, the sections not drawn, one retry for all (#394)', async () => {
+    const { server, down, fetch } = failing([
+      '/api/v1/alarms/kpi',
+      '/api/v1/alarms/floods',
+      '/api/v1/alarms/bad-actors',
+      '/api/v1/alarms/operator-kpi',
+    ]);
+    vi.stubGlobal('fetch', fetch);
+    await renderApp('/alarms/kpi');
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain(
+      'Could not load the Plant KPIs, the Cell M1 KPIs, the Line A1 KPIs, the buckets, the floods, the bad actors and the operator measures.',
+    );
+    expect(within(alert).getAllByText(/KPIs not ready/)).toHaveLength(1);
+    expect(screen.getAllByRole('alert')).toEqual([alert]);
+    expect(document.getElementById('kpi-scopes-title')).toBeNull();
+    expect(document.getElementById('kpi-details-title')).toBeNull();
+
+    down.on = false;
+    server.paths.length = 0;
+    fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByTestId('kpi-card-plant')).toBeTruthy();
+    expect(await screen.findByTestId('kpi-floods')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    for (const path of ['kpi', 'floods', 'bad-actors', 'operator-kpi']) {
+      expect(server.paths.some((p) => p.startsWith(`/api/v1/alarms/${path}?`))).toBe(true);
+    }
+  });
+
+  it('says one failed section in that section, under its heading (#394)', async () => {
+    vi.stubGlobal('fetch', failing(['/api/v1/alarms/floods']).fetch);
+    await renderApp('/alarms/kpi');
+    await screen.findByRole('heading', { name: 'Flood episodes' });
+    const floods = section('Flood episodes');
+    const alert = await within(floods).findByRole('alert');
+    expect(alert.textContent).toContain('Could not load the floods.');
+    expect(within(alert).getByRole('button', { name: 'Try again' })).toBeTruthy();
+    expect(screen.getAllByRole('alert')).toEqual([alert]);
+    expect(await screen.findByTestId('kpi-bad-actors')).toBeTruthy();
+  });
+
+  it('names several failed sections in one error, each section saying it quietly (#394)', async () => {
+    vi.stubGlobal('fetch', failing(['/api/v1/alarms/floods', '/api/v1/alarms/bad-actors']).fetch);
+    await renderApp('/alarms/kpi');
+    const alert = await screen.findByRole('alert');
+    await waitFor(() => {
+      expect(alert.textContent).toContain('Could not load the floods and the bad actors.');
+    });
+    expect(screen.getAllByRole('alert')).toEqual([alert]);
+    // Under the page header, not inside the details it names.
+    const details = document.getElementById('kpi-details-title')?.closest('section');
+    expect(details?.contains(alert)).toBe(false);
+    const floods = section('Flood episodes');
+    const line = floods.querySelector('[data-error]');
+    expect(line?.getAttribute('data-error')).toBe('quiet');
+    expect(line?.textContent).toContain('Could not load the floods.');
+    expect(within(floods).queryByRole('button', { name: 'Try again' })).toBeNull();
+    expect(screen.getByTestId('kpi-operator')).toBeTruthy();
+  });
 });

@@ -13,6 +13,10 @@ import {
   type ImpactCounts,
   type OverlayCheck,
   type Violation,
+  combineLockProofs,
+  connectionSettled,
+  needsRemeasure,
+  type ConnectionState,
 } from '../../src/a11y-report.ts';
 
 /**
@@ -626,4 +630,139 @@ export async function scrollLockStyles(page: Page): Promise<Record<string, strin
       backdropTouchAction: backdrop ? getComputedStyle(backdrop).touchAction : 'no backdrop',
     };
   });
+}
+
+/** Where the page is scrolled to before the drawer opens: the lock must hold it there. */
+export const SCROLLED_TO = 300;
+
+/** Where the page behind is drawn: `main`'s top edge in the viewport, and the scroll position. */
+export const position = (page: Page) =>
+  page.evaluate(() => ({
+    // What sits above `main` (#398): a change there moves `main` without the drawer's doing.
+    above: {
+      bar: Math.round(
+        document.querySelector('[data-testid="offline-bar"]')?.getBoundingClientRect().height ?? 0,
+      ),
+      topBar: Math.round(document.querySelector('header')?.getBoundingClientRect().height ?? 0),
+    },
+    mainTop: Math.round(document.querySelector('main')?.getBoundingClientRect().top ?? 0),
+    scrollY: Math.round(window.scrollY),
+    // How far the viewport could still scroll: a touch scroll has nothing to move when it is 0.
+    range: Math.max(
+      0,
+      Math.round(document.documentElement.scrollHeight - document.documentElement.clientHeight),
+    ),
+  }));
+
+/**
+ * One measurement of the drawer's scroll lock, in any engine (UX-F1, #337): the page scrolled down `SCROLLED_TO`,
+ * the drawer opened by a tap; `act` then tries to scroll the page behind (a touch gesture or a
+ * wheel). The page must not move when the drawer opens or under `act`, must have nothing left to
+ * scroll while it is open (iOS Safari scrolls a root with `overflow: hidden` under a finger, but
+ * not a page with no scroll range), and must be back where it was once Escape closes it.
+ */
+async function lockProofOnce(
+  page: Page,
+  act: () => Promise<Record<string, unknown>>,
+): Promise<{ ran: boolean; detail: Record<string, unknown>; findings: string[] }> {
+  await page.evaluate((y) => {
+    window.scrollTo({ top: y, behavior: 'instant' });
+  }, SCROLLED_TO);
+  await frames(page);
+  const before = await position(page);
+  if (before.scrollY < SCROLLED_TO - 1) {
+    return {
+      ran: false,
+      detail: { before },
+      findings: [`the page did not scroll to ${String(SCROLLED_TO)} px before the drawer opened`],
+    };
+  }
+  // A tap at the button's point: a locator's tap scrolls the button into view first, and with the
+  // root's scroll padding that scrolls the page up under the sticky top bar.
+  const box = await menuButton(page).boundingBox({ timeout: 3_000 });
+  if (!box) return { ran: false, detail: { before }, findings: ['no menu button to tap'] };
+  await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+  await frames(page, 400);
+  const open = await position(page);
+  const acted = await act();
+  const after = await position(page);
+  const styles = await scrollLockStyles(page);
+  await page.keyboard.press('Escape');
+  await frames(page, 400);
+  const closed = await position(page);
+  const findings: string[] = [];
+  if (Math.abs(open.mainTop - before.mainTop) > 1)
+    findings.push(
+      `opening the drawer moved the page behind by ${String(open.mainTop - before.mainTop)} px`,
+    );
+  if (open.range > 0)
+    findings.push(
+      `with the drawer open the page can still scroll ${String(open.range)} px (a touch scroll moves it)`,
+    );
+  if (Math.abs(after.mainTop - open.mainTop) > 1 || after.scrollY !== open.scrollY)
+    findings.push(
+      `a scroll over the open drawer moved the page behind by ${String(open.mainTop - after.mainTop)} px`,
+    );
+  if (Math.abs(closed.scrollY - before.scrollY) > 1)
+    findings.push(
+      `closing the drawer left the page at ${String(closed.scrollY)} px, not ${String(before.scrollY)} px`,
+    );
+  return { ran: true, detail: { before, open, after, closed, ...acted, ...styles }, findings };
+}
+
+/** How long the live connection may take to settle before the drawer check (#398). */
+const CONNECTION_SETTLE_MS = 15_000;
+
+/** The live connection as the page shows it (`connectionSettled`). */
+const connectionState = (page: Page): Promise<ConnectionState> =>
+  page.evaluate(() => ({
+    status:
+      document.querySelector<HTMLElement>('[data-testid="connection-status"]')?.dataset.status ??
+      null,
+    bar: document.querySelector('[data-testid="offline-bar"]') !== null,
+  }));
+
+/**
+ * Waits until the live connection is settled (connected, or the offline bar up): the bar that
+ * comes a moment after a page loads without its socket (WebKit here) must not appear while the
+ * drawer check measures (#398). Whether it settled, and the state it was in.
+ */
+export async function settleConnection(
+  page: Page,
+  timeoutMs = CONNECTION_SETTLE_MS,
+): Promise<{ settled: boolean; state: ConnectionState }> {
+  const end = Date.now() + timeoutMs;
+  let state = await connectionState(page);
+  while (!connectionSettled(state) && Date.now() < end) {
+    await page.waitForTimeout(100);
+    state = await connectionState(page);
+  }
+  // The bar's own entry (a frame or two) is over before the page is measured.
+  await frames(page);
+  return { settled: connectionSettled(state), state };
+}
+
+/**
+ * The drawer's scroll lock (UX-F1, #337; #398): measured once the live connection has settled,
+ * and once more when something above `main` changed during the measurement (the offline bar
+ * came or went), so `main`'s place says what the drawer did, never what the bar did. A change
+ * the second time too is a finding. The threshold is not loosened.
+ */
+export async function lockProof(
+  page: Page,
+  act: () => Promise<Record<string, unknown>>,
+): Promise<{ ran: boolean; detail: Record<string, unknown>; findings: string[] }> {
+  const connection = await settleConnection(page);
+  if (!connection.settled) {
+    return {
+      ran: false,
+      detail: { connection: connection.state },
+      findings: [
+        `the live connection did not settle within ${String(CONNECTION_SETTLE_MS / 1000)} s (status ${connection.state.status ?? 'none'}, no offline bar), so the drawer check could not measure`,
+      ],
+    };
+  }
+  const first = await lockProofOnce(page, act);
+  if (!needsRemeasure(first)) return first;
+  return combineLockProofs(first, await lockProofOnce(page, act));
 }

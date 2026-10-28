@@ -4,12 +4,13 @@ import {
   type HandoverNoteDto,
   type ShiftReportDto,
 } from '@shopfloor/contracts/mes-api';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { skipToken, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState, type Ref } from 'react';
 import { createNote, editNote, getNoteAudit, getShiftNotes, type ShiftRef } from '../api/client.ts';
 import { queryKeys } from '../api/queries.ts';
 import { useCan, useUnsavedDraft } from '../auth/auth.tsx';
 import { QueryError } from '../components/query-error.tsx';
+import { SectionError, type ScreenErrors } from '../components/screen-error.tsx';
 import { Badge } from '../components/ui/badge.tsx';
 import { Button } from '../components/ui/button.tsx';
 import { Callout } from '../components/ui/callout.tsx';
@@ -509,20 +510,36 @@ function NoteItem({
   );
 }
 
+/** The notes read as the shift report's errors name it (#394). */
+export const NOTES_READ = 'the notes';
+
+/**
+ * The handover notes of a report's instance: read by the report's screen (#394), so that its
+ * failure is one of the screen's; not asked until the report is read.
+ */
+export function useShiftNotesRead(report: ShiftReportDto | undefined, shift: ShiftRef) {
+  return useQuery({
+    queryKey: queryKeys.shiftNotes(report?.key ?? '', report?.epoch ?? -1),
+    queryFn: report
+      ? ({ signal }) => getShiftNotes({ ...shift, epoch: report.epoch }, signal)
+      : skipToken,
+  });
+}
+
 /** The handover notes of the report's instance, with the editor (#146; UX-5b, #327). */
 export function HandoverNotes({
   report,
   shift,
+  read,
+  errors,
 }: {
   readonly report: ShiftReportDto;
   readonly shift: ShiftRef & { readonly epoch: number };
+  readonly read: ReturnType<typeof useShiftNotesRead>;
+  readonly errors: ScreenErrors;
 }) {
   const queryClient = useQueryClient();
   const notesKey = queryKeys.shiftNotes(report.key, report.epoch);
-  const read = useQuery({
-    queryKey: notesKey,
-    queryFn: ({ signal }) => getShiftNotes(shift, signal),
-  });
   const pushed = useLiveShifts()?.notes;
   const notes = mergeNotes(
     [...report.notes, ...(read.data?.notes ?? [])],
@@ -548,9 +565,7 @@ export function HandoverNotes({
       }
     >
       <div className="flex flex-col gap-3">
-        {read.isError ? (
-          <QueryError what="the notes" error={read.error} onRetry={() => void read.refetch()} />
-        ) : null}
+        <SectionError errors={errors} readKey={NOTES_READ} />
         {notes.length > 0 ? (
           <ol className="flex flex-col gap-3" aria-label="Notes">
             {notes.map((note) => (

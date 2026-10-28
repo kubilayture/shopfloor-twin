@@ -621,3 +621,96 @@ it('flags a date without a time on the optional At and From, instead of sending 
   expect(screen.getByTestId<HTMLDialogElement>('confirm-failure').open).toBe(true);
   expect(sim.calls.filter((c) => c.method !== 'GET')).toEqual([]);
 });
+
+it('says one error when the simulator is down, each section quietly, one retry for all (#394)', async () => {
+  const sim = fakeSim();
+  let down = true;
+  vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : String(input), 'http://localhost');
+    if (down && url.pathname.startsWith('/sim/api/v1/')) {
+      return new Response('Bad Gateway', { status: 502 });
+    }
+    return sim.fetch(input, init);
+  });
+  await renderApp('/console', { session: ADMIN });
+  const alert = await screen.findByRole('alert');
+  // The machines (the MES's) loaded: the sections are drawn, the one error names the rest.
+  expect(alert.textContent).toContain(
+    'Could not load the run, the timelines, the lots, the operators, the actions, the failure injections and the drifts.',
+  );
+  expect(screen.getAllByRole('alert')).toEqual([alert]);
+  const lots = screen.getByTestId('console-lots');
+  expect(lots.querySelector('[data-error]')?.getAttribute('data-error')).toBe('quiet');
+  expect(within(lots).queryByRole('button', { name: 'Try again' })).toBeNull();
+
+  down = false;
+  fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
+  await waitFor(() => {
+    expect(screen.getByTestId('sim-state').dataset.state).toBe('idle');
+  });
+  expect(await screen.findByTestId('lot-BL100-2610-01')).toBeTruthy();
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+
+/** Every `/sim` read answers 503 after a delay (and `/equipment` too when asked): polls in flight. */
+function slowlyDown(sim: ReturnType<typeof fakeSim>, mesDown: boolean) {
+  return async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : String(input), 'http://localhost');
+    if (
+      url.pathname.startsWith('/sim/api/v1/') ||
+      (mesDown && url.pathname === '/api/v1/equipment')
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      return new Response('Service Unavailable', { status: 503 });
+    }
+    return sim.fetch(input, init);
+  };
+}
+
+/** What the page says over `ms`, sampled every 50 ms: the alerts' texts and the section nav. */
+async function watch(ms: number) {
+  const seen = new Set<string>();
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    const alerts = screen.queryAllByRole('alert').map((a) => a.textContent);
+    const nav = screen.queryByTestId('console-section-nav') !== null;
+    seen.add(`${String(alerts.length)}|${alerts.join('|')}|nav=${String(nav)}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return [...seen];
+}
+
+it('keeps the one error and the layout still while the failed reads are polled again (#394 H1)', async () => {
+  const sim = fakeSim();
+  vi.stubGlobal('fetch', slowlyDown(sim, false));
+  await renderApp('/console', { session: ADMIN });
+  await waitFor(
+    () => {
+      expect(screen.getByRole('alert').textContent).toContain(
+        'Could not load the run, the timelines',
+      );
+    },
+    { timeout: 15_000 },
+  );
+  // Two status polls (1 s) and more: the same one alert, the sections drawn, nothing flaps.
+  const seen = await watch(2_500);
+  expect(seen).toHaveLength(1);
+  expect(seen[0]).toMatch(
+    /^1\|Could not load the run, the timelines, the lots, the operators, the actions, the failure injections and the drifts\.The simulator is startingTry again\|nav=true$/,
+  );
+}, 30_000);
+
+it('keeps the whole-screen error up while the failed reads are polled again (#394 H1)', async () => {
+  const sim = fakeSim();
+  vi.stubGlobal('fetch', slowlyDown(sim, true));
+  await renderApp('/console', { session: ADMIN });
+  await waitFor(
+    () => {
+      expect(screen.getByRole('alert').textContent).toContain('Could not load the run');
+    },
+    { timeout: 15_000 },
+  );
+  const seen = await watch(2_500);
+  expect(seen).toHaveLength(1);
+  expect(seen[0]).toMatch(/^1\|Could not load the run, .* and the drifts\..*\|nav=false$/);
+}, 30_000);

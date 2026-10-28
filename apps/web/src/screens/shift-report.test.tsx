@@ -358,6 +358,33 @@ describe('shift report', () => {
     expect(print).toHaveBeenCalledOnce();
   });
 
+  it('says the notes’ failure in their section, and with the report’s in one error (#394)', async () => {
+    const state = shiftState({
+      notesAnswer: () => problem(503, 'Service Unavailable', 'notes not ready', '/x'),
+    });
+    vi.stubGlobal('fetch', shiftMes(state).fetch);
+    const app = await renderApp(PATH);
+    const section = await screen.findByTestId('handover-notes');
+    const own = await within(section).findByRole('alert', {}, { timeout: 5_000 });
+    expect(own.textContent).toContain('Could not load the notes.');
+    expect(screen.getAllByRole('alert')).toEqual([own]);
+    expect(screen.queryByTestId('report-error')).toBeNull();
+
+    // The report fails too when it is read again: one error at the top naming both, the notes
+    // a quiet line.
+    state.reportAnswer = () => problem(503, 'Service Unavailable', 'reports not ready', '/x');
+    await app.queryClient.refetchQueries({ queryKey: ['shift-report'] });
+    const failure = await screen.findByTestId('report-error', {}, { timeout: 5_000 });
+    await waitFor(() => {
+      expect(within(failure).getByRole('alert').textContent).toContain(
+        'Could not load the shift report and the notes.',
+      );
+    });
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(section.querySelector('[data-error]')?.getAttribute('data-error')).toBe('quiet');
+    expect(screen.getByTestId('shift-report')).toBeTruthy();
+  });
+
   it('says when the report cannot be read or the key is not a shift', async () => {
     const state = shiftState({
       reportAnswer: () =>

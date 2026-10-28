@@ -25,6 +25,12 @@ import {
 import { queryKeys, useAlarmConfig, usePlantClock } from '../api/queries.ts';
 import { PriorityBadge } from '../components/priority-badge.tsx';
 import { QueryError } from '../components/query-error.tsx';
+import {
+  ScreenError,
+  SectionError,
+  queryRead,
+  useScreenErrors,
+} from '../components/screen-error.tsx';
 import { Badge, type BadgeVariant } from '../components/ui/badge.tsx';
 import { Button } from '../components/ui/button.tsx';
 import { Callout } from '../components/ui/callout.tsx';
@@ -1102,14 +1108,34 @@ export function AlarmList() {
   const truncated = [active, acknowledged, shelved, history].some(
     (query) => query.data?.next !== null && query.data?.next !== undefined,
   );
-  // The shown view's failed read takes the table's place; the others' go above the tabs.
-  const otherErrors = [
-    { view: 'active', what: 'the active alarms', query: active },
-    { view: 'acknowledged', what: 'the acknowledged alarms', query: acknowledged },
-    { view: 'shelved', what: 'the shelved alarms', query: shelved },
-    { view: 'history', what: 'the alarm history', query: history },
-    { view: undefined, what: 'the alarm points', query: points },
-  ].filter((entry) => entry.view !== view && entry.query.isError);
+  // One error for the screen (#394): the shown view's read is the tab panel's content, the other
+  // views' feed the tab counts and the points the shelved marks. With nothing loaded every failed
+  // read is named by one error in the panel; once something has, the shown view's failure takes
+  // the table's place and the others' are one error above the tabs.
+  const viewReads = [
+    queryRead('the active alarms', active, view === 'active' ? 'section' : 'main', 'active'),
+    queryRead(
+      'the acknowledged alarms',
+      acknowledged,
+      view === 'acknowledged' ? 'section' : 'main',
+      'acknowledged',
+    ),
+    queryRead('the shelved alarms', shelved, view === 'shelved' ? 'section' : 'main', 'shelved'),
+    queryRead('the alarm history', history, view === 'history' ? 'section' : 'main', 'history'),
+  ];
+  const errors = useScreenErrors([
+    // The shown view first: the error names what the panel would have shown first.
+    ...viewReads.filter((read) => read.key === view),
+    ...viewReads.filter((read) => read.key !== view),
+    queryRead('the alarm points', points, 'base'),
+    // An alarm linked from elsewhere that none of the lists holds is read by id.
+    ...(search.alarm !== undefined && listed === undefined
+      ? [queryRead('the alarm', linked, 'main')]
+      : []),
+  ]);
+  const errorInPanel = errors.summary.some((read) => read.key === view);
+  // The shown list failed: no bulk action over it, also while it is read again (#394).
+  const viewFailed = errorInPanel || errors.inSection(view) || loaded.isError;
 
   const bulk = mayAck && (view === 'active' || view === 'shelved');
   const panelOpen = selectedOccurrence !== undefined;
@@ -1218,20 +1244,15 @@ export function AlarmList() {
           ))}
         </div>
       ) : null}
-      {otherErrors.map(({ what, query }) => (
-        <div key={what} className="mb-4">
-          <QueryError what={what} error={query.error} onRetry={() => void query.refetch()} />
+      {errors.summary.length > 0 && !errorInPanel ? (
+        <div className="mb-4">
+          <ScreenError errors={errors} />
         </div>
-      ))}
+      ) : null}
       {truncated ? (
         <Callout tone="warn" role="status" className="mb-4">
           More alarms than one answer holds ({MES_API_LIMITS.alarmPageMax}): the list is cut off.
         </Callout>
-      ) : null}
-      {search.alarm !== undefined && selectedOccurrence === undefined && linked.isError ? (
-        <div className="mb-4">
-          <QueryError what="the alarm" error={linked.error} onRetry={() => void linked.refetch()} />
-        </div>
       ) : null}
 
       <div
@@ -1275,7 +1296,7 @@ export function AlarmList() {
                 data-testid="alarm-toolbar"
                 className="mb-3 flex min-h-11 flex-wrap items-center gap-x-3 gap-y-2"
               >
-                {bulk && !loaded.isError ? (
+                {bulk && !viewFailed ? (
                   <>
                     <Button
                       variant="primary"
@@ -1307,12 +1328,10 @@ export function AlarmList() {
                 {message ? <ToolbarMessage message={message} testId="alarm-list-message" /> : null}
               </div>
             ) : null}
-            {loaded.isError ? (
-              <QueryError
-                what={view === 'history' ? 'the alarm history' : `the ${view} alarms`}
-                error={loaded.error}
-                onRetry={() => void loaded.refetch()}
-              />
+            {errorInPanel ? (
+              <ScreenError errors={errors} />
+            ) : errors.inSection(view) ? (
+              <SectionError errors={errors} readKey={view} />
             ) : (
               <DataTable
                 caption={`${ALARM_VIEW_LABELS[view]} alarms, ${SORT_TEXT[sort].caption}${view === 'history' ? ', the last 24 hours' : ''}`}
@@ -1354,7 +1373,10 @@ export function AlarmList() {
                 }
                 narrow="stack"
                 loading={
-                  !noClock && loaded.isPending && shown.length === 0 ? 'Loading alarms…' : undefined
+                  // A failed read waits here with the others still on their way (#394).
+                  !noClock && (loaded.isPending || loaded.isError) && shown.length === 0
+                    ? 'Loading alarms…'
+                    : undefined
                 }
                 empty={
                   <EmptyState

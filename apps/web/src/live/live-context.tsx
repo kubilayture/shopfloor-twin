@@ -214,12 +214,14 @@ export function useLiveTerminal(workCenter: string): TerminalViewDto | undefined
  * Holds `oee:order:<id>` (#233) for the order detail and returns the order OEE it pushes (null
  * for an order the MES doesn't know). One topic per open detail, against the MES's own budget of
  * 16 order OEE topics (#232), never the dashboard's 16 `oee:<id>` topics. The pushed copy is
- * dropped when the screen lets go, so a later visit starts from a fresh snapshot.
+ * dropped when the screen lets go, so a later visit starts from a fresh snapshot. `enabled`
+ * false holds nothing (the order is not read yet, or the MES has no such order: #394 review).
  */
-export function useLiveOrderOee(orderId: string): OrderOeeDto | null | undefined {
+export function useLiveOrderOee(orderId: string, enabled = true): OrderOeeDto | null | undefined {
   const client = useLiveClient();
   const queryClient = useQueryClient();
   useEffect(() => {
+    if (!enabled) return undefined;
     // Counted per order (`holdOrderOee`): two screens on one order share the copy.
     const letGo = holdOrderOee(queryClient, orderId);
     const release = client.subscribe(orderOeeTopic(orderId));
@@ -227,9 +229,12 @@ export function useLiveOrderOee(orderId: string): OrderOeeDto | null | undefined
       release();
       letGo();
     };
-  }, [client, queryClient, orderId]);
-  return useQuery<OrderOeeDto | null>({ queryKey: liveKeys.orderOee(orderId), queryFn: skipToken })
-    .data;
+  }, [client, queryClient, orderId, enabled]);
+  const pushed = useQuery<OrderOeeDto | null>({
+    queryKey: liveKeys.orderOee(orderId),
+    queryFn: skipToken,
+  }).data;
+  return enabled ? pushed : undefined;
 }
 
 /**

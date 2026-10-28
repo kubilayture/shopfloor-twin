@@ -38,7 +38,10 @@ const FILES = [
   // The chart frames (UX-1f, #320).
   'chart/echart.tsx',
   'chart/trend-chart.tsx',
-  // The migrated screens: a screen on the tokens draws only classes Tailwind generates.
+  // The migrated screens (UX-2 on): a screen on the tokens draws only classes Tailwind generates.
+  'screens/overview.tsx',
+  'screens/machine-detail.tsx',
+  'components/cause-text.tsx',
   'screens/order-list.tsx',
   'screens/order-detail.tsx',
   // Order actions and order OEE (UX-6b, #329).
@@ -56,6 +59,20 @@ const FILES = [
   'screens/oee-dashboard.tsx',
   'screens/line-oee.tsx',
   'components/oee-ui.tsx',
+  // The alarm KPIs (UX-4b, #325).
+  'screens/alarm-kpi.tsx',
+  // SPC (UX-9a, #332).
+  'screens/spc.tsx',
+  // The alarm list (UX-4a, #324).
+  'screens/alarm-list.tsx',
+  // Downtime coding (UX-5a, #326).
+  'screens/downtime-coding.tsx',
+  // Shift reports and handover notes (UX-5b, #327).
+  'components/shift-picker.tsx',
+  'components/shift-state-badge.tsx',
+  'screens/shift-list.tsx',
+  'screens/shift-report.tsx',
+  'screens/handover-notes.tsx',
 ];
 
 /** Utility prefixes: a literal with one of these is a class list. */
@@ -183,6 +200,14 @@ for (const id of [
 ]) {
   NOT_CLASSES.add(id);
 }
+/**
+ * UX-5b (#327): the print stylesheet's own section class (`report-section`, index.css) and the
+ * word of "1 break", which read like classes.
+ */
+for (const word of ['report-section', 'break']) NOT_CLASSES.add(word);
+
+/** UX-4b (#325): the alarm KPIs' `data-measure` name, which starts like a `max-*` class. */
+NOT_CLASSES.add('max-time-to-ack');
 
 const CLASSES = [...new Set([...FILES.flatMap(harvest), ...PASSED_IN])]
   .filter((c) => !NOT_CLASSES.has(c))

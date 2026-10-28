@@ -152,6 +152,10 @@ describe('PageHeader (design system 3.3)', () => {
     );
     const back = screen.getByRole('link', { name: '‹ All orders' });
     expect(back.getAttribute('href')).toBe('/orders');
+    // Navigation, not printed (UX-5b).
+    expect(back.parentElement?.className).toContain('print:hidden');
+    // The parent of the page is never the page, whatever the router's fuzzy match says (#332).
+    expect(back.hasAttribute('aria-current')).toBe(false);
     expect(
       back.compareDocumentPosition(screen.getByRole('heading', { level: 1 })) &
         Node.DOCUMENT_POSITION_FOLLOWING,
@@ -204,6 +208,15 @@ describe('Section (design system 3.4)', () => {
     expect(screen.getByRole('heading', { level: 2, name: 'Machining' }).className).toContain(
       'text-lg',
     );
+  });
+
+  it('passes data-* attributes through to the section (UX-5b)', () => {
+    render(
+      <Section title="Notes" testId="notes" data-count="3">
+        <p>content</p>
+      </Section>,
+    );
+    expect(screen.getByTestId('notes').dataset.count).toBe('3');
   });
 
   it('labels itself by a generated id without one', () => {

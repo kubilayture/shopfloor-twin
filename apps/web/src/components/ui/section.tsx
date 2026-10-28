@@ -1,10 +1,13 @@
 import { useId, type ReactNode } from 'react';
+import type { DataAttributes } from './badge.tsx';
 
 /**
  * A page section (UX-1b, #316; design system 3.4): a heading with an optional status badge beside
  * it, a one-line description and actions on the right, then the content. A region named by its
  * heading. `level` nests sections: an `h2` (`text-lg`, 32 px apart), an `h3` (`text-base`, 24 px)
- * or an `h4` (`text-sm`, 16 px); none above the first section among its siblings.
+ * or an `h4` (`text-sm`, 16 px); none above the first section among its siblings. `data-*` props
+ * pass through to the `section` (a screen's raw values for tests, #295; UX-5b: the handover
+ * notes' `data-count`).
  */
 
 /** Heading size and spacing per level; written out in full for Tailwind's scanner. */
@@ -14,7 +17,7 @@ const LEVEL = {
   4: { heading: 'text-sm', gap: 'mt-4 first-of-type:mt-0', head: 'mb-2' },
 } as const;
 
-export interface SectionProps {
+export interface SectionProps extends DataAttributes {
   readonly title: ReactNode;
   /** The heading level: 2 (the default) for a page's sections, 3 and 4 for sections inside one. */
   readonly level?: 2 | 3 | 4;
@@ -39,6 +42,7 @@ export function Section({
   testId,
   className,
   children,
+  ...data
 }: SectionProps) {
   const generated = useId();
   const headingId = id ?? generated;
@@ -46,6 +50,7 @@ export function Section({
   const Heading = level === 2 ? 'h2' : level === 3 ? 'h3' : 'h4';
   return (
     <section
+      {...data}
       aria-labelledby={headingId}
       data-testid={testId}
       className={`${look.gap}${className ? ` ${className}` : ''}`}

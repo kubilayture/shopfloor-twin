@@ -22,8 +22,10 @@ import type { Tone } from './tokens.ts';
  * - Numbers, durations and times of day right-aligned (`numeric` adds tabular figures and no
  *   wrapping); headers aligned over their column.
  * - Rows: 1 px `line-subtle` dividers, no zebra (the dividers carry the rows; zebra fights the tone
- *   bars), hover `surface-sunken`; a tone's 3 px left bar for an abnormal row (`rowTone`); the row
- *   whose detail is open `accent-subtle` with a 3 px `accent` bar and `aria-current`.
+ *   bars), hover `surface-sunken`; a tone's 3 px left bar for an abnormal row (`rowTone`), and its
+ *   text bold where the domain asks for it (`rowEmphasis`: an unacknowledged alarm, design system
+ *   2.5); the row whose detail is open `accent-subtle` and `aria-current`, with a 3 px `accent`
+ *   bar unless it has a tone bar, which it keeps (an open unacknowledged alarm stays marked).
  * - The sticky header (G-14) has two modes, chosen by measuring the table against its frame: when
  *   the table fits, the frame clips sideways (`overflow-x: clip`, which is not a scroll box) and
  *   the header sticks to the page under the 48 px top bar; when it is wider, the frame becomes a
@@ -100,6 +102,8 @@ export interface DataTableProps<Row> {
   readonly rowProps?: (row: Row) => RowData;
   /** A left bar for an abnormal row (an unacknowledged alarm). */
   readonly rowTone?: (row: Row) => Tone | undefined;
+  /** Bold text in the row's cells (an unacknowledged alarm, design system 2.5). */
+  readonly rowEmphasis?: (row: Row) => boolean;
   readonly selection?: DataTableSelection<Row>;
   /** The row whose detail is open. */
   readonly activeRowKey?: string | undefined;
@@ -220,7 +224,11 @@ function subscribeNarrow(onChange: () => void): () => void {
 const isNarrow = () =>
   typeof window.matchMedia === 'function' && window.matchMedia(NARROW_QUERY).matches;
 
-function useNarrow(): boolean {
+/**
+ * Whether the screen is below `md`, where a `stack` table shows cards: a screen sizes its row
+ * actions for touch there (44 px, design system 7, 2.5.8).
+ */
+export function useNarrow(): boolean {
   return useSyncExternalStore(subscribeNarrow, isNarrow, () => false);
 }
 
@@ -384,9 +392,26 @@ function sectionHeading(element: HTMLElement): HTMLElement | null {
 }
 
 /**
+ * The control at `spot` in `row`: the same cell, the same place in it (a row without a checkbox
+ * does not shift its actions); else the row's first control.
+ */
+function sameControl(row: HTMLElement, spot: FocusSpot): HTMLElement | undefined {
+  const cell = spot.cell !== undefined ? cellOf(row, spot.cell) : undefined;
+  const inCell = cell ? controlsIn(cell) : [];
+  return inCell[Math.min(spot.index, inCell.length - 1)] ?? controlsIn(row)[0];
+}
+
+const sameOrder = (a: readonly string[], b: readonly string[]): boolean =>
+  a.length === b.length && a.every((key, index) => key === b[index]);
+
+/**
  * Keeps the focus in the table when the row it was in disappears: the same control in the next
  * row that is still there, else the previous one, else the section's heading. Only when the focus
  * was lost with the row (on `body`), never taken from somewhere the user moved it to.
+ *
+ * When the rows are reordered (a live change of the sort key, #371) the browser can drop the
+ * focus to `body` as the focused row's node moves: the focus goes back to the same control in
+ * the same row, without an announcement, since nothing left.
  */
 function useFocusAfterRemoval(
   root: RefObject<HTMLElement | null>,
@@ -403,10 +428,19 @@ function useFocusAfterRemoval(
     previous.current = keys;
     const was = spot.current;
     const container = root.current;
-    if (!was || !container || keys.includes(was.key)) return;
+    if (!was || !container) return;
+    const lost = () => {
+      const active = document.activeElement;
+      return active === null || active === document.body || !active.isConnected;
+    };
+    if (keys.includes(was.key)) {
+      if (sameOrder(before, keys) || !lost()) return;
+      const row = rowElement(container, was.key);
+      if (row) sameControl(row, was)?.focus();
+      return;
+    }
     spot.current = null;
-    const active = document.activeElement;
-    if (active !== null && active !== document.body && active.isConnected) return;
+    if (!lost()) return;
     const at = before.indexOf(was.key);
     const remaining = new Set(keys);
     const after = before.slice(at + 1).find((key) => remaining.has(key));
@@ -416,12 +450,8 @@ function useFocusAfterRemoval(
       .find((key) => remaining.has(key));
     const target = after ?? prior;
     const row = target === undefined ? undefined : rowElement(container, target);
-    // The same control: the same cell, the same place in it (a row without a checkbox does not
-    // shift its actions); else the row's first control; else the section heading.
-    const cell = row && was.cell !== undefined ? cellOf(row, was.cell) : undefined;
-    const inCell = cell ? controlsIn(cell) : [];
-    const control =
-      inCell[Math.min(was.index, inCell.length - 1)] ?? (row ? controlsIn(row)[0] : undefined);
+    // The same control in that row; else the section heading.
+    const control = row ? sameControl(row, was) : undefined;
     (control ?? sectionHeading(container))?.focus();
     if (announce) setStatus(announce(total));
   }, [keys, total, root, announce, setStatus]);
@@ -580,6 +610,7 @@ export function DataTable<Row>({
   rowTestId,
   rowProps,
   rowTone,
+  rowEmphasis,
   selection,
   activeRowKey,
   actions,
@@ -728,6 +759,7 @@ export function DataTable<Row>({
             const key = rowKey(row);
             const active = key === activeRowKey;
             const tone = rowTone?.(row);
+            const strong = rowEmphasis?.(row) ?? false;
             return (
               <li
                 key={key}
@@ -735,7 +767,7 @@ export function DataTable<Row>({
                 data-row-key={key}
                 data-testid={rowTestId?.(row)}
                 aria-current={active ? 'true' : undefined}
-                className={`flex gap-2 p-3 ${active ? `bg-accent-subtle ${ACTIVE_BAR}` : tone ? TONE_BAR[tone] : ''}`}
+                className={`flex gap-2 p-3 ${active ? 'bg-accent-subtle' : ''} ${tone ? TONE_BAR[tone] : active ? ACTIVE_BAR : ''}${strong ? ' font-semibold' : ''}`}
               >
                 {selection ? (
                   <div data-cell="select" className="-ml-1 shrink-0">
@@ -811,7 +843,13 @@ export function DataTable<Row>({
           const key = rowKey(row);
           const active = key === activeRowKey;
           const tone = rowTone?.(row);
-          const bar = active ? ACTIVE_BAR : tone ? TONE_BAR[tone] : '';
+          // An abnormal row keeps its tone bar when its detail is open (the accent fill and
+          // `aria-current` mark it open); a normal open row takes the accent bar.
+          const bar = tone ? TONE_BAR[tone] : active ? ACTIVE_BAR : '';
+          const strong = rowEmphasis?.(row) ?? false;
+          // A row header is normal weight unless the row is emphasised; other cells inherit.
+          const weight = (rowHeader: boolean | undefined) =>
+            strong ? 'font-semibold' : rowHeader ? 'font-normal' : '';
           return (
             <tr
               key={key}
@@ -833,7 +871,7 @@ export function DataTable<Row>({
                     key={column.key}
                     {...(column.rowHeader ? { scope: 'row' } : {})}
                     data-cell={`c-${column.key}`}
-                    className={`${bodyCell} ${DENSITY[density]} ${cellClass(column)} ${column.rowHeader ? 'font-normal' : ''} ${column.sticky ? `${STICKY_COLUMN} bg-inherit` : ''} ${!selection && index === 0 ? bar : ''}`}
+                    className={`${bodyCell} ${DENSITY[density]} ${cellClass(column)} ${weight(column.rowHeader)} ${column.sticky ? `${STICKY_COLUMN} bg-inherit` : ''} ${!selection && index === 0 ? bar : ''}`}
                   >
                     {column.cell(row)}
                   </Cell>

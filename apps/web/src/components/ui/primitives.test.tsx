@@ -66,6 +66,18 @@ describe('Card', () => {
     );
   });
 
+  it('takes an h4 at text-base for an item card under a level-3 section', () => {
+    render(
+      <Card title="Leak tester" headingLevel={4} as="article" padding="compact">
+        x
+      </Card>,
+    );
+    const heading = screen.getByRole('heading', { level: 4, name: 'Leak tester' });
+    expect(classesOf(heading)).toEqual(expect.arrayContaining(['text-base', 'font-semibold']));
+    expect(classesOf(heading)).not.toContain('text-lg');
+    expect(screen.getByRole('article', { name: 'Leak tester' })).toBeTruthy();
+  });
+
   it('is a region landmark only when asked to be a section', () => {
     render(
       <Card title="Shift A" as="section" testId="c">
@@ -137,6 +149,22 @@ describe('Stat', () => {
     );
     const verdict = screen.getByText('Acceptable');
     expect(classesOf(verdict)).toContain('bg-ok-soft');
+  });
+
+  it('puts its data attributes on the value with its verdict (UX-4b)', () => {
+    render(
+      <Stat
+        label="Average per 10 min"
+        value="0.2917"
+        verdict={{ tone: 'neutral', text: 'Acceptable' }}
+        hint="EEMUA 191"
+        detailData={{ 'data-measure': 'average-rate' }}
+      />,
+    );
+    const detail = document.querySelector<HTMLElement>('[data-measure="average-rate"]');
+    expect(detail?.tagName).toBe('DD');
+    expect(detail?.textContent).toBe('0.2917Acceptable');
+    expect(detail?.previousElementSibling?.textContent).toBe('Average per 10 min');
   });
 
   it('with no value: an em dash at the same size and the reason, never "n/a"', () => {
@@ -258,6 +286,28 @@ describe('Callout', () => {
     expect(callout?.hasAttribute('role')).toBe(false);
     expect(callout?.querySelector('svg')?.getAttribute('data-icon')).toBe('info');
   });
+
+  it('is larger at the touch size, for the operator terminal (UX-7)', () => {
+    render(
+      <>
+        <Callout tone="warn" title="Held" data-testid="md">
+          Keep it apart.
+        </Callout>
+        <Callout tone="warn" size="touch" title="Held" data-testid="touch">
+          Keep it apart.
+        </Callout>
+      </>,
+    );
+    const md = screen.getByTestId('md');
+    const touch = screen.getByTestId('touch');
+    expect(classesOf(md)).toEqual(expect.arrayContaining(['p-3', 'text-sm']));
+    expect(classesOf(touch)).toEqual(expect.arrayContaining(['p-4', 'text-lg']));
+    expect(classesOf(touch)).not.toContain('text-sm');
+    expect(touch.querySelector('p')?.className).toBe('text-xl font-semibold');
+    expect(md.querySelector('p')?.className).toBe('font-semibold');
+    expect(touch.querySelector('svg')?.getAttribute('width')).toBe('24');
+    expect(md.querySelector('svg')?.getAttribute('width')).toBe('16');
+  });
 });
 
 describe('Code', () => {
@@ -294,6 +344,28 @@ describe('DescriptionList', () => {
       .map((t) => t.textContent);
     expect(terms).toEqual(['Product', 'Quantity', 'Operator']);
     expect(screen.getByTestId('fact-product').textContent).toBe('ProductVB-100');
+  });
+
+  it('puts the data attributes of a fact on its detail (UX-4b)', () => {
+    render(
+      <DescriptionList
+        testId="f"
+        columns="tile"
+        facts={[
+          { term: 'Peak per 10 min', detail: '12', detailData: { 'data-measure': 'peak10' } },
+        ]}
+      />,
+    );
+    const detail = document.querySelector<HTMLElement>('[data-measure="peak10"]');
+    expect(detail?.tagName).toBe('DD');
+    expect(detail?.textContent).toBe('12');
+    expect(detail?.previousElementSibling?.textContent).toBe('Peak per 10 min');
+    // A tile's list: two columns at every width.
+    expect(screen.getByTestId('f').className.split(' ')).toEqual([
+      'columns-2',
+      'gap-x-6',
+      'text-sm',
+    ]);
   });
 
   it('takes one or two columns', () => {

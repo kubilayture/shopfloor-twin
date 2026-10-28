@@ -5,17 +5,25 @@ import { useState } from 'react';
 import { queryKeys } from '../api/queries.ts';
 import { searchTrace } from '../api/trace.ts';
 import { QueryError } from '../components/query-error.tsx';
+import { OrderStatusBadge } from '../components/order-badges.tsx';
 import { Button } from '../components/ui/button.tsx';
 import { Callout } from '../components/ui/callout.tsx';
 import { Code } from '../components/ui/code.tsx';
 import { TextInput } from '../components/ui/controls.tsx';
 import { DataTable } from '../components/ui/data-table.tsx';
 import { EmptyState } from '../components/ui/empty-state.tsx';
+import { Missing } from '../components/ui/format.tsx';
 import { PageHeader } from '../components/ui/page-header.tsx';
 import { Section } from '../components/ui/section.tsx';
 import { Skeleton } from '../components/ui/skeleton.tsx';
 import { validQuery } from '../domain/trace.ts';
-import { linkClass } from './trace-common.tsx';
+import {
+  CartonStateBadge,
+  linkClass,
+  LotErpBadge,
+  OrderLink,
+  UnitStatusBadge,
+} from './trace-common.tsx';
 
 type Result = TraceSearchDto['results'][number];
 type Kind = Result['kind'];
@@ -30,7 +38,7 @@ const KIND_TEXT: Readonly<Record<Kind, { readonly one: string; readonly many: st
   order: { one: 'Order', many: 'orders' },
 };
 
-/** What following a result opens (the search answer names only the kind and the id). */
+/** What following a result opens. */
 const OPENS: Readonly<Record<Kind, string>> = {
   serial: 'Backward trace: its order, lots, machines, operators, readings and carton',
   lot: 'Forward trace: the units, orders and cartons that used it',
@@ -71,6 +79,44 @@ function ResultLink({ result }: { readonly result: Result }) {
         </Link>
       );
   }
+}
+
+/**
+ * A result's status (#364), as the page it opens shows it: a serial's newest unit, a lot's ERP
+ * status, a carton closed or filling, an order's MES status. `data-status` keeps the raw value; a
+ * dash where the MES sent none (an order it no longer holds, or a MES before #364).
+ */
+function ResultStatus({ result }: { readonly result: Result }) {
+  const testId = `result-status-${result.kind}-${result.id}`;
+  const badge = (() => {
+    if (result.status === undefined || result.status === null) return undefined;
+    switch (result.kind) {
+      case 'serial':
+        return <UnitStatusBadge status={result.status} />;
+      case 'lot':
+        return <LotErpBadge status={result.status} />;
+      case 'carton':
+        return <CartonStateBadge status={result.status} />;
+      case 'order':
+        return <OrderStatusBadge order={{ status: result.status }} testId={null} />;
+    }
+  })();
+  return (
+    <span data-testid={testId} data-status={result.status ?? ''}>
+      {badge ?? <Missing reason="status not known" />}
+    </span>
+  );
+}
+
+/** The order a result belongs to (#364): a serial's unit's, a carton's; a lot or an order has none. */
+function ResultOrder({ result }: { readonly result: Result }) {
+  const testId = `result-order-${result.kind}-${result.id}`;
+  if (result.kind === 'lot') {
+    return <Missing reason="a lot is used by any number of orders" testId={testId} />;
+  }
+  if (result.kind === 'order') return <Missing reason="the result is the order" testId={testId} />;
+  if (result.order === undefined) return <Missing reason="no order known" testId={testId} />;
+  return <OrderLink order={result.order} testId={testId} />;
 }
 
 /** "4 results: 2 serials, 1 lot, 1 order", counted by kind in the table's order. */
@@ -145,6 +191,19 @@ function Results({ q }: { readonly q: string }) {
             header: 'Type',
             nowrap: true,
             cell: (result) => KIND_TEXT[result.kind].one,
+          },
+          {
+            key: 'status',
+            header: 'Status',
+            nowrap: true,
+            cell: (result) => <ResultStatus result={result} />,
+          },
+          {
+            key: 'order',
+            header: 'Order',
+            nowrap: true,
+            priority: 2,
+            cell: (result) => <ResultOrder result={result} />,
           },
           {
             key: 'opens',

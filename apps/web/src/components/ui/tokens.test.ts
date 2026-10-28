@@ -158,7 +158,7 @@ describe('the token map and src/index.css', () => {
     }
   });
 
-  it('draws the focus ring in the focus token and hides it on script-focused headings and main (G-22)', () => {
+  it('draws the focus ring in the focus token and hides it on script-focused headings and main (G-22; the detail panel h2, UX-4a)', () => {
     expect(css).toMatch(
       /:focus-visible \{\s*outline: 2px solid var\(--color-focus\);\s*outline-offset: 2px;\s*\}/,
     );
@@ -170,7 +170,7 @@ describe('the token map and src/index.css', () => {
       /\[data-surface='dark'\] \[data-surface='light'\]:focus-visible,\s*\[data-surface='dark'\] \[data-surface='light'\] :focus-visible \{\s*outline-color: var\(--color-focus\);\s*\}/,
     );
     expect(css).toMatch(
-      /h1\[tabindex='-1'\]:focus-visible,\s*main\[tabindex='-1'\]:focus \{\s*outline: none;\s*\}/,
+      /h1\[tabindex='-1'\]:focus-visible,\s*h2\[tabindex='-1'\]:focus-visible,\s*main\[tabindex='-1'\]:focus \{\s*outline: none;\s*\}/,
     );
   });
 });

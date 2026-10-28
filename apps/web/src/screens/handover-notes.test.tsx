@@ -59,6 +59,49 @@ describe('handover note editor', () => {
     expect(post?.path).toMatch(/\?epoch=\d+$/);
   });
 
+  it('lays the forms out on Fields: labelled controls, the count and hint, the error at the field (UX-5b)', async () => {
+    const state = shiftState({ notes: [note(1)] });
+    vi.stubGlobal('fetch', shiftMes(state).fetch);
+    await renderApp(PATH);
+    const form = await screen.findByRole('form', { name: 'New note' });
+    expect(form).toBe(screen.getByTestId('new-note'));
+    const category = within(form).getByRole('combobox', { name: 'Category' });
+    expect(category).toBe(within(form).getByTestId('note-category'));
+    const text = within(form).getByRole('textbox', { name: 'Note' });
+    expect(text).toBe(within(form).getByTestId('note-text-input'));
+    expect(text.getAttribute('name')).toBe('text');
+    expect(text.getAttribute('maxlength')).toBe('4000');
+    const described = (text.getAttribute('aria-describedby') ?? '')
+      .split(' ')
+      .map((id) => document.getElementById(id)?.textContent);
+    expect(described).toEqual(['Shown as plain text.', '0 of 4000 characters']);
+    // An empty note: the field is marked and says why; the form's message announces it.
+    fireEvent.click(within(form).getByTestId('add-note'));
+    expect(text.getAttribute('aria-invalid')).toBe('true');
+    expect(within(form).getByText('The note is empty.')).toBeTruthy();
+    expect(within(form).getByTestId('new-note-message').getAttribute('role')).toBe('alert');
+
+    // The editor: the same fields, the retraction a labelled checkbox with what it means.
+    fireEvent.click(screen.getByRole('button', { name: 'Edit note 1' }));
+    const editor = screen.getByRole('form', { name: 'Edit note 1' });
+    const retracted = within(editor).getByRole('checkbox', { name: 'Retracted' });
+    expect(retracted).toBe(within(editor).getByTestId('note-retracted'));
+    expect(
+      document.getElementById(retracted.getAttribute('aria-describedby') ?? '')?.textContent,
+    ).toContain('untick to restore it');
+    // History toggles name their note and say whether they are open.
+    const toggle = screen.getByRole('button', { name: 'History of note 1' });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(toggle);
+    expect(
+      screen.getByRole('button', { name: 'Hide history of note 1' }).getAttribute('aria-expanded'),
+    ).toBe('true');
+    // Who and when, plant time without a label; never a typed author field (#170).
+    expect(screen.getByTestId('note-1').textContent).toContain('By Ayşe · version 1 · ');
+    expect(screen.getByTestId('note-1').textContent).not.toContain('plant time');
+    expect(screen.queryByTestId('note-author')).toBeNull();
+  });
+
   it('asks for the text before sending', async () => {
     const state = shiftState();
     const server = shiftMes(state);

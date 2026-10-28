@@ -19,6 +19,7 @@ import {
   plantDaysBetween,
   plantInstant,
   plantOffsetMs,
+  plantRangeText,
   plantTimeText,
   utcInstantText,
   wallTimeText,
@@ -287,5 +288,16 @@ describe('plant-time round trip (UX-1d2 review)', () => {
       expect(clock, iso).toBeDefined();
       expect(new Date(plantInstant(day ?? '', clock ?? 0)).toISOString(), iso).toBe(iso);
     }
+  });
+});
+
+describe('plantRangeText (design system 6.2)', () => {
+  it('writes the date once on one plant day, twice across midnight, without seconds', () => {
+    expect(plantRangeText('2026-10-12T03:15:30Z', '2026-10-12T09:17:00Z')).toBe(
+      'Mon 12 Oct, 06:15 – 12:17',
+    );
+    expect(plantRangeText('2026-10-21T19:00:00Z', '2026-10-22T03:00:00Z')).toBe(
+      'Wed 21 Oct, 22:00 – Thu 22 Oct, 06:00',
+    );
   });
 });

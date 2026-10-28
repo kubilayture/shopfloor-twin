@@ -6,6 +6,7 @@ import { logIn } from './login.ts';
 import { MesClient, SimulatorClient } from '../src/clients.ts';
 import { percentile } from '../src/compare.ts';
 import {
+  heldWithin,
   judgeLatency,
   pageActivityProblems,
   pageValueProblems,
@@ -48,6 +49,27 @@ const MIN_CHANGES = 100;
 const MAX_UNOBSERVED = 0.05;
 /** Snapshot values equal to an API value around their moment, at least. */
 const MIN_AGREEMENT = 0.95;
+/**
+ * Page values whose bucket (#376: the decimal with the inputs the push carried) the API held around
+ * their moment, at least. Real runs miss about 1 % by the decimal alone; a value is a new bucket
+ * whenever its inputs move, so a push and a poll that disagreed on what a bucket is would leave
+ * almost none seen and make every page value count as fresh.
+ */
+const MIN_IDENTIFIED = 0.9;
+
+/** JSON with every object's keys sorted: the parsed poll and the raw frame may order them apart. */
+const canonical = (value: unknown): string =>
+  Array.isArray(value)
+    ? `[${value.map(canonical).join(',')}]`
+    : value !== null && typeof value === 'object'
+      ? `{${Object.entries(value)
+          .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+          .map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`)
+          .join(',')}}`
+      : JSON.stringify(value);
+
+/** A bucket as the judgement tells values apart (#376): the decimal and the inputs it came from. */
+const bucketKey = (value: string, inputs: unknown): string => `${value} ${canonical(inputs)}`;
 
 const mesUrl = process.env.RECONCILE_MES_URL;
 const simUrl = process.env.RECONCILE_SIM_URL;
@@ -101,7 +123,7 @@ test('the OEE dashboard shows the API’s shift values and each change within 2 
   // Diagnostics (#147): when each value arrived on the WebSocket, to split a delay into the
   // MES's part (API → push) and the page's (push → DOM), and the context of every slow change
   // (above 1.3 s: the API's values and the pushed ones around it). Not judged.
-  const frames: { id: string; at: number; state: string }[] = [];
+  const frames: { id: string; at: number; state: string; key: string }[] = [];
   const pushed = new Map<string, Change[]>([...testIds.keys()].map((id) => [id, []]));
   page.on('websocket', (socket) => {
     socket.on('framereceived', ({ payload }) => {
@@ -110,7 +132,11 @@ test('the OEE dashboard shows the API’s shift values and each change within 2 
       const data = JSON.parse(payload) as {
         type?: string;
         topic?: string;
-        shift?: { key: string; result: { oee: { decimal: string } | null } } | null;
+        shift?: {
+          key: string;
+          inputs: unknown;
+          result: { oee: { decimal: string } | null };
+        } | null;
       };
       if ((data.type !== 'oee' && data.type !== 'snapshot') || !data.topic?.startsWith('oee:')) {
         return;
@@ -121,7 +147,12 @@ test('the OEE dashboard shows the API’s shift values and each change within 2 
       if (data.shift?.key !== shiftKey) return;
       const changes = pushed.get(data.topic.slice('oee:'.length));
       const value = data.shift.result.oee?.decimal ?? 'n/a';
-      frames.push({ id: data.topic.slice('oee:'.length), at, state: value });
+      frames.push({
+        id: data.topic.slice('oee:'.length),
+        at,
+        state: value,
+        key: bucketKey(value, data.shift.inputs),
+      });
       if (changes && changes.at(-1)?.state !== value) changes.push({ at, state: value });
     });
   });
@@ -163,6 +194,8 @@ test('the OEE dashboard shows the API’s shift values and each change within 2 
   // The truth: the API's four-decimal OEE per id, at the midpoint of the request that saw it.
   const ids = [...testIds.keys()];
   const api = new Map<string, Change[]>(ids.map((id) => [id, []]));
+  // The same polls by bucket (#376): a new entry whenever the bucket changed, its decimal or not.
+  const apiBuckets = new Map<string, Change[]>(ids.map((id) => [id, []]));
   const snapshots: Snapshot[] = [];
   // The wall time the paced clock reaches `sampleUntil`, from one ground-truth answer.
   const startedSampling = Date.now();
@@ -191,6 +224,9 @@ test('the OEE dashboard shows the API’s shift values and each change within 2 
       const changes = api.get(bucket.id);
       const value = bucket.result.oee?.decimal ?? 'n/a';
       if (changes && changes.at(-1)?.state !== value) changes.push({ at: polled, state: value });
+      const buckets = apiBuckets.get(bucket.id);
+      const key = bucketKey(value, bucket.inputs);
+      if (buckets && buckets.at(-1)?.state !== key) buckets.push({ at: polled, state: key });
     }
     if (Date.now() >= nextSnapshot) {
       nextSnapshot += SNAPSHOT_MS;
@@ -226,7 +262,25 @@ test('the OEE dashboard shows the API’s shift values and each change within 2 
   // The first value seen is the state when sampling started, not a change.
   const truth = new Map(ids.map((id) => [id, (api.get(id) ?? []).slice(1)]));
   const observed = new Map(ids.map((id) => [id, new Set(api.get(id)?.map((c) => c.state))]));
-  const seenWithin = { truth: api, windowMs: SEEN_WITHIN_MS };
+  // A page value is the bucket of the last push that carried it (#376): four-decimal values repeat
+  // within the window as OEE moves down and up, so a fresh value the polls missed must not be taken
+  // for the stale one of a second before (the page draws a push within about 20 ms).
+  const identify = (id: string, sample: Change): string | undefined =>
+    frames.filter((f) => f.id === id && f.state === sample.state && f.at <= sample.at).at(-1)?.key;
+  const seenWithin = {
+    truth: api,
+    windowMs: SEEN_WITHIN_MS,
+    identify: { truth: apiBuckets, key: identify },
+  };
+  const pageSamples = [...shown].flatMap(([id, samples]) =>
+    samples.slice(1).map((sample) => ({ id, sample })),
+  );
+  const identified = pageSamples.filter(({ id, sample }) => {
+    const key = identify(id, sample);
+    return (
+      key !== undefined && heldWithin(apiBuckets.get(id) ?? [], key, sample.at, SEEN_WITHIN_MS)
+    );
+  }).length;
   const result = judgeLatency(truth, shown, until, LIMIT_MS, { seenWithin });
   // The push is paced (one delta a second per topic) while the API changes about twice a second,
   // yet the page changed about 0.7 times per judged change in real runs: half is the usual floor.
@@ -288,6 +342,8 @@ test('the OEE dashboard shows the API’s shift values and each change within 2 
     ),
     pageValues: values.transitions,
     unobservedPageValues: values.unobserved,
+    identifiedPageValues: identified,
+    identifiablePageValues: pageSamples.length,
     snapshots: {
       count: snapshots.length,
       compared: agreement.compared,
@@ -342,4 +398,9 @@ test('the OEE dashboard shows the API’s shift values and each change within 2 
   // The page's values are the API's: few that the polls missed, and the snapshots agree. This is
   // what keeps a lagging page from passing on unseen values (see `observed` in latency.ts).
   expect(values.problems, 'the page did not show the API’s values').toEqual([]);
+  // The buckets the push carried are the API's (#376): most page values are ones the polls saw.
+  expect(
+    identified,
+    'page values whose bucket the API held around their moment',
+  ).toBeGreaterThanOrEqual(pageSamples.length * MIN_IDENTIFIED);
 });

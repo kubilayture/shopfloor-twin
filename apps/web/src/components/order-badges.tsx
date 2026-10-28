@@ -8,11 +8,20 @@ import {
 } from '../domain/orders.ts';
 import { Badge } from './ui/badge.tsx';
 
-/** An order's status (design system 2.6): `data-status` raw, the word for people. */
-export function OrderStatusBadge({ order }: { readonly order: Pick<OrderDto, 'status'> }) {
+/**
+ * An order's status (design system 2.6): `data-status` raw, the word for people. `testId` null
+ * where a page lists several orders (the trace search, #364): no `order-status` id then.
+ */
+export function OrderStatusBadge({
+  order,
+  testId = 'order-status',
+}: {
+  readonly order: Pick<OrderDto, 'status'>;
+  readonly testId?: string | null;
+}) {
   return (
     <Badge
-      data-testid="order-status"
+      data-testid={testId ?? undefined}
       data-status={order.status}
       tone={ORDER_STATUS_TONE[order.status]}
       icon={order.status === 'completed' ? 'check' : undefined}

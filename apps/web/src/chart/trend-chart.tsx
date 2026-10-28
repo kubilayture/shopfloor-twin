@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, type ReactNode } from 'react';
 import { EmptyState } from '../components/ui/empty-state.tsx';
 import { plainText } from '../domain/numbers.ts';
 import type { ChartData } from '../domain/series.ts';
@@ -35,12 +35,18 @@ export function trendReading(label: string, data: ChartData, unit: string): stri
 /**
  * A metric's trend: a min/max band with the average line. uPlot is loaded with the first chart,
  * so the overview doesn't download it. The latest values are in the metrics table as text.
+ * Without samples in the range, an empty state at the chart's height; `empty` says why or when
+ * the last sample was (M-05).
  *
  * Not printed (UX-12, #336): the canvas would print as drawn on screen, so from the dark theme
  * with dark-theme strokes (its repaint after `beforeprint` comes too late); the metrics table
  * carries the numbers on paper.
  */
-export function TrendChart({ label, ...props }: TrendChartProps & { readonly label: string }) {
+export function TrendChart({
+  label,
+  empty,
+  ...props
+}: TrendChartProps & { readonly label: string; readonly empty?: ReactNode }) {
   const points = props.data[0].length;
   return (
     <figure
@@ -58,7 +64,7 @@ export function TrendChart({ label, ...props }: TrendChartProps & { readonly lab
           className="flex items-center justify-center"
           style={{ minHeight: CHART_SIZES.compact }}
         >
-          <EmptyState title="No samples in this range." />
+          <EmptyState title="No samples in this range." body={empty} icon="clock" />
         </div>
       ) : (
         <div

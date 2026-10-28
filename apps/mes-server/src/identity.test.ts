@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { request as httpRequest } from 'node:http';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import {
   PERMISSIONS,
   ROLES,
@@ -2389,11 +2390,12 @@ describe('login throttling over HTTP (#242, S5)', () => {
     }
   });
 
-  it('keeps a login answered within 8 hash times (at least 1 s) while open-loop attacks from 4 and 8 addresses run, never more hashes in flight than slots, every refusal a 429 (#264 re-review, N1)', async ({
+  it('keeps a login answered within 8 hash times (at least 1 s) while open-loop attacks from 4 and 8 addresses run, never more hashes in flight than slots, every refusal a 429, the event loop never held up for a hash time (#264 re-review, N1)', async ({
     task,
   }) => {
     const password = await user('h-lea', ['operator']);
-    // The real buckets, ceiling and hash slots; real scrypt hashes (two at a time, ~0.1 s each).
+    // The real buckets, ceiling and hash slots; real scrypt hashes (two at a time, ~0.2 s each on
+    // a quiet machine, #365 review).
     const slotted = new Identity({ db, now, sweepMs: 0 });
     await slotted.start();
     const real = await buildMesHttp({
@@ -2419,8 +2421,24 @@ describe('login throttling over HTTP (#242, S5)', () => {
       });
     const p95 = (values: number[]) =>
       [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1] ?? 0;
+    /**
+     * What a hash costs now with the event loop idle (#366): four on the two slots and nothing
+     * else, so the time to each callback is the hash's own. The reference for the event loop's
+     * delay below, which `hashesDone` can't be: its times include the wait for the callback, so a
+     * login path that blocks the loop would raise them, and the budget, along with the latency.
+     */
+    const quietHashMs = async () => {
+      const before = hashesDone();
+      await Promise.all(Array.from({ length: 4 }, () => hashPassword('quiet-reference-x')));
+      const after = hashesDone();
+      return (after.ms - before.ms) / Math.max(1, after.count - before.count);
+    };
     try {
       for (const attackers of [4, 8]) {
+        const quietBefore = await quietHashMs();
+        // The event loop's delay over the round, apart from the hash times (#366).
+        const loop = monitorEventLoopDelay({ resolution: 10 });
+        loop.enable();
         const attack: Promise<number>[] = [];
         let n = 0;
         // Hashes asked for and not finished, at most: each holds a hash slot until it is done.
@@ -2451,8 +2469,11 @@ describe('login throttling over HTTP (#242, S5)', () => {
           }
         } finally {
           clearInterval(timer);
+          loop.disable();
         }
         const answers = await Promise.all(attack);
+        const loopP99Ms = loop.percentile(99) / 1e6;
+        const loopMeanMs = loop.mean / 1e6;
         // The budget is in hash times, what one hash cost meanwhile under whatever else the
         // machine runs (#347: 1080 ms against a fixed 1 s on a loaded host). The victim waits for
         // at most the 9 other slots' hashes, two at a time (5 hash times), and its own (6); 8
@@ -2464,12 +2485,39 @@ describe('login throttling over HTTP (#242, S5)', () => {
         const hashMs =
           (hashed.ms - hashesBefore.ms) / Math.max(1, hashed.count - hashesBefore.count);
         const budget = Math.max(1_000, 8 * hashMs);
-        const summary = `${String(attackers)} attackers: victim ${statuses.join(',')}, ${latencies.map((l) => Math.round(l)).join(',')} ms; a hash ${String(Math.round(hashMs))} ms, budget ${String(Math.round(budget))} ms, at most ${String(inFlight)} hashes in flight`;
+        // After the round's hashes are counted above, so the reference's own hashes stay out of them.
+        const quietAfter = await quietHashMs();
+        const loopBound = Math.max(100, quietBefore, quietAfter);
+        const summary = `${String(attackers)} attackers: victim ${statuses.join(',')}, ${latencies.map((l) => Math.round(l)).join(',')} ms; a hash ${String(Math.round(hashMs))} ms (${String(Math.round(quietBefore))}/${String(Math.round(quietAfter))} ms quiet before/after), budget ${String(Math.round(budget))} ms, at most ${String(inFlight)} hashes in flight, event loop delay p99 ${String(Math.round(loopP99Ms))} ms (mean ${String(Math.round(loopMeanMs))} ms, bound ${String(Math.round(loopBound))} ms)`;
         // The measurements, in the JSON report's meta of this test.
         Object.assign(task.meta, {
-          [`n1-${String(attackers)}`]: { latencies, hashMs, budget, inFlight },
+          [`n1-${String(attackers)}`]: {
+            latencies,
+            hashMs,
+            quietBefore,
+            quietAfter,
+            loopBound,
+            budget,
+            inFlight,
+            loopP99Ms,
+            loopMeanMs,
+          },
         });
         expect(p95(latencies), summary).toBeLessThanOrEqual(budget);
+        // The hash times above include the wait for their callbacks, so a login path that blocked
+        // the event loop would raise the budget with the latency (#365 review, 4). The loop's own
+        // delay is bounded apart, by a hash measured on an idle loop (so the bound follows the
+        // machine's load as the budget does, but not the loop's own delay): the larger of the quiet
+        // hash time before and after the round, so a load that rose during the round raises it too,
+        // and at least 100 ms, for a quiet machine's GC and scheduler pauses (#382 review: one hash
+        // alone was a real flake risk at the loads of 8 to 30 our gates reach). Measured (#382, a
+        // run of this file at a load of about 3.5): p99 11.4 ms, mean 10.7 ms (the monitor's 10 ms
+        // resolution) against a quiet hash of 150 ms. What it catches: anything that holds the loop
+        // for a whole hash at once, a synchronous hash (`scryptSync`) first of all, and work on the
+        // loop that at the attack's rate (20 to 40 logins a second) keeps it behind. What it
+        // doesn't: a short block per login (a few ms), which only spends the latency budget's
+        // headroom; the budget above still bounds the victim's latency.
+        expect(loopP99Ms, summary).toBeLessThanOrEqual(loopBound);
         expect(inFlight, summary).toBeLessThanOrEqual(LOGIN_HASH_SLOTS.total);
         // Every refusal of the victim is a 429 (a bucket, the ceiling or no hash slot).
         expect(
@@ -2593,8 +2641,12 @@ describe('login throttling over HTTP (#242, S5)', () => {
           // Ten seconds on: every bucket is full again (the ceiling 20, each address 10).
           bucketMs += 10_000;
           // Each attacker address sends its whole burst at once: together at least the ceiling's.
-          const attack = await Promise.all(
-            Array.from({ length: attackers * loginBurst }, (_, i) => {
+          // The home address logs in in the same batch, ahead of the burst, so its login is in
+          // flight while the attack is (#365 review, 5): it spends no ceiling token, and its hash
+          // slot is taken before the burst's fill the rest.
+          const [homeIn, ...attack] = await Promise.all([
+            send('h-moe', password, home).then((r) => r.statusCode),
+            ...Array.from({ length: attackers * loginBurst }, (_, i) => {
               n++;
               return send(
                 `raider-${String(n)}`,
@@ -2602,8 +2654,9 @@ describe('login throttling over HTTP (#242, S5)', () => {
                 `198.51.100.${String(150 + (i % attackers))}`,
               ).then((r) => r.statusCode);
             }),
-          );
+          ]);
           const what = `${String(attackers)} attackers, round ${String(round)}`;
+          expect(homeIn, what).toBe(200);
           expect(
             attack.every((s) => s === 401 || s === 429),
             what,
@@ -2616,7 +2669,7 @@ describe('login throttling over HTTP (#242, S5)', () => {
           const probe = await send(`probe-${String(n)}`, 'wrong-password-x', '192.168.98.1');
           expect(probe.statusCode, what).toBe(429);
           expect(probe.json<{ detail: string }>().detail, what).toBe(LOGIN_RATE);
-          // ...and the home address, which logged in within the window, is in.
+          // ...and the home address, which logged in within the window, is in after it too.
           expect((await send('h-moe', password, home)).statusCode, what).toBe(200);
         }
       }

@@ -447,6 +447,10 @@ test('the demo walkthrough: eight scenes, each asserting what it shows', async (
       ).records.find((r) => r.id === record.id);
       expect(coded?.segments.map((s) => [s.reason, s.coded])).toEqual([[record.autoReason, true]]);
       await holdView(page, 4, 'downtime-coded');
+      // At 1280 the coding is a modal side sheet (UX-5a, #326): close it before the next scene
+      // logs out through the top bar, which the sheet holds inert.
+      await page.getByTestId('close-coding').click();
+      await expect(page.getByTestId('coding-panel')).toHaveCount(0);
       return {
         alarm: alarm.id,
         acknowledgedBy: maintenance.username,

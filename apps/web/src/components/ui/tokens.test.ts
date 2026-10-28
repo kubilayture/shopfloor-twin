@@ -52,7 +52,9 @@ function declarations(prelude: string, indent = ''): Map<string, string> {
 }
 
 const theme = declarations('@theme static');
-const dark = declarations(":root[data-theme='dark']");
+const dark = declarations(":root[data-theme='dark']", '  ');
+/** #391: the chosen dark theme applies on screen only, so print is light without `beforeprint`. */
+const SCREEN_PRELUDE = "@media screen {\n  :root[data-theme='dark'] {";
 /** UX-12: the dark values when `data-theme` is absent (scripts off), on screen only. */
 const MEDIA_PRELUDE =
   '@media screen and (prefers-color-scheme: dark) {\n  :root:not([data-theme]) {';
@@ -92,6 +94,9 @@ describe('the token map and src/index.css', () => {
     }
     expect(Object.fromEntries(dark)).toEqual(Object.fromEntries(expected));
     expect(css).toMatch(/:root\[data-theme='dark'\] \{\s*color-scheme: dark;/);
+    // On screen only (#391): one block, inside `@media screen`.
+    expect(css).toContain(SCREEN_PRELUDE);
+    expect(css.split(":root[data-theme='dark'] {")).toHaveLength(2);
   });
 
   it('applies the same dark values under prefers-color-scheme: dark while data-theme is absent, on screen only (UX-12)', () => {

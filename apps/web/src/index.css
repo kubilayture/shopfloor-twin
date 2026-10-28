@@ -210,95 +210,98 @@
   color-scheme: light;
 }
 
-:root[data-theme='dark'] {
-  color-scheme: dark;
+/* On screen only: print is light even without `beforeprint` (#391). */
+@media screen {
+  :root[data-theme='dark'] {
+    color-scheme: dark;
 
-  /* Surfaces, lines and text (2.1) */
-  --color-canvas: #0b1220;
-  --color-surface: #111a2b;
-  --color-surface-sunken: #0e1626;
-  --color-surface-hover: #1e293b;
-  --color-line: #334155;
-  --color-line-subtle: #1e293b;
-  --color-ink: #e2e8f0;
-  --color-ink-secondary: #94a3b8;
-  --color-ink-inverse: #0b1220;
-  --color-disabled: #1e293b;
-  --color-disabled-line: #334155;
-  --color-disabled-ink: #94a3b8;
-  --color-backdrop: rgb(2 6 23 / 0.7);
+    /* Surfaces, lines and text (2.1) */
+    --color-canvas: #0b1220;
+    --color-surface: #111a2b;
+    --color-surface-sunken: #0e1626;
+    --color-surface-hover: #1e293b;
+    --color-line: #334155;
+    --color-line-subtle: #1e293b;
+    --color-ink: #e2e8f0;
+    --color-ink-secondary: #94a3b8;
+    --color-ink-inverse: #0b1220;
+    --color-disabled: #1e293b;
+    --color-disabled-line: #334155;
+    --color-disabled-ink: #94a3b8;
+    --color-backdrop: rgb(2 6 23 / 0.7);
 
-  /* Actions and links (2.2) */
-  --color-accent: #38bdf8;
-  --color-accent-hover: #7dd3fc;
-  --color-on-accent: #0b1220;
-  --color-accent-subtle: #0c2d48;
-  --color-link: #7dd3fc;
-  --color-focus: #38bdf8;
-  --color-alarm-solid-hover: #b91c1c;
+    /* Actions and links (2.2) */
+    --color-accent: #38bdf8;
+    --color-accent-hover: #7dd3fc;
+    --color-on-accent: #0b1220;
+    --color-accent-subtle: #0c2d48;
+    --color-link: #7dd3fc;
+    --color-focus: #38bdf8;
+    --color-alarm-solid-hover: #b91c1c;
 
-  /* Tones (2.3): ink on soft, border, solid fill and the text on it */
-  --color-neutral-ink: #cbd5e1;
-  --color-neutral-soft: #1e293b;
-  --color-neutral-solid: #475569;
-  --color-info-ink: #93c5fd;
-  --color-info-soft: #0f1d3a;
-  --color-info-border: #60a5fa;
-  --color-info-solid: #2563eb;
-  --color-ok-ink: #6ee7b7;
-  --color-ok-soft: #0f2a22;
-  --color-ok-border: #10b981;
-  --color-warn-ink: #fcd34d;
-  --color-warn-soft: #2a2110;
-  --color-warn-border: #f59e0b;
-  --color-caution-ink: #fdba74;
-  --color-caution-soft: #2b1a10;
-  --color-caution-border: #f97316;
-  --color-alarm-ink: #fca5a5;
-  --color-alarm-soft: #2a1215;
-  --color-alarm-border: #f87171;
-  --color-alarm-solid: #dc2626;
+    /* Tones (2.3): ink on soft, border, solid fill and the text on it */
+    --color-neutral-ink: #cbd5e1;
+    --color-neutral-soft: #1e293b;
+    --color-neutral-solid: #475569;
+    --color-info-ink: #93c5fd;
+    --color-info-soft: #0f1d3a;
+    --color-info-border: #60a5fa;
+    --color-info-solid: #2563eb;
+    --color-ok-ink: #6ee7b7;
+    --color-ok-soft: #0f2a22;
+    --color-ok-border: #10b981;
+    --color-warn-ink: #fcd34d;
+    --color-warn-soft: #2a2110;
+    --color-warn-border: #f59e0b;
+    --color-caution-ink: #fdba74;
+    --color-caution-soft: #2b1a10;
+    --color-caution-border: #f97316;
+    --color-alarm-ink: #fca5a5;
+    --color-alarm-soft: #2a1215;
+    --color-alarm-border: #f87171;
+    --color-alarm-solid: #dc2626;
 
-  /* Machine states (2.4): badge and timeline band */
-  --color-state-running-fill: #1e293b;
-  --color-state-running-ink: #e2e8f0;
-  --color-state-running-border: #cbd5e1;
-  --color-state-idle-fill: #334155;
-  --color-state-idle-ink: #e2e8f0;
-  --color-state-idle-border: #334155;
-  --color-state-setup-fill: #334155;
-  --color-state-setup-ink: #e2e8f0;
-  --color-state-setup-border: #94a3b8;
-  --color-state-planned-stop-fill: #0e1626;
-  --color-state-planned-stop-ink: #cbd5e1;
-  --color-state-maintenance-fill: #2563eb;
-  --color-state-maintenance-border: #2563eb;
-  --color-state-off-fill: #111a2b;
-  --color-state-off-ink: #94a3b8;
-  --color-state-off-border: #334155;
-  --color-state-stopped-fill: #2a1215;
-  --color-state-stopped-ink: #fca5a5;
-  --color-state-stopped-border: #f87171;
-  --color-state-down-fill: #dc2626;
-  --color-state-down-border: #dc2626;
-  --color-state-no-data-fill: #111a2b;
-  --color-state-no-data-ink: #94a3b8;
+    /* Machine states (2.4): badge and timeline band */
+    --color-state-running-fill: #1e293b;
+    --color-state-running-ink: #e2e8f0;
+    --color-state-running-border: #cbd5e1;
+    --color-state-idle-fill: #334155;
+    --color-state-idle-ink: #e2e8f0;
+    --color-state-idle-border: #334155;
+    --color-state-setup-fill: #334155;
+    --color-state-setup-ink: #e2e8f0;
+    --color-state-setup-border: #94a3b8;
+    --color-state-planned-stop-fill: #0e1626;
+    --color-state-planned-stop-ink: #cbd5e1;
+    --color-state-maintenance-fill: #2563eb;
+    --color-state-maintenance-border: #2563eb;
+    --color-state-off-fill: #111a2b;
+    --color-state-off-ink: #94a3b8;
+    --color-state-off-border: #334155;
+    --color-state-stopped-fill: #2a1215;
+    --color-state-stopped-ink: #fca5a5;
+    --color-state-stopped-border: #f87171;
+    --color-state-down-fill: #dc2626;
+    --color-state-down-border: #dc2626;
+    --color-state-no-data-fill: #111a2b;
+    --color-state-no-data-ink: #94a3b8;
 
-  /* Alarm priorities (2.5) */
-  --color-priority-high-fill: #dc2626;
-  --color-priority-high-border: #dc2626;
-  --color-priority-low-fill: #111a2b;
-  --color-priority-low-ink: #93c5fd;
-  --color-priority-low-border: #60a5fa;
+    /* Alarm priorities (2.5) */
+    --color-priority-high-fill: #dc2626;
+    --color-priority-high-border: #dc2626;
+    --color-priority-low-fill: #111a2b;
+    --color-priority-low-ink: #93c5fd;
+    --color-priority-low-border: #60a5fa;
 
-  /* Charts (5) */
-  --color-chart-1: #38bdf8;
-  --color-chart-2: #f59e0b;
-  --color-chart-3: #a78bfa;
-  --color-chart-4: #34d399;
-  --color-chart-5: #f472b6;
-  --color-chart-other: #cbd5e1;
-  --color-chart-limit: #f87171;
+    /* Charts (5) */
+    --color-chart-1: #38bdf8;
+    --color-chart-2: #f59e0b;
+    --color-chart-3: #a78bfa;
+    --color-chart-4: #34d399;
+    --color-chart-5: #f472b6;
+    --color-chart-other: #cbd5e1;
+    --color-chart-limit: #f87171;
+  }
 }
 
 @media screen and (prefers-color-scheme: dark) {

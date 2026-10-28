@@ -193,7 +193,7 @@ UX-1b and UX-1e can be reviewed in parallel once UX-1c is in; so can UX-1d1, UX-
 
 ## UX-2 … UX-11 Screen migrations
 
-Each moves its screens onto the shell, `PageHeader`, the primitives and the content rules, deletes their local `buttonClass`/`inputClass` constants, and attaches the UX-1g report diff for its routes.
+Each moves its screens onto the shell, `PageHeader`, the primitives and the content rules, deletes their local `buttonClass`/`inputClass` constants, and attaches the UX-1g report diff for its routes. UX-2 set the pattern they follow: [design system section 10](design-system.md#10-screen-migration-pattern).
 
 ### UX-2 Overview and machine detail
 

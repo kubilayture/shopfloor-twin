@@ -172,6 +172,7 @@ export function terminalRoutes(
         userId: principal.userId,
         workCenter: params.workCenter,
         until: crew.to ?? new Date(),
+        crewId: crew.id,
       });
       return { crew: crewDto(crew) };
     },

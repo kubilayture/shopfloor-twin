@@ -179,10 +179,11 @@ describe('alarm list', () => {
       );
     });
 
-    // A raise joins the active list, newest first.
+    // A raise joins the active list in priority order (#371): the newer medium one goes below the
+    // high one.
     const second = occurrence(2);
     await app.push({ type: 'alarm', event: 'raised', occurrence: second });
-    expect(rowIds()).toEqual([second.id, first.id]);
+    expect(rowIds()).toEqual([first.id, second.id]);
     expect(screen.getByTestId('tab-active').dataset.count).toBe('2');
 
     // A clear does not acknowledge: it stays in the active list.
@@ -353,7 +354,8 @@ describe('alarm list', () => {
     expect(message.textContent).toBe('Acknowledged 1 (1 already acknowledged).');
     const post = server.calls.find((call) => call.method === 'POST');
     expect(post?.path).toBe('/api/v1/alarms/ack');
-    expect(post?.body).toEqual({ ids: [c.id, a.id] });
+    // In the rows' order: the active one before the cleared one of the same priority (#371).
+    expect(post?.body).toEqual({ ids: [a.id, c.id] });
     // The selection is cleared, and select all picks every alarm that can be acknowledged.
     expect(screen.getByTestId<HTMLInputElement>(`select-${a.id}`).checked).toBe(false);
     fireEvent.click(screen.getByTestId('select-all'));
@@ -1284,5 +1286,194 @@ describe('the alarm list toolbar (#369 review)', () => {
     });
     expect(server.calls.filter((call) => call.method === 'POST').length).toBe(posts);
     expect(screen.getByTestId('alarm-list-message').textContent).toBe('Acknowledged 2.');
+  });
+});
+
+describe('the alarm list order and salience (#371, ISA-18.2)', () => {
+  const low = occurrence(4, { priority: 'low' });
+  const high = occurrence(1, { priority: 'high', code: 'SPINDLE-OVERLOAD' });
+  const medium = occurrence(3);
+  const caption = () => screen.getByTestId('alarm-table').querySelector('caption')?.textContent;
+
+  it('lists by priority, then newest raise, by default, and by raise time from the sort switch', async () => {
+    vi.stubGlobal('fetch', mes({ ...empty(), active: [low, medium, high] }).fetch);
+    const app = await renderApp(`/alarms?alarm=${encodeURIComponent(medium.id)}`);
+    await screen.findByTestId(`alarm-row-${low.id}`);
+    expect(rowIds()).toEqual([high.id, medium.id, low.id]);
+    expect(caption()).toBe(
+      'Active alarms, highest priority first, active before cleared, then newest raise',
+    );
+    const group = screen.getByRole('group', { name: 'Sort by' });
+    expect(group.dataset.testid).toBe('alarm-sort');
+    const byPriority = within(group).getByRole('link', { name: 'Priority' });
+    const byRaise = within(group).getByRole('link', { name: 'Newest raise' });
+    expect(byPriority.getAttribute('aria-current')).toBe('page');
+    expect(byRaise.getAttribute('aria-current')).toBeNull();
+    // The links keep the open alarm; the default leaves `sort` out of the URL.
+    expect(byPriority.getAttribute('href')).not.toContain('sort=');
+    expect(byRaise.getAttribute('href')).toContain('sort=raised');
+    expect(byRaise.getAttribute('href')).toContain('alarm=');
+
+    fireEvent.click(byRaise);
+    await waitFor(() => {
+      expect(rowIds()).toEqual([low.id, medium.id, high.id]);
+    });
+    expect(app.history.location.search).toContain('sort=raised');
+    expect(caption()).toBe('Active alarms, newest raise first');
+    const sortLink = (name: string) =>
+      within(screen.getByRole('group', { name: 'Sort by' })).getByRole('link', { name });
+    expect(sortLink('Newest raise').getAttribute('aria-current')).toBe('page');
+    expect(sortLink('Priority').getAttribute('aria-current')).toBeNull();
+    expect(screen.getByTestId('alarm-panel').dataset.alarm).toBe(medium.id);
+
+    // Back to the default: `sort` leaves the URL again.
+    expect(sortLink('Priority').getAttribute('href')).not.toContain('sort=');
+    fireEvent.click(sortLink('Priority'));
+    await waitFor(() => {
+      expect(rowIds()).toEqual([high.id, medium.id, low.id]);
+    });
+    expect(app.history.location.search).not.toContain('sort=');
+    fireEvent.click(sortLink('Newest raise'));
+    await waitFor(() => {
+      expect(rowIds()).toEqual([low.id, medium.id, high.id]);
+    });
+
+    // Another tab keeps the order.
+    fireEvent.click(screen.getByTestId('tab-history'));
+    await waitFor(() => {
+      expect(screen.getByTestId('alarm-list').dataset.view).toBe('history');
+    });
+    expect(app.history.location.search).toContain('sort=raised');
+  });
+
+  it('lists the history by raise time unless priority is chosen', async () => {
+    const closed = (seq: number, priority: 'high' | 'low') =>
+      occurrence(seq, {
+        priority,
+        state: 'closed',
+        endedAt: '2026-10-15T05:30:00.000Z',
+        endReason: 'cleared',
+        active: false,
+        acknowledged: ACK,
+      });
+    const oldHigh = closed(1, 'high');
+    const newLow = closed(2, 'low');
+    vi.stubGlobal('fetch', mes({ ...empty(), history: [oldHigh, newLow] }).fetch);
+    const app = await renderApp('/alarms?view=history');
+    await screen.findByTestId(`alarm-row-${newLow.id}`);
+    expect(rowIds()).toEqual([newLow.id, oldHigh.id]);
+    expect(caption()).toBe('History alarms, newest raise first, the last 24 hours');
+    const group = screen.getByRole('group', { name: 'Sort by' });
+    const byRaise = within(group).getByRole('link', { name: 'Newest raise' });
+    const byPriority = within(group).getByRole('link', { name: 'Priority' });
+    expect(byRaise.getAttribute('aria-current')).toBe('page');
+    expect(byPriority.getAttribute('aria-current')).toBeNull();
+    // History's default leaves `sort` out; priority is the explicit choice here.
+    expect(byRaise.getAttribute('href')).not.toContain('sort=');
+    expect(byPriority.getAttribute('href')).toContain('sort=priority');
+    fireEvent.click(byPriority);
+    await waitFor(() => {
+      expect(rowIds()).toEqual([oldHigh.id, newLow.id]);
+    });
+    expect(app.history.location.search).toContain('sort=priority');
+    expect(
+      within(screen.getByRole('group', { name: 'Sort by' }))
+        .getByRole('link', { name: 'Priority' })
+        .getAttribute('aria-current'),
+    ).toBe('page');
+  });
+
+  it('puts the active alarms of a priority before its cleared ones', async () => {
+    const newerCleared = occurrence(9, {
+      priority: 'high',
+      state: 'unacked-cleared',
+      endedAt: '2026-10-15T05:10:00.000Z',
+      endReason: 'cleared',
+      active: false,
+    });
+    vi.stubGlobal('fetch', mes({ ...empty(), active: [newerCleared, low, high] }).fetch);
+    await renderApp('/alarms');
+    await screen.findByTestId(`alarm-row-${newerCleared.id}`);
+    expect(rowIds()).toEqual([high.id, newerCleared.id, low.id]);
+  });
+
+  it('opens a shared link in its order', async () => {
+    vi.stubGlobal('fetch', mes({ ...empty(), active: [low, medium, high] }).fetch);
+    await renderApp('/alarms?sort=raised');
+    await screen.findByTestId(`alarm-row-${low.id}`);
+    expect(rowIds()).toEqual([low.id, medium.id, high.id]);
+  });
+
+  it('ignores an unknown order in the URL', async () => {
+    vi.stubGlobal('fetch', mes({ ...empty(), active: [low, medium, high] }).fetch);
+    await renderApp('/alarms?sort=oldest');
+    await screen.findByTestId(`alarm-row-${low.id}`);
+    expect(rowIds()).toEqual([high.id, medium.id, low.id]);
+  });
+
+  it('makes an active unacknowledged alarm the most salient row; cleared and acknowledged ones less', async () => {
+    const cleared = occurrence(2, {
+      priority: 'high',
+      state: 'unacked-cleared',
+      endedAt: '2026-10-15T05:10:00.000Z',
+      endReason: 'cleared',
+      active: false,
+    });
+    const acked = occurrence(5, { state: 'acked-active', acknowledged: ACK });
+    vi.stubGlobal(
+      'fetch',
+      mes({ ...empty(), active: [high, cleared], acknowledged: [acked] }).fetch,
+    );
+    await renderApp('/alarms');
+    const row = (id: string) => screen.getByTestId(`alarm-row-${id}`);
+    const cell = (id: string, name: string) =>
+      row(id).querySelector<HTMLElement>(`[data-cell="${name}"]`);
+    const badge = (id: string) =>
+      cell(id, 'c-state')?.querySelector<HTMLElement>('[data-condition]');
+    await screen.findByTestId(`alarm-row-${cleared.id}`);
+
+    // Active and unacknowledged: the bar, bold text and a solid "Active" badge.
+    expect(cell(high.id, 'select')?.className).toContain('var(--color-alarm-border)');
+    expect(cell(high.id, 'c-alarm')?.className).toContain('font-semibold');
+    expect(badge(high.id)?.textContent).toBe('Active');
+    expect(badge(high.id)?.dataset.condition).toBe('active');
+    expect(badge(high.id)?.className).toContain('bg-neutral-solid');
+    expect(cell(high.id, 'c-state')?.textContent).toBe('Active, unacknowledged');
+
+    // Cleared and unacknowledged: still barred (it awaits its acknowledgement), not bold, soft.
+    expect(cell(cleared.id, 'select')?.className).toContain('var(--color-alarm-border)');
+    expect(cell(cleared.id, 'c-alarm')?.className).not.toContain('font-semibold');
+    expect(cell(cleared.id, 'c-machine')?.className).not.toContain('font-semibold');
+    expect(badge(cleared.id)?.textContent).toBe('Cleared');
+    expect(badge(cleared.id)?.className).toContain('bg-neutral-soft');
+    expect(cell(cleared.id, 'c-state')?.textContent).toBe('Cleared, unacknowledged');
+
+    // Active and acknowledged: plain, an outline badge, "acknowledged" in secondary text.
+    fireEvent.click(screen.getByTestId('tab-acknowledged'));
+    await screen.findByTestId(`alarm-row-${acked.id}`);
+    expect(cell(acked.id, 'c-alarm')?.className).not.toContain('font-semibold');
+    expect(badge(acked.id)?.className).toContain('bg-surface');
+    expect(badge(acked.id)?.className).toContain('border-neutral-border');
+    expect(cell(acked.id, 'c-state')?.textContent).toBe('Active, acknowledged');
+    expect(
+      within(cell(acked.id, 'c-state') ?? document.body).getByText('acknowledged').className,
+    ).toContain('text-ink-secondary');
+  });
+
+  it('shows a closed alarm as a soft "Closed" badge with nothing after it', async () => {
+    const closed = occurrence(3, {
+      state: 'closed',
+      endedAt: '2026-10-15T05:30:00.000Z',
+      endReason: 'cleared',
+      active: false,
+      acknowledged: ACK,
+    });
+    vi.stubGlobal('fetch', mes({ ...empty(), history: [closed] }).fetch);
+    await renderApp('/alarms?view=history');
+    const row = await screen.findByTestId(`alarm-row-${closed.id}`);
+    const state = row.querySelector<HTMLElement>('[data-cell="c-state"]');
+    expect(state?.textContent).toBe('Closed');
+    expect(state?.querySelector('[data-condition]')?.className).toContain('bg-neutral-soft');
+    expect(row.innerHTML).not.toContain('border)]');
   });
 });

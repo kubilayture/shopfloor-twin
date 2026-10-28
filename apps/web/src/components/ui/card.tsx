@@ -28,7 +28,8 @@ export const CARD_TONE_BAR: Readonly<Record<Tone, string>> = {
 
 export interface CardProps extends DataAttributes {
   readonly title?: ReactNode;
-  readonly headingLevel?: 2 | 3;
+  /** 2 or 3; 4 for an item card under a level-3 section (a machine card), at `text-base`. */
+  readonly headingLevel?: 2 | 3 | 4;
   readonly description?: ReactNode;
   readonly actions?: ReactNode;
   readonly status?: ReactNode;
@@ -55,7 +56,7 @@ export function Card({
   ...data
 }: CardProps) {
   const headingId = useId();
-  const Heading = headingLevel === 2 ? 'h2' : 'h3';
+  const Heading = headingLevel === 2 ? 'h2' : headingLevel === 3 ? 'h3' : 'h4';
   const hasHeader = title !== undefined || description !== undefined || actions !== undefined;
   return (
     <Element
@@ -80,7 +81,10 @@ export function Card({
           <div className="min-w-0">
             {title === undefined ? null : (
               <div className="flex flex-wrap items-center gap-2">
-                <Heading id={headingId} className="text-lg font-semibold">
+                <Heading
+                  id={headingId}
+                  className={`${headingLevel === 4 ? 'text-base' : 'text-lg'} font-semibold`}
+                >
                   {title}
                 </Heading>
                 {status}

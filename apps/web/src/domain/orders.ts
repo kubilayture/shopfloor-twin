@@ -435,16 +435,6 @@ export function isOverdue(
 }
 
 /**
- * A code of the orders module as words (design system 6.4): `revision-refused` is "Revision
- * refused", `routing-violation` "Routing violation". The screens show the code beside it where a
- * reader may need it.
- */
-export function orderCodeWords(code: string): string {
-  const words = code.trim().replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').toLowerCase();
-  return words.charAt(0).toUpperCase() + words.slice(1);
-}
-
-/**
  * The tone of an ERP message's status (design system 2.3): a refusal or rejection `alarm`, a
  * conflict or a refused revision `warn`, a message still waiting to go `info`, the rest `neutral`.
  */

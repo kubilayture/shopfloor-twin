@@ -151,6 +151,44 @@ export function compareOccurrences(a: AlarmOccurrenceDto, b: AlarmOccurrenceDto)
   return Date.parse(b.raisedAt) - Date.parse(a.raisedAt) || (a.id < b.id ? 1 : -1);
 }
 
+/**
+ * The alarm list's orders (#371, ISA-18.2): `priority` puts the highest priority first, within
+ * one the still-active alarms before the cleared ones, then the newest raise first; `raised` is
+ * the newest raise first alone. Which one a view shows by default: `defaultSort`.
+ */
+export const ALARM_SORTS = ['priority', 'raised'] as const;
+export type AlarmSort = (typeof ALARM_SORTS)[number];
+
+/** History is a record of closed alarms, read by time; the live views by priority. */
+export const defaultSort = (view: AlarmView): AlarmSort =>
+  view === 'history' ? 'raised' : 'priority';
+
+const PRIORITY_RANK: Readonly<Record<Priority, number>> = { high: 0, medium: 1, low: 2 };
+
+/** 0 while the condition is still active, 1 once it cleared (or closed). */
+const clearedRank = (occurrence: AlarmOccurrenceDto): number =>
+  occurrence.state === 'unacked-active' || occurrence.state === 'acked-active' ? 0 : 1;
+
+/**
+ * Highest priority first; within one, active before cleared; then newest raise first, then by id
+ * (`compareOccurrences`).
+ */
+export function comparePriority(a: AlarmOccurrenceDto, b: AlarmOccurrenceDto): number {
+  return (
+    PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority] ||
+    clearedRank(a) - clearedRank(b) ||
+    compareOccurrences(a, b)
+  );
+}
+
+/** A view's occurrences in the chosen order, as a new list. */
+export function sortAlarms(
+  occurrences: readonly AlarmOccurrenceDto[],
+  sort: AlarmSort,
+): AlarmOccurrenceDto[] {
+  return [...occurrences].sort(sort === 'raised' ? compareOccurrences : comparePriority);
+}
+
 /** The merged occurrences per view, each newest first. */
 export function partition(set: AlarmSet): Record<AlarmView, AlarmOccurrenceDto[]> {
   const views: Record<AlarmView, AlarmOccurrenceDto[]> = {

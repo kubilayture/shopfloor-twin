@@ -41,4 +41,23 @@ describe('alarm chart options', () => {
     expect((fiveMinutes.series as Series[])[1]?.name).toBe('Peak per 5 min');
     expect((fiveMinutes.legend as { data: string[] }).data).toEqual(['Raises', 'Peak per 5 min']);
   });
+
+  it('draws an hour without alarm activity as a zero bar with no finality (UX-4b)', () => {
+    const option = alarmHourlyOption(
+      [
+        { from: '2026-10-15T03:00:00.000Z', raises: 0, peak10: 0, final: undefined },
+        hourKpi('2026-10-15T04:00:00.000Z', { raises: 3, peak10: 2, final: true }),
+      ],
+      10,
+    );
+    const [raises] = option.series as Series[];
+    expect(raises?.data).toEqual([0, 3]);
+    const tooltip = option.tooltip as {
+      formatter: (params: { seriesName: string; dataIndex: number }) => string;
+    };
+    expect(tooltip.formatter({ seriesName: 'Raises', dataIndex: 0 })).toContain(
+      '(no alarm activity)',
+    );
+    expect(tooltip.formatter({ seriesName: 'Raises', dataIndex: 1 })).toContain('(final)');
+  });
 });

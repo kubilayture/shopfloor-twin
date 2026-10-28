@@ -629,6 +629,20 @@ export class Orders {
     return row && (await this.#records(this.#readDb, [row]))[0];
   }
 
+  /**
+   * The MES status of each of these orders, in one read (a trace search's orders, #364 review); an
+   * order the module doesn't hold is absent.
+   */
+  async statuses(ids: readonly string[]): Promise<Map<string, OrderStatus>> {
+    if (ids.length === 0) return new Map();
+    const rows = await this.#readDb
+      .selectFrom('orders.production_order')
+      .select(['id', 'status'])
+      .where('id', 'in', [...ids])
+      .execute();
+    return new Map(rows.map((row) => [row.id, row.status]));
+  }
+
   /** One order with its commands (attempts and every result), ERP messages, incidents and audit. */
   async detail(id: string): Promise<OrderDetailRecord | undefined> {
     const order = await this.order(id);
@@ -1097,13 +1111,15 @@ export class Orders {
   }
 
   /**
-   * Closes an operator's open intervals at a work center started by `until` (the crew row's end,
-   * wall time): their crew row there ended.
+   * Closes an operator's open intervals at a work center started under the crew row `crewId`
+   * (#366; those without one: started by `until`, the crew row's end in wall time): that crew row
+   * ended.
    */
   async endActivities(who: {
     readonly userId: number;
     readonly workCenter: string;
     readonly until: Date;
+    readonly crewId?: number;
   }): Promise<number> {
     const touched = await endActivities(this.#db, who, this.#plantNow());
     await this.#emitOperations(touched);

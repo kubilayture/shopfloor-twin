@@ -253,7 +253,7 @@ describe('offline (#312)', () => {
     expect(barRefetches(refetch.mock.calls)).toBe(1);
   }, 20_000);
 
-  it('keeps the errors loud on a screen without the bar (the terminal has none)', () => {
+  it('keeps the errors loud on a screen without the bar (the terminal before sign-on)', () => {
     render(<QueryError what="the terminal" error={new ApiError('HTTP 502', 502)} />);
     expect(screen.getByRole('alert').textContent).toContain('Could not load the terminal.');
   });

@@ -49,6 +49,11 @@ async function signOffAt(page: Page, workCenter: string, operations: readonly st
       timeout: 30_000,
     });
     await page.getByTestId(`terminal-sign-off-${id}`).click();
+    // Signing off an operation asks first (UX-7): it cannot be undone at the terminal.
+    await page
+      .getByTestId(`terminal-confirm-sign-off-${id}`)
+      .getByRole('button', { name: 'Sign off operation' })
+      .click();
     await expect(page.getByTestId(`terminal-op-state-${id}`)).toContainText('Signed off by');
   }
   await page.getByTestId('terminal-sign-off').click();

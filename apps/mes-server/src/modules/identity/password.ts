@@ -62,7 +62,9 @@ let doneMs = 0;
 /**
  * How many hashes have finished since the process started, and their total time on the two hash
  * slots (the wait for a slot excluded). Tests divide one by the other for what a hash costs under
- * the machine's current load (#347): a latency budget in hashes, not in milliseconds.
+ * the machine's current load (#347): a latency budget in hashes, not in milliseconds. Each time
+ * runs to the callback, so it includes the event loop's delay in running it: a test that bounds
+ * the loop measures it apart (#366).
  */
 export const hashesDone = (): { readonly count: number; readonly ms: number } => ({
   count: done,

@@ -158,7 +158,7 @@ describe('DataTable markup', () => {
   });
 
   it('marks an abnormal row with its tone bar and the active row with aria-current and accent', () => {
-    render(
+    const { rerender } = render(
       table({
         rows: [alarm(1), alarm(2, 'acknowledged'), alarm(3)],
         rowTone: (row) => (row.state === 'unacknowledged' ? 'alarm' : undefined),
@@ -174,9 +174,49 @@ describe('DataTable markup', () => {
     const active = screen.getByTestId('alarm-row-a3');
     expect(active.getAttribute('aria-current')).toBe('true');
     expect(active.className).toMatch(/\bbg-accent-subtle\b/);
-    // The active bar wins over the tone bar.
-    expect(active.querySelector('td')?.className).toContain('var(--color-accent)');
-    expect(active.querySelector('td')?.className).not.toContain('alarm-border');
+    // An open abnormal row keeps its tone bar; the accent fill marks it open.
+    expect(active.querySelector('td')?.className).toContain('alarm-border');
+    expect(active.querySelector('td')?.className).not.toContain('var(--color-accent)');
+    // An open normal row takes the accent bar.
+    rerender(
+      table({
+        rows: [alarm(1), alarm(2, 'acknowledged'), alarm(3)],
+        rowTone: (row) => (row.state === 'unacknowledged' ? 'alarm' : undefined),
+        activeRowKey: 'a2',
+      }),
+    );
+    const open = screen.getByTestId('alarm-row-a2');
+    expect(open.className).toMatch(/\bbg-accent-subtle\b/);
+    expect(open.querySelector('td')?.className).toContain('var(--color-accent)');
+  });
+
+  it('makes an emphasised row bold in every cell, its row header included (rowEmphasis)', () => {
+    render(
+      table({
+        rows: [alarm(1), alarm(2, 'acknowledged')],
+        columns: [
+          { key: 'code', header: 'Alarm', rowHeader: true, cell: (row) => row.code },
+          ...COLUMNS.slice(1),
+        ],
+        rowEmphasis: (row) => row.state === 'unacknowledged',
+      }),
+    );
+    const cells = (id: string) => [
+      ...screen.getByTestId(`alarm-row-${id}`).querySelectorAll<HTMLElement>('th, td'),
+    ];
+    expect(cells('a1').map((cell) => /\bfont-semibold\b/.test(cell.className))).toEqual([
+      true,
+      true,
+      true,
+    ]);
+    expect(cells('a1')[0]?.className).not.toMatch(/\bfont-normal\b/);
+    // A plain row: the row header normal weight, the other cells inherit.
+    expect(cells('a2').map((cell) => /\bfont-semibold\b/.test(cell.className))).toEqual([
+      false,
+      false,
+      false,
+    ]);
+    expect(cells('a2')[0]?.className).toMatch(/\bfont-normal\b/);
   });
 
   it('keeps a sticky first column above the cells it scrolls over', () => {
@@ -701,6 +741,83 @@ describe('DataTable row actions and focus', () => {
     expect(document.activeElement).toBe(document.body);
   });
 
+  describe('when the rows are reordered (a live sort change, #371)', () => {
+    let reorder: (change: (rows: readonly Alarm[]) => Alarm[]) => void = () => undefined;
+    function Reordering() {
+      const [rows, setRows] = useState(() => rowsOf(3));
+      reorder = (change) => {
+        setRows((all) => change(all));
+      };
+      return (
+        <Section title="Active alarms" id="alarms-title">
+          {table({
+            rows,
+            actions: (row) => (
+              <>
+                <Button variant="ghost" size="sm">
+                  Details {row.code}
+                </Button>
+                <Button variant="ghost" size="sm" data-testid={`ack-${row.id}`}>
+                  Acknowledge {row.code}
+                </Button>
+              </>
+            ),
+            announceRemoval: (left: number) => `Alarm acknowledged; ${String(left)} left`,
+          })}
+          <button type="button">Elsewhere</button>
+        </Section>
+      );
+    }
+
+    it('puts the focus back on the same control of the moved row, without an announcement', () => {
+      render(<Reordering />);
+      const ack = screen.getByTestId('ack-a1');
+      ack.focus();
+      act(() => {
+        // The browser drops the focus to the page as the focused row's node moves.
+        ack.blur();
+        reorder((all) => [...all].reverse());
+      });
+      expect(screen.getAllByTestId(/^alarm-row-/).map((row) => row.dataset.rowKey)).toEqual([
+        'a3',
+        'a2',
+        'a1',
+      ]);
+      expect(document.activeElement).toBe(screen.getByTestId('ack-a1'));
+      expect(screen.getByRole('status').textContent).toBe('');
+    });
+
+    it('leaves the focus alone when the user moved it, or when the order did not change', () => {
+      render(<Reordering />);
+      const ack = screen.getByTestId('ack-a1');
+      ack.focus();
+      const elsewhere = screen.getByRole('button', { name: 'Elsewhere' });
+      act(() => {
+        elsewhere.focus();
+        reorder((all) => [...all].reverse());
+      });
+      expect(document.activeElement).toBe(elsewhere);
+
+      // Lost to nothing, then taken by a control outside while the row is still remembered.
+      const moved = screen.getByTestId('ack-a1');
+      moved.focus();
+      act(() => {
+        moved.blur();
+        elsewhere.focus();
+        reorder((all) => [...all].reverse());
+      });
+      expect(document.activeElement).toBe(elsewhere);
+
+      ack.focus();
+      act(() => {
+        // A click on the page with a render in between: the same order, so no move took it.
+        ack.blur();
+        reorder((all) => [...all]);
+      });
+      expect(document.activeElement).toBe(document.body);
+    });
+  });
+
   it('puts a "Skip to the details" link before the table that focuses the detail', () => {
     render(
       <>
@@ -877,6 +994,19 @@ describe('DataTable on narrow screens', () => {
     narrowScreen(false);
     render(table({ rows: rowsOf(2), narrow: 'stack' }));
     expect(screen.getByRole('table')).toBeTruthy();
+  });
+
+  it('makes an emphasised stacked card bold', () => {
+    narrowScreen(true);
+    render(
+      table({
+        rows: [alarm(1), alarm(2, 'acknowledged')],
+        narrow: 'stack',
+        rowEmphasis: (row) => row.state === 'unacknowledged',
+      }),
+    );
+    expect(screen.getByTestId('alarm-row-a1').className).toMatch(/\bfont-semibold\b/);
+    expect(screen.getByTestId('alarm-row-a2').className).not.toMatch(/\bfont-semibold\b/);
   });
 
   it('keeps selection in the stacked cards', () => {

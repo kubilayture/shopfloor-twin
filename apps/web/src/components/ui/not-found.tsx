@@ -5,6 +5,7 @@ import { buttonClass } from './button.tsx';
 import { Code } from './code.tsx';
 import { EmptyState } from './empty-state.tsx';
 import { Icon } from './icons.tsx';
+import { BACK_LINK_ACTIVE } from './page-header.tsx';
 
 /**
  * The pages for what is not there (UX-1e, #317; design system 4.11, G-21, N-07), one pattern:
@@ -26,6 +27,7 @@ function BackTo({ back }: { readonly back: BackLink }) {
   return (
     <Link
       to={back.to}
+      activeOptions={BACK_LINK_ACTIVE}
       className="inline-flex min-h-6 items-center gap-1 text-sm text-link underline-offset-4 hover:underline"
     >
       <Icon name="chevron-left" size={16} />

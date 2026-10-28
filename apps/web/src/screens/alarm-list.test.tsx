@@ -179,10 +179,11 @@ describe('alarm list', () => {
       );
     });
 
-    // A raise joins the active list, newest first.
+    // A raise joins the active list in priority order (#371): the newer medium one goes below the
+    // high one.
     const second = occurrence(2);
     await app.push({ type: 'alarm', event: 'raised', occurrence: second });
-    expect(rowIds()).toEqual([second.id, first.id]);
+    expect(rowIds()).toEqual([first.id, second.id]);
     expect(screen.getByTestId('tab-active').dataset.count).toBe('2');
 
     // A clear does not acknowledge: it stays in the active list.
@@ -342,7 +343,7 @@ describe('alarm list', () => {
     const app = await renderApp('/alarms');
     await app.open();
     await screen.findByTestId(`alarm-row-${a.id}`);
-    expect(screen.getByTestId<HTMLButtonElement>('ack-selected').disabled).toBe(true);
+    expect(screen.getByTestId('ack-selected').getAttribute('aria-disabled')).toBe('true');
     fireEvent.click(screen.getByTestId(`select-${a.id}`));
     fireEvent.click(screen.getByTestId(`select-${c.id}`));
     expect(screen.getByTestId('ack-selected').textContent).toContain('(2)');
@@ -353,7 +354,8 @@ describe('alarm list', () => {
     expect(message.textContent).toBe('Acknowledged 1 (1 already acknowledged).');
     const post = server.calls.find((call) => call.method === 'POST');
     expect(post?.path).toBe('/api/v1/alarms/ack');
-    expect(post?.body).toEqual({ ids: [c.id, a.id] });
+    // In the rows' order: the active one before the cleared one of the same priority (#371).
+    expect(post?.body).toEqual({ ids: [a.id, c.id] });
     // The selection is cleared, and select all picks every alarm that can be acknowledged.
     expect(screen.getByTestId<HTMLInputElement>(`select-${a.id}`).checked).toBe(false);
     fireEvent.click(screen.getByTestId('select-all'));
@@ -401,7 +403,7 @@ describe('alarm list', () => {
     expect(message.textContent).toMatch(/^Not acknowledged/);
   });
 
-  it('says when a list cannot be read', async () => {
+  it('says when a list cannot be read, with no bulk action over the failed list', async () => {
     const server = mes(empty());
     vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) =>
       new URL(requestUrl(input), 'http://localhost').pathname === '/api/v1/alarms'
@@ -412,6 +414,7 @@ describe('alarm list', () => {
     const alerts = await screen.findAllByText(/Could not load the active alarms/);
     expect(alerts).toHaveLength(1);
     expect(screen.getAllByText(/database down/).length).toBeGreaterThan(0);
+    expect(screen.queryByTestId('ack-selected')).toBeNull();
   });
 
   it('shows a flood banner per position while an episode is open', async () => {
@@ -940,5 +943,537 @@ describe('alarm writes by role (#170)', () => {
       expect(within(panel).getByTestId('shelf-state').textContent).toContain('mehmet');
     });
     expect(within(panel).queryByTestId('unshelve')).toBeNull();
+  });
+});
+
+/**
+ * `matchMedia` for a window `width` px wide: the shell's `xl` nav, the DataTable's `md` stack and
+ * the detail's `wide` panel (design system 3.1) each answer by their own query.
+ */
+function stubWidth(width: number) {
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn((query: string) => {
+      const min = /min-width:\s*([\d.]+)rem/.exec(query);
+      const max = /max-width:\s*([\d.]+)rem/.exec(query);
+      const px = (match: RegExpExecArray) => Number(match[1]) * 16;
+      return {
+        matches: min ? width >= px(min) : max ? width <= px(max) : false,
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      };
+    }),
+  );
+}
+
+describe('the alarm list on the design system (UX-4a, #324)', () => {
+  it('marks unacknowledged rows with their priority bar and bold text; acknowledged rows are plain (A-03)', async () => {
+    const high = occurrence(1, { priority: 'high', code: 'SPINDLE-OVERLOAD', text: null });
+    const medium = occurrence(2);
+    const acked = occurrence(3, { state: 'acked-active', acknowledged: ACK, priority: 'high' });
+    vi.stubGlobal(
+      'fetch',
+      mes({ ...empty(), active: [high, medium], acknowledged: [acked] }).fetch,
+    );
+    await renderApp('/alarms');
+    const row = (id: string) => screen.getByTestId(`alarm-row-${id}`);
+    const cell = (id: string, name: string) =>
+      row(id).querySelector<HTMLElement>(`[data-cell="${name}"]`);
+    await screen.findByTestId(`alarm-row-${medium.id}`);
+    // The bar sits in the first cell (the checkbox's), in the priority's border colour.
+    expect(cell(high.id, 'select')?.className).toContain('var(--color-alarm-border)');
+    expect(cell(medium.id, 'select')?.className).toContain('var(--color-warn-border)');
+    expect(cell(medium.id, 'c-alarm')?.className).toContain('font-semibold');
+    expect(cell(medium.id, 'c-machine')?.className).toContain('font-semibold');
+    // Names first: the alarm's text, its code after it; the row is named by it.
+    expect(cell(medium.id, 'c-alarm')?.tagName).toBe('TH');
+    expect(cell(medium.id, 'c-alarm')?.textContent).toBe('Coolant pressure lowCOOLANT-PRESSURE');
+    expect(cell(high.id, 'c-alarm')?.textContent).toBe('SPINDLE-OVERLOAD');
+    // The row actions side by side in one cell (A-02).
+    expect(
+      [...(cell(medium.id, 'actions')?.querySelectorAll('button') ?? [])].map((b) => b.textContent),
+    ).toEqual(['Acknowledge', 'Details']);
+    fireEvent.click(screen.getByTestId('tab-acknowledged'));
+    await screen.findByTestId(`alarm-row-${acked.id}`);
+    const plain = row(acked.id).querySelector<HTMLElement>('[data-cell="c-alarm"]');
+    expect(plain?.className).not.toContain('font-semibold');
+    expect(row(acked.id).innerHTML).not.toContain('border)]');
+  });
+
+  it('dates the flood banner unless the flood began on the plant clock day (UX-B2 rule)', async () => {
+    vi.stubGlobal('fetch', mes(empty()).fetch);
+    const app = await renderApp('/alarms');
+    await app.open();
+    await screen.findByTestId('alarm-list-empty');
+    const flood = async (startAt: string) => {
+      await app.push({
+        type: 'alarm-kpi',
+        topic: 'alarm-kpi:position:cell-m1',
+        hour: hourKpi('2026-10-15T05:00:00.000Z'),
+        shift: kpiBucket(),
+        floods: [episode({ startAt })],
+      });
+      const time = within(screen.getByTestId('flood-banner-cell-m1'))
+        .getByRole('alert')
+        .querySelector('time');
+      return [time?.textContent, time?.getAttribute('title'), time?.getAttribute('dateTime')];
+    };
+    // The plant clock reads Thu 15 Oct, 09:10: a flood since 08:00 that day shows the time only.
+    await waitFor(async () => {
+      expect(await flood('2026-10-15T05:00:00.000Z')).toEqual([
+        '08:00:00',
+        'Thu 15 Oct, 08:00:00',
+        '2026-10-15T05:00:00.000Z',
+      ]);
+    });
+    // One that began before plant midnight carries its date.
+    expect(await flood('2026-10-14T20:00:00.000Z')).toEqual([
+      'Wed 14 Oct, 23:00:00',
+      'Wed 14 Oct, 23:00:00',
+      '2026-10-14T20:00:00.000Z',
+    ]);
+  });
+
+  it('moves the focus to the next row when an acknowledgement takes a row away, and says so', async () => {
+    const a = occurrence(2);
+    const b = occurrence(1);
+    const server = mes({ ...empty(), active: [a, b] }, () =>
+      json({ occurrence: { ...a, state: 'acked-active', acknowledged: ACK }, changed: true }),
+    );
+    let release: () => void = () => undefined;
+    const answered = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'POST') await answered;
+      return server.fetch(input, init);
+    });
+    await renderApp('/alarms');
+    const button = await screen.findByTestId<HTMLButtonElement>(`ack-${a.id}`);
+    button.focus();
+    fireEvent.click(button);
+    // On its way: busy, not disabled, so the focus stays on it; the other rows stay usable.
+    await waitFor(() => {
+      expect(button.getAttribute('aria-busy')).toBe('true');
+    });
+    expect(button.disabled).toBe(false);
+    expect(document.activeElement).toBe(button);
+    expect(screen.getByTestId<HTMLButtonElement>(`ack-${b.id}`).hasAttribute('aria-busy')).toBe(
+      false,
+    );
+    release();
+    await waitFor(() => {
+      expect(screen.queryByTestId(`alarm-row-${a.id}`)).toBeNull();
+    });
+    expect(document.activeElement).toBe(screen.getByTestId(`ack-${b.id}`));
+    // Names first for a screen reader: the alarm's text, then the machine.
+    expect(document.activeElement?.getAttribute('aria-label')).toBe(
+      'Acknowledge Coolant pressure low, Machine cnc-01',
+    );
+    expect(screen.getByTestId(`details-${b.id}`).getAttribute('aria-label')).toBe(
+      'Details of Coolant pressure low, Machine cnc-01',
+    );
+    expect(screen.getByTestId(`select-${b.id}`).getAttribute('aria-label')).toBe(
+      'Select Coolant pressure low, Machine cnc-01',
+    );
+    expect(
+      screen
+        .getAllByRole('status')
+        .some(
+          (status) => status.textContent === 'The alarm left the Active list; 1 alarm remains.',
+        ),
+    ).toBe(true);
+  });
+
+  it('opens the detail as a sticky side panel from 1440 px, after a skip link, and focuses its title', async () => {
+    stubWidth(1440);
+    const a = occurrence(1);
+    vi.stubGlobal('fetch', mes({ ...empty(), active: [a] }).fetch);
+    await renderApp('/alarms');
+    const details = await screen.findByTestId(`details-${a.id}`);
+    // With nothing chosen the list has the width to itself, and there is nothing to skip to.
+    expect(screen.queryByTestId('alarm-panel')).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Skip to the details' })).toBeNull();
+    expect(screen.getByRole('columnheader', { name: 'Machine' })).toBeTruthy();
+    details.focus();
+    fireEvent.click(details);
+    const panel = await screen.findByTestId('alarm-panel');
+    expect(panel.tagName).toBe('SECTION');
+    expect(panel.dataset.variant).toBe('panel');
+    expect(panel.className).toContain('sticky');
+    const title = within(panel).getByRole('heading', { level: 2, name: 'Coolant pressure low' });
+    expect(document.activeElement).toBe(title);
+    expect(panel.getAttribute('aria-labelledby')).toBe(title.id);
+    expect(title.nextElementSibling?.querySelector('code')?.textContent).toBe('COOLANT-PRESSURE');
+    expect(screen.getByRole('link', { name: 'Skip to the details' }).getAttribute('href')).toBe(
+      `#${title.id}`,
+    );
+    expect(screen.getByTestId(`alarm-row-${a.id}`).getAttribute('aria-current')).toBe('true');
+    // The open unacknowledged row keeps its priority bar beside the accent fill.
+    const open = screen.getByTestId(`alarm-row-${a.id}`);
+    expect(open.className).toContain('bg-accent-subtle');
+    expect(open.querySelector('[data-cell="select"]')?.className).toContain(
+      'var(--color-warn-border)',
+    );
+    // The state keeps to the condition beside the panel; the acknowledgement is said.
+    const state = open.querySelector<HTMLElement>('[data-cell="c-state"]');
+    expect(state?.textContent).toBe('Active, unacknowledged');
+    expect(state?.querySelector('.sr-only')?.textContent).toBe(', unacknowledged');
+    // Beside the panel the machine joins the alarm's cell, so the actions stay in view.
+    expect(screen.getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
+      '',
+      'Priority',
+      'Alarm and machine',
+      'Raised',
+      'State',
+      'Actions',
+    ]);
+    expect(
+      screen.getByTestId(`alarm-row-${a.id}`).querySelector('[data-cell="c-alarm"]')?.textContent,
+    ).toBe('Coolant pressure lowCOOLANT-PRESSUREMachine cnc-01');
+    fireEvent.click(within(panel).getByTestId('close-alarm'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('alarm-panel')).toBeNull();
+    });
+    expect(document.activeElement).toBe(screen.getByTestId(`details-${a.id}`));
+  });
+
+  it('opens the detail as a side sheet below 1440 px (1280 included) with the same test ids', async () => {
+    stubWidth(1280);
+    const a = occurrence(1);
+    vi.stubGlobal('fetch', mes({ ...empty(), active: [a] }).fetch);
+    await renderApp('/alarms');
+    const details = await screen.findByTestId(`details-${a.id}`);
+    details.focus();
+    fireEvent.click(details);
+    const sheet = await screen.findByTestId('alarm-panel');
+    expect(sheet.tagName).toBe('DIALOG');
+    expect(sheet.dataset.variant).toBe('sheet');
+    expect(sheet.dataset.alarm).toBe(a.id);
+    expect(sheet.hasAttribute('open')).toBe(true);
+    // The focus starts on the title, not in the acknowledgement's comment box.
+    expect(document.activeElement?.tagName).toBe('H2');
+    expect(document.activeElement?.textContent).toBe('Coolant pressure low');
+    expect(screen.queryByRole('link', { name: 'Skip to the details' })).toBeNull();
+    expect((await within(sheet).findAllByTestId('history-entry')).length).toBe(2);
+    fireEvent.click(within(sheet).getByTestId('close-alarm'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('alarm-panel')).toBeNull();
+    });
+    expect(document.activeElement).toBe(screen.getByTestId(`details-${a.id}`));
+  });
+
+  it('stacks each alarm as a card with its actions at 390 px (G-27)', async () => {
+    stubWidth(390);
+    const a = occurrence(1);
+    vi.stubGlobal('fetch', mes({ ...empty(), active: [a] }).fetch);
+    await renderApp('/alarms');
+    const row = await screen.findByTestId(`alarm-row-${a.id}`);
+    expect(row.tagName).toBe('LI');
+    // 44 px touch targets on the cards.
+    expect(within(row).getByTestId(`ack-${a.id}`).className).toContain('min-h-11');
+    expect(within(row).getByTestId(`details-${a.id}`)).toBeTruthy();
+    expect(within(row).getByTestId(`select-${a.id}`)).toBeTruthy();
+    expect(screen.getByTestId('select-all')).toBeTruthy();
+    expect(row.textContent).toContain('Active, unacknowledged');
+  });
+
+  it('ties a missing shelving reason to its field, and names the point without raw ids (A-06)', async () => {
+    const a = occurrence(1);
+    vi.stubGlobal('fetch', mes({ ...empty(), active: [a], points: [point()] }).fetch);
+    await renderApp(`/alarms?alarm=${encodeURIComponent(a.id)}`);
+    const section = await screen.findByTestId('shelf-section');
+    expect(within(section).getByRole('heading', { level: 3 }).textContent).toBe('Shelving');
+    await waitFor(() => {
+      expect(within(section).getByTestId('shelf-state').dataset.shelved).toBe('false');
+    });
+    const reason = within(section).getByRole('textbox', { name: 'Reason (required)' });
+    expect(reason.dataset.testid).toBe('shelve-reason');
+    fireEvent.click(within(section).getByTestId('shelve'));
+    expect(reason.getAttribute('aria-invalid')).toBe('true');
+    const error = document.getElementById(reason.getAttribute('aria-describedby') ?? '');
+    expect(error?.textContent).toBe('Enter a reason for shelving.');
+    fireEvent.change(reason, { target: { value: 'sensor swap' } });
+    expect(reason.getAttribute('aria-invalid')).toBeNull();
+    // The history speaks words; the fact's sequence number waits in its technical details.
+    const entries = await screen.findAllByTestId('history-entry');
+    expect(entries[0]?.querySelector('p')?.textContent).toBe('Raised 08:00:01');
+    expect(entries[0]?.querySelector('details summary')?.textContent).toBe('Technical details');
+  });
+});
+
+describe('the alarm list toolbar (#369 review)', () => {
+  it('shows the outcome of a write in its own reserved row and keeps it until the next outcome', async () => {
+    const a = occurrence(2);
+    const b = occurrence(1);
+    const server = mes({ ...empty(), active: [a, b] }, (path) =>
+      json({
+        occurrence: {
+          ...(path.includes(encodeURIComponent(a.id)) ? a : b),
+          state: 'acked-active',
+          acknowledged: ACK,
+        },
+        changed: true,
+      }),
+    );
+    let release: () => void = () => undefined;
+    let gate = Promise.resolve();
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'POST') await gate;
+      return server.fetch(input, init);
+    });
+    await renderApp('/alarms');
+    await screen.findByTestId(`alarm-row-${a.id}`);
+    // The row is there before any message, above the table, so a message does not move the rows.
+    const toolbar = screen.getByTestId('alarm-toolbar');
+    expect(toolbar.className).toContain('min-h-11');
+    expect(
+      toolbar.compareDocumentPosition(screen.getByTestId('alarm-table')) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    fireEvent.click(screen.getByTestId(`ack-${a.id}`));
+    const message = await within(toolbar).findByTestId('alarm-list-message');
+    expect(message.dataset.kind).toBe('saved');
+    expect(message.getAttribute('role')).toBe('status');
+    // The next acknowledgement leaves it in place while its answer is on the way.
+    gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    fireEvent.click(await screen.findByTestId(`ack-${b.id}`));
+    await waitFor(() => {
+      expect(screen.getByTestId(`ack-${b.id}`).getAttribute('aria-busy')).toBe('true');
+    });
+    expect(within(toolbar).getByTestId('alarm-list-message').textContent).toContain(a.code);
+    release();
+    await waitFor(() => {
+      expect(screen.queryByTestId(`alarm-row-${b.id}`)).toBeNull();
+    });
+  });
+
+  it('keeps the focus on "Acknowledge selected" after a bulk acknowledgement empties the selection', async () => {
+    const a = occurrence(1);
+    const b = occurrence(2);
+    const server = mes({ ...empty(), active: [a, b] }, () =>
+      json({
+        results: [
+          { id: a.id, changed: true },
+          { id: b.id, changed: true },
+        ],
+        acknowledged: 2,
+      }),
+    );
+    vi.stubGlobal('fetch', server.fetch);
+    await renderApp('/alarms');
+    await screen.findByTestId(`alarm-row-${a.id}`);
+    fireEvent.click(screen.getByTestId('select-all'));
+    const button = screen.getByTestId<HTMLButtonElement>('ack-selected');
+    expect(button.textContent).toContain('(2)');
+    button.focus();
+    fireEvent.click(button);
+    await waitFor(() => {
+      expect(screen.getByTestId('alarm-list-message').textContent).toBe('Acknowledged 2.');
+    });
+    expect(button.textContent).toContain('(0)');
+    // Not disabled, so the focus is not lost to the page; a press with nothing selected sends
+    // nothing.
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute('aria-disabled')).toBe('true');
+    expect(document.activeElement).toBe(button);
+    const posts = server.calls.filter((call) => call.method === 'POST').length;
+    await settle(() => {
+      fireEvent.click(button);
+    });
+    expect(server.calls.filter((call) => call.method === 'POST').length).toBe(posts);
+    expect(screen.getByTestId('alarm-list-message').textContent).toBe('Acknowledged 2.');
+  });
+});
+
+describe('the alarm list order and salience (#371, ISA-18.2)', () => {
+  const low = occurrence(4, { priority: 'low' });
+  const high = occurrence(1, { priority: 'high', code: 'SPINDLE-OVERLOAD' });
+  const medium = occurrence(3);
+  const caption = () => screen.getByTestId('alarm-table').querySelector('caption')?.textContent;
+
+  it('lists by priority, then newest raise, by default, and by raise time from the sort switch', async () => {
+    vi.stubGlobal('fetch', mes({ ...empty(), active: [low, medium, high] }).fetch);
+    const app = await renderApp(`/alarms?alarm=${encodeURIComponent(medium.id)}`);
+    await screen.findByTestId(`alarm-row-${low.id}`);
+    expect(rowIds()).toEqual([high.id, medium.id, low.id]);
+    expect(caption()).toBe(
+      'Active alarms, highest priority first, active before cleared, then newest raise',
+    );
+    const group = screen.getByRole('group', { name: 'Sort by' });
+    expect(group.dataset.testid).toBe('alarm-sort');
+    const byPriority = within(group).getByRole('link', { name: 'Priority' });
+    const byRaise = within(group).getByRole('link', { name: 'Newest raise' });
+    expect(byPriority.getAttribute('aria-current')).toBe('page');
+    expect(byRaise.getAttribute('aria-current')).toBeNull();
+    // The links keep the open alarm; the default leaves `sort` out of the URL.
+    expect(byPriority.getAttribute('href')).not.toContain('sort=');
+    expect(byRaise.getAttribute('href')).toContain('sort=raised');
+    expect(byRaise.getAttribute('href')).toContain('alarm=');
+
+    fireEvent.click(byRaise);
+    await waitFor(() => {
+      expect(rowIds()).toEqual([low.id, medium.id, high.id]);
+    });
+    expect(app.history.location.search).toContain('sort=raised');
+    expect(caption()).toBe('Active alarms, newest raise first');
+    const sortLink = (name: string) =>
+      within(screen.getByRole('group', { name: 'Sort by' })).getByRole('link', { name });
+    expect(sortLink('Newest raise').getAttribute('aria-current')).toBe('page');
+    expect(sortLink('Priority').getAttribute('aria-current')).toBeNull();
+    expect(screen.getByTestId('alarm-panel').dataset.alarm).toBe(medium.id);
+
+    // Back to the default: `sort` leaves the URL again.
+    expect(sortLink('Priority').getAttribute('href')).not.toContain('sort=');
+    fireEvent.click(sortLink('Priority'));
+    await waitFor(() => {
+      expect(rowIds()).toEqual([high.id, medium.id, low.id]);
+    });
+    expect(app.history.location.search).not.toContain('sort=');
+    fireEvent.click(sortLink('Newest raise'));
+    await waitFor(() => {
+      expect(rowIds()).toEqual([low.id, medium.id, high.id]);
+    });
+
+    // Another tab keeps the order.
+    fireEvent.click(screen.getByTestId('tab-history'));
+    await waitFor(() => {
+      expect(screen.getByTestId('alarm-list').dataset.view).toBe('history');
+    });
+    expect(app.history.location.search).toContain('sort=raised');
+  });
+
+  it('lists the history by raise time unless priority is chosen', async () => {
+    const closed = (seq: number, priority: 'high' | 'low') =>
+      occurrence(seq, {
+        priority,
+        state: 'closed',
+        endedAt: '2026-10-15T05:30:00.000Z',
+        endReason: 'cleared',
+        active: false,
+        acknowledged: ACK,
+      });
+    const oldHigh = closed(1, 'high');
+    const newLow = closed(2, 'low');
+    vi.stubGlobal('fetch', mes({ ...empty(), history: [oldHigh, newLow] }).fetch);
+    const app = await renderApp('/alarms?view=history');
+    await screen.findByTestId(`alarm-row-${newLow.id}`);
+    expect(rowIds()).toEqual([newLow.id, oldHigh.id]);
+    expect(caption()).toBe('History alarms, newest raise first, the last 24 hours');
+    const group = screen.getByRole('group', { name: 'Sort by' });
+    const byRaise = within(group).getByRole('link', { name: 'Newest raise' });
+    const byPriority = within(group).getByRole('link', { name: 'Priority' });
+    expect(byRaise.getAttribute('aria-current')).toBe('page');
+    expect(byPriority.getAttribute('aria-current')).toBeNull();
+    // History's default leaves `sort` out; priority is the explicit choice here.
+    expect(byRaise.getAttribute('href')).not.toContain('sort=');
+    expect(byPriority.getAttribute('href')).toContain('sort=priority');
+    fireEvent.click(byPriority);
+    await waitFor(() => {
+      expect(rowIds()).toEqual([oldHigh.id, newLow.id]);
+    });
+    expect(app.history.location.search).toContain('sort=priority');
+    expect(
+      within(screen.getByRole('group', { name: 'Sort by' }))
+        .getByRole('link', { name: 'Priority' })
+        .getAttribute('aria-current'),
+    ).toBe('page');
+  });
+
+  it('puts the active alarms of a priority before its cleared ones', async () => {
+    const newerCleared = occurrence(9, {
+      priority: 'high',
+      state: 'unacked-cleared',
+      endedAt: '2026-10-15T05:10:00.000Z',
+      endReason: 'cleared',
+      active: false,
+    });
+    vi.stubGlobal('fetch', mes({ ...empty(), active: [newerCleared, low, high] }).fetch);
+    await renderApp('/alarms');
+    await screen.findByTestId(`alarm-row-${newerCleared.id}`);
+    expect(rowIds()).toEqual([high.id, newerCleared.id, low.id]);
+  });
+
+  it('opens a shared link in its order', async () => {
+    vi.stubGlobal('fetch', mes({ ...empty(), active: [low, medium, high] }).fetch);
+    await renderApp('/alarms?sort=raised');
+    await screen.findByTestId(`alarm-row-${low.id}`);
+    expect(rowIds()).toEqual([low.id, medium.id, high.id]);
+  });
+
+  it('ignores an unknown order in the URL', async () => {
+    vi.stubGlobal('fetch', mes({ ...empty(), active: [low, medium, high] }).fetch);
+    await renderApp('/alarms?sort=oldest');
+    await screen.findByTestId(`alarm-row-${low.id}`);
+    expect(rowIds()).toEqual([high.id, medium.id, low.id]);
+  });
+
+  it('makes an active unacknowledged alarm the most salient row; cleared and acknowledged ones less', async () => {
+    const cleared = occurrence(2, {
+      priority: 'high',
+      state: 'unacked-cleared',
+      endedAt: '2026-10-15T05:10:00.000Z',
+      endReason: 'cleared',
+      active: false,
+    });
+    const acked = occurrence(5, { state: 'acked-active', acknowledged: ACK });
+    vi.stubGlobal(
+      'fetch',
+      mes({ ...empty(), active: [high, cleared], acknowledged: [acked] }).fetch,
+    );
+    await renderApp('/alarms');
+    const row = (id: string) => screen.getByTestId(`alarm-row-${id}`);
+    const cell = (id: string, name: string) =>
+      row(id).querySelector<HTMLElement>(`[data-cell="${name}"]`);
+    const badge = (id: string) =>
+      cell(id, 'c-state')?.querySelector<HTMLElement>('[data-condition]');
+    await screen.findByTestId(`alarm-row-${cleared.id}`);
+
+    // Active and unacknowledged: the bar, bold text and a solid "Active" badge.
+    expect(cell(high.id, 'select')?.className).toContain('var(--color-alarm-border)');
+    expect(cell(high.id, 'c-alarm')?.className).toContain('font-semibold');
+    expect(badge(high.id)?.textContent).toBe('Active');
+    expect(badge(high.id)?.dataset.condition).toBe('active');
+    expect(badge(high.id)?.className).toContain('bg-neutral-solid');
+    expect(cell(high.id, 'c-state')?.textContent).toBe('Active, unacknowledged');
+
+    // Cleared and unacknowledged: still barred (it awaits its acknowledgement), not bold, soft.
+    expect(cell(cleared.id, 'select')?.className).toContain('var(--color-alarm-border)');
+    expect(cell(cleared.id, 'c-alarm')?.className).not.toContain('font-semibold');
+    expect(cell(cleared.id, 'c-machine')?.className).not.toContain('font-semibold');
+    expect(badge(cleared.id)?.textContent).toBe('Cleared');
+    expect(badge(cleared.id)?.className).toContain('bg-neutral-soft');
+    expect(cell(cleared.id, 'c-state')?.textContent).toBe('Cleared, unacknowledged');
+
+    // Active and acknowledged: plain, an outline badge, "acknowledged" in secondary text.
+    fireEvent.click(screen.getByTestId('tab-acknowledged'));
+    await screen.findByTestId(`alarm-row-${acked.id}`);
+    expect(cell(acked.id, 'c-alarm')?.className).not.toContain('font-semibold');
+    expect(badge(acked.id)?.className).toContain('bg-surface');
+    expect(badge(acked.id)?.className).toContain('border-neutral-border');
+    expect(cell(acked.id, 'c-state')?.textContent).toBe('Active, acknowledged');
+    expect(
+      within(cell(acked.id, 'c-state') ?? document.body).getByText('acknowledged').className,
+    ).toContain('text-ink-secondary');
+  });
+
+  it('shows a closed alarm as a soft "Closed" badge with nothing after it', async () => {
+    const closed = occurrence(3, {
+      state: 'closed',
+      endedAt: '2026-10-15T05:30:00.000Z',
+      endReason: 'cleared',
+      active: false,
+      acknowledged: ACK,
+    });
+    vi.stubGlobal('fetch', mes({ ...empty(), history: [closed] }).fetch);
+    await renderApp('/alarms?view=history');
+    const row = await screen.findByTestId(`alarm-row-${closed.id}`);
+    const state = row.querySelector<HTMLElement>('[data-cell="c-state"]');
+    expect(state?.textContent).toBe('Closed');
+    expect(state?.querySelector('[data-condition]')?.className).toContain('bg-neutral-soft');
+    expect(row.innerHTML).not.toContain('border)]');
   });
 });

@@ -4,16 +4,17 @@ import { SVGRenderer } from 'echarts/renderers';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ECHARTS_MODULES } from './echarts-modules.ts';
 import { limitVersion, point, signal } from '../test/quality-fixtures.ts';
-import { themedOption } from './echarts-view.tsx';
+import { applyOption, optionShape, themedOption } from './echarts-view.tsx';
 import { RULE_LANE, spcChartOption, type SpcChartInput } from './spc-options.ts';
 import { echartsTheme, readTokens } from './theme.ts';
 
 // The SPC chart as ECharts draws it (#308, C-03): a real instance (not SSR, which never animates)
 // on the SVG renderer in jsdom, given the option as EChartsView gives it (animation on, as without
-// `prefers-reduced-motion`, then `notMerge` on every live update). Every point's marker must be
-// drawn at once and after each update: the line's intro animation used to draw the markers from
-// scale 0, each delayed by its place on the time axis, so a screenshot, a print or a look taken in
-// the first ~1.5 s after a load, a window switch or a resize showed the later points as a bare line.
+// `prefers-reduced-motion`, then each live update merged by `applyOption`, #356). Every point's
+// marker must be drawn at once and after each update: the line's intro animation used to draw the
+// markers from scale 0, each delayed by its place on the time axis, so a screenshot, a print or a
+// look taken in the first ~1.5 s after a load, a window switch or a resize showed the later points
+// as a bare line.
 // Most cases keep the stricter set-up (animation on, no theme: the builder's option alone must draw
 // every marker); the last one draws the chart as it ships (UX-1f, #320): in the theme `shopfloor`
 // with the option `EChartsView` sets (`themedOption`: tokens resolved, no animation, rich text).
@@ -116,11 +117,11 @@ describe('SPC chart rendering (#308)', () => {
     (name) => {
       const element = document.createElement('div');
       chart = init(element, undefined, { renderer: 'svg', width: 1200, height: 240 });
-      chart.setOption(asSet(input(name, 500)), { notMerge: true });
+      const shape = applyOption(chart, asSet(input(name, 500)), undefined);
       expect(markers(chart)).toEqual({ count: 500, shown: 500 });
       expect(svgMarkers(chart).collapsed).toBe(0);
-      // A live push: one more reading, a new option, notMerge (echarts-view.tsx).
-      chart.setOption(asSet(input(name, 501)), { notMerge: true });
+      // A live push: one more reading, a new option, merged as echarts-view.tsx does (#356).
+      applyOption(chart, asSet(input(name, 501)), shape);
       expect(markers(chart)).toEqual({ count: 501, shown: 501 });
       expect(svgMarkers(chart).collapsed).toBe(0);
     },
@@ -157,6 +158,63 @@ describe('SPC chart rendering (#308)', () => {
       const newest = laneLabels(chart).reduce((a, b) => (b.at > a.at ? b : a));
       expect(newest.at).toBe(Date.parse(signals[11]?.first.at ?? ''));
       expect(newest.hidden).toBe(false);
+    },
+  );
+
+  it.each([1440, 390])(
+    'keeps the rule labels apart over merged live updates of 0, 1, 12 and 0 episodes at %i px (#380 review)',
+    (width) => {
+      chart = init(document.createElement('div'), undefined, {
+        renderer: 'svg',
+        width,
+        height: 240,
+      });
+      const base = input('I', 500);
+      const episodes = (count: number) =>
+        Array.from({ length: count }, (_, k) => {
+          const minutes = 3 * (10 + 4 * k);
+          const ref = {
+            epoch: 1,
+            partId: minutes,
+            pass: 1,
+            at: point(minutes, 0).at,
+            seq: minutes,
+          };
+          return signal(k + 1, {
+            rule: (k % 3) + 1,
+            status: 'final',
+            extentFinal: true,
+            first: ref,
+            last: ref,
+          });
+        });
+      const option = (count: number) => asSet({ ...base, signals: episodes(count) });
+      // The same shape each time: every push after the first is merged, as live updates are.
+      expect(new Set([0, 1, 12].map((count) => optionShape(option(count)))).size).toBe(1);
+      let applied = applyOption(chart, option(0), undefined);
+      expect(laneLabels(chart)).toHaveLength(0);
+      applied = applyOption(chart, option(1), applied);
+      expect(laneLabels(chart).map((l) => l.hidden)).toEqual([false]);
+      applied = applyOption(chart, option(12), applied);
+      const labels = laneLabels(chart);
+      const shown = labels.filter((l) => !l.hidden);
+      expect(labels).toHaveLength(12);
+      expect(shown.length).toBeGreaterThan(0);
+      expect(shown.length).toBeLessThan(12);
+      for (const [i, a] of shown.entries()) {
+        for (const b of shown.slice(i + 1)) expect(a.rect.intersect(b.rect)).toBe(false);
+      }
+      const newest = labels.reduce((a, b) => (b.at > a.at ? b : a));
+      expect(newest.at).toBe(Date.parse(episodes(12)[11]?.first.at ?? ''));
+      expect(newest.hidden).toBe(false);
+      expect(markers(chart)).toEqual({ count: 500, shown: 500 });
+      applyOption(chart, option(0), applied);
+      expect(laneLabels(chart)).toHaveLength(0);
+      const series = (
+        chart.getOption() as { series: { name: string; markArea?: { data?: unknown[] } }[] }
+      ).series;
+      expect(series.flatMap((s) => s.markArea?.data ?? [])).toEqual([]);
+      expect(markers(chart)).toEqual({ count: 500, shown: 500 });
     },
   );
 
@@ -199,7 +257,7 @@ describe('SPC chart rendering (#308)', () => {
         height: 240,
       });
       const drawn = input('I', 500);
-      chart.setOption(themedOption(spcChartOption(drawn), read), { notMerge: true });
+      const shape = applyOption(chart, themedOption(spcChartOption(drawn), read), undefined);
       expect(markers(chart)).toEqual({ count: 500, shown: 500 });
       const model = (chart as unknown as { getModel(): EChartsModel }).getModel();
       const data = model.getSeriesByName('Points')[0]?.getData();
@@ -214,7 +272,7 @@ describe('SPC chart rendering (#308)', () => {
       expect(svg).not.toContain('var(');
       expect(svg).toContain('#b91c1c');
       // A live update, as EChartsView applies it, still draws every marker.
-      chart.setOption(themedOption(spcChartOption(input('I', 501)), read), { notMerge: true });
+      applyOption(chart, themedOption(spcChartOption(input('I', 501)), read), shape);
       expect(markers(chart)).toEqual({ count: 501, shown: 501 });
     },
   );

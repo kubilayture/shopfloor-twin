@@ -16,8 +16,15 @@ export interface SkeletonProps {
   readonly shape: SkeletonShape;
   /** Lines of `text`, body rows of `table` (5 by default for a table, 3 for text). */
   readonly rows?: number;
-  /** The loading text, verbatim: "Loading OEE…". */
-  readonly label: string;
+  /**
+   * The loading text, verbatim: "Loading OEE…". Without it the skeleton is a decorative part of
+   * a loading state whose label another skeleton carries (no `role`, hidden from assistive
+   * technology), so a page in its own shape has one status, not one per block.
+   */
+  readonly label?: string;
+  /** The shape repeated this many times (a grid of cards), laid out by `gridClassName`. */
+  readonly count?: number;
+  readonly gridClassName?: string;
   readonly delayMs?: number;
   readonly testId?: string | undefined;
   readonly className?: string;
@@ -89,6 +96,8 @@ export function Skeleton({
   shape,
   rows,
   label,
+  count = 1,
+  gridClassName,
   delayMs = SKELETON_DELAY_MS,
   testId,
   className,
@@ -103,17 +112,28 @@ export function Skeleton({
       clearTimeout(timer);
     };
   }, [delayMs]);
+  const one = <Shape shape={shape} rows={rows ?? (shape === 'table' ? 5 : 3)} />;
+  const blocks =
+    count <= 1 ? (
+      one
+    ) : (
+      <div className={gridClassName}>
+        {Array.from({ length: count }, (_, i) => (
+          <div key={i}>{one}</div>
+        ))}
+      </div>
+    );
   return (
     <div
-      role="status"
+      {...(label === undefined ? { 'aria-hidden': true } : { role: 'status' })}
       data-testid={testId}
       data-shape={shape}
       data-shown={shown}
       className={className}
     >
-      <span className="sr-only">{label}</span>
+      {label === undefined ? null : <span className="sr-only">{label}</span>}
       <div aria-hidden="true" className={shown ? 'motion-safe:animate-pulse' : 'invisible'}>
-        <Shape shape={shape} rows={rows ?? (shape === 'table' ? 5 : 3)} />
+        {blocks}
       </div>
     </div>
   );

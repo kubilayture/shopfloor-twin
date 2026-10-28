@@ -1,5 +1,5 @@
 import { PROBLEM_TYPES, type PauseReason } from '@shopfloor/contracts/mes-api';
-import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
+import { sql, type Kysely, type RawBuilder, type Selectable, type Transaction } from 'kysely';
 import type { Database } from '../../db/database.ts';
 import { Identity, type SessionUser } from '../identity/index.ts';
 import type { ActivityEndReason, OperationActivityTable, OrderOperationTable } from './tables.ts';
@@ -53,12 +53,16 @@ export interface TerminalWriteContext {
   readonly by: SessionUser;
   readonly requestId?: string | undefined;
   /**
-   * Locks the operator's crew row at the operation's work center for this transaction and says
-   * whether there is one (#177 review, MEDIUM-1): the API passes the shifts module's `lockCrew`,
-   * so the check and the write commit together and no crew end can slip in between. Absent only
-   * in module tests that write without the API.
+   * Locks the operator's crew row at the operation's work center for this transaction and returns
+   * its id, undefined when there is none (#177 review, MEDIUM-1): the API passes the shifts
+   * module's `lockCrew`, so the check and the write commit together and no crew end can slip in
+   * between. The interval opened carries the id, so that row's end closes it (#366). Absent only in
+   * module tests that write without the API.
    */
-  readonly lockCrew?: (trx: Transaction<Database>, workCenter: string) => Promise<boolean>;
+  readonly lockCrew?: (
+    trx: Transaction<Database>,
+    workCenter: string,
+  ) => Promise<number | undefined>;
 }
 
 /**
@@ -239,7 +243,8 @@ export async function terminalWrite(
     .forUpdate()
     .executeTakeFirst();
   if (!row) return { kind: 'not-found', message: `order ${orderId} has no operation ${operation}` };
-  if (context.lockCrew && !(await context.lockCrew(trx, row.work_center))) {
+  const crewId = context.lockCrew ? await context.lockCrew(trx, row.work_center) : null;
+  if (crewId === undefined) {
     return {
       kind: 'conflict',
       message: `${context.by.username} is not signed on at ${row.work_center} with this session`,
@@ -296,7 +301,14 @@ export async function terminalWrite(
       .where('to_at', 'is', null)
       .execute();
   };
-  const open = async (kind: 'work' | 'pause') => {
+  /**
+   * The next interval of a pause or resume starts where the closed one ended (#366), read in the
+   * database at full precision: after a clock step back the closed one ends at its start
+   * (`END_AT`), later than the clock, and the two would overlap by up to the step.
+   */
+  const endOf = (id: number) =>
+    sql<Date>`(SELECT to_at FROM orders.operation_activity WHERE id = ${id})`;
+  const open = async (kind: 'work' | 'pause', from: RawBuilder<Date> = now) => {
     await trx
       .insertInto('orders.operation_activity')
       .values({
@@ -308,8 +320,9 @@ export async function terminalWrite(
         kind,
         reason: kind === 'pause' ? (pause?.reason ?? 'other') : null,
         comment: kind === 'pause' ? (pause?.comment ?? null) : null,
-        from_at: now,
+        from_at: from,
         from_plant_at: plantAt,
+        crew_id: crewId,
       })
       .execute();
   };
@@ -326,13 +339,13 @@ export async function terminalWrite(
     case 'pause':
       if (mine?.kind !== 'work') return state('you are not working on it');
       await close([mine.id], 'paused');
-      await open('pause');
+      await open('pause', endOf(mine.id));
       after = { reason: pause?.reason, ...(pause?.comment ? { comment: pause.comment } : {}) };
       break;
     case 'resume':
       if (mine?.kind !== 'pause') return state('you have not paused it');
       await close([mine.id], 'resumed');
-      await open('work');
+      await open('work', endOf(mine.id));
       break;
     case 'sign-off': {
       const confirmed = await trx
@@ -394,13 +407,21 @@ export async function terminalWrite(
 
 /**
  * Closes an operator's open intervals at a work center (`crew-ended`): their crew row there ended
- * (sign-off at the terminal, the session's end, the shift's end). Only intervals started by then
- * (`until`, the crew row's end in wall time): a notice that arrives late never closes work begun
- * under a newer sign-on. Returns the operations touched.
+ * (sign-off at the terminal, the session's end, the shift's end). Only intervals started under that
+ * row (`crewId`, #366): a notice that arrives late never closes work begun under a newer sign-on.
+ * An interval without a crew row (written before #366, or without the crew check) is judged by
+ * time instead: started by `until`, the crew row's end in wall time, compared in whole
+ * milliseconds as `until` was read (a start later in the same millisecond is not after it).
+ * Returns the operations touched.
  */
 export async function endActivities(
   db: Kysely<Database>,
-  who: { readonly userId: number; readonly workCenter: string; readonly until: Date },
+  who: {
+    readonly userId: number;
+    readonly workCenter: string;
+    readonly until: Date;
+    readonly crewId?: number;
+  },
   plantAt: Date,
 ): Promise<{ orderId: string; operation: string }[]> {
   return db.transaction().execute(async (trx) => {
@@ -409,7 +430,12 @@ export async function endActivities(
       .select('id')
       .where('user_id', '=', who.userId)
       .where('work_center', '=', who.workCenter)
-      .where('from_at', '<=', who.until)
+      .where((eb) => {
+        const byTime = eb(sql<Date>`date_trunc('milliseconds', from_at)`, '<=', who.until);
+        return who.crewId === undefined
+          ? byTime
+          : eb.or([eb('crew_id', '=', who.crewId), eb.and([eb('crew_id', 'is', null), byTime])]);
+      })
       .where('to_at', 'is', null)
       .orderBy('id')
       .forUpdate()

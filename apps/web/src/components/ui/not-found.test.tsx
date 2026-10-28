@@ -44,6 +44,16 @@ describe('NotFound', () => {
     expect(screen.getByRole('link', { name: 'All orders' }).getAttribute('href')).toBe('/orders');
   });
 
+  it('never marks its way back as the current page, under the parent it links to', async () => {
+    await routed(
+      () => <NotFound kind="order" id="PO-NOPE" back={{ to: '/orders', label: 'All orders' }} />,
+      '/orders/PO-NOPE',
+    );
+    const back = screen.getByRole('link', { name: 'All orders' });
+    expect(back.getAttribute('href')).toBe('/orders');
+    expect(back.hasAttribute('aria-current')).toBe(false);
+  });
+
   it('adds a sentence of why after the one it always says', async () => {
     await routed(() => (
       <NotFound
@@ -134,5 +144,35 @@ describe('SegmentedLinks', () => {
     expect(current.className).toContain('text-on-accent');
     expect(links[0]?.hasAttribute('aria-current')).toBe(false);
     expect(links[0]?.className).not.toContain('bg-accent');
+  });
+
+  it('marks only the `current` item, not a link whose search is a subset of the URL’s', async () => {
+    await routed(
+      () => (
+        <SegmentedLinks
+          label="Points shown"
+          current="range"
+          items={[
+            {
+              key: 'recent',
+              label: 'Recent',
+              to: '/equipment/$id',
+              params: { id: 'cnc-01' },
+              search: {},
+            },
+            {
+              key: 'all',
+              label: 'All',
+              to: '/equipment/$id',
+              params: { id: 'cnc-01' },
+              search: { range: '24h' },
+            },
+          ]}
+        />
+      ),
+      '/equipment/cnc-01?range=8h',
+    );
+    const group = screen.getByRole('group', { name: 'Points shown' });
+    expect(within(group).queryAllByRole('link', { current: 'page' })).toEqual([]);
   });
 });

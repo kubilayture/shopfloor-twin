@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EQUIPMENT, PLANT, fakeFetch, json, problem } from '../test/fixtures.ts';
 import {
@@ -21,8 +21,6 @@ import {
 import { renderApp, settle } from '../test/render-app.tsx';
 import { expectDecimals } from '../test/decimals.ts';
 import { NA_REASON } from '../components/oee-ui.tsx';
-import { shiftKeyLabel } from '../components/shift-picker.tsx';
-import { ShiftSpan } from './oee-dashboard.tsx';
 
 // jsdom has no canvas: the chart is a stub, the tables beside it carry the values. It records
 // every option it is given (UX-1f: an unrelated re-render must hand it the same option).
@@ -591,16 +589,6 @@ describe('OEE dashboard', () => {
     // One hour final, one provisional: a mix, each row its own.
     expect(screen.getByTestId('hourly-finality').textContent).toBe('1 of 2 final');
     expect(within(values).getByRole('columnheader', { name: 'Status' })).toBeTruthy();
-  });
-
-  it('writes a one-day shift span with the date once, and a shift outside the list in words', () => {
-    render(<ShiftSpan start="2026-10-12T03:00:00.000Z" end="2026-10-12T11:00:00.000Z" />);
-    expect(document.body.textContent).toBe('Mon 12 Oct, 06:00 – 14:00');
-    cleanup();
-    render(<ShiftSpan start="2026-10-12T19:00:00.000Z" end="2026-10-13T03:00:00.000Z" />);
-    expect(document.body.textContent).toBe('Mon 12 Oct, 22:00 – Tue 13 Oct, 06:00');
-    expect(shiftKeyLabel('2020-01-06/A')).toBe('Mon 6 Jan, shift A');
-    expect(shiftKeyLabel('not-a-key')).toBe('not-a-key');
   });
 
   it('names a shift asked for outside the picker’s list in words, not by its key', async () => {

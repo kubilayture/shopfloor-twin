@@ -1,12 +1,13 @@
 import { PROBLEM_TYPES } from '@shopfloor/contracts/mes-api';
 import { describe, expect, it } from 'vitest';
 import { ApiError } from '../api/client.ts';
-import { answerOf, operationOf, viewOf } from '../test/terminal-fixtures.ts';
+import { answerOf, operationOf, orderOf, viewOf } from '../test/terminal-fixtures.ts';
 import {
   codableReasons,
   myActivity,
   operationActions,
   signedOnHere,
+  splitOrders,
   terminalFailure,
   withOperation,
   withoutScrapRecord,
@@ -124,5 +125,47 @@ describe('terminal actions (#177)', () => {
       /no shift/,
     );
     expect(terminalFailure(new ApiError('down', 0), 'Not paused').kind).toBe('unavailable');
+  });
+});
+
+describe('splitOrders (UX-7 review)', () => {
+  const signed = {
+    username: 'olga',
+    at: '2026-10-15T06:00:00.000Z',
+    plantAt: '2026-10-15T06:00:00.000Z',
+  };
+  const order = (
+    id: string,
+    status: 'in-progress' | 'completed' | 'closed' | 'dispatched',
+    signedOff: boolean[],
+  ) => ({
+    order: orderOf(id, { status }),
+    operations: signedOff.map((s, i) =>
+      operationOf(`OP${String(i + 3)}0`, { signedOff: s ? signed : null }),
+    ),
+    wip: 0,
+  });
+  const ids = (os: readonly { order: { id: string } }[]) => os.map((o) => o.order.id);
+
+  it('puts orders in progress first, and finished ones (all signed off) apart', () => {
+    const { active, done } = splitOrders([
+      order('A', 'completed', [true, true]),
+      order('B', 'dispatched', [false]),
+      order('C', 'completed', [true, false]),
+      order('D', 'in-progress', [false, false]),
+      order('E', 'closed', [true]),
+      order('F', 'in-progress', [true]),
+    ]);
+    expect(ids(active)).toEqual(['D', 'F', 'B', 'C']);
+    expect(ids(done)).toEqual(['A', 'E']);
+  });
+
+  it('keeps an order seen active with the active ones, and never calls one without operations done', () => {
+    const { active, done } = splitOrders(
+      [order('A', 'completed', [true]), order('G', 'completed', [])],
+      new Set(['A']),
+    );
+    expect(ids(active)).toEqual(['A', 'G']);
+    expect(done).toEqual([]);
   });
 });

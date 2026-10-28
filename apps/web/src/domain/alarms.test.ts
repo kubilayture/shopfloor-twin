@@ -1,10 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { ApiError } from '../api/client.ts';
-import { ACK, alarmConfig, kpiBucket, occurrence, point, shelf } from '../test/alarm-fixtures.ts';
+import {
+  ACK,
+  alarmConfig,
+  hourKpi,
+  kpiBucket,
+  occurrence,
+  point,
+  shelf,
+} from '../test/alarm-fixtures.ts';
 import {
   acknowledgeable,
   alarmBucketFlags,
+  alarmShiftHours,
   endReasonText,
   isBehind,
   meanTimeToAck,
@@ -17,11 +26,14 @@ import {
   partition,
   durationLabel,
   floodText,
+  RATE_VERDICT,
   rateBand,
   rateBandText,
   shelvePresets,
   scopeKey,
   shelfFailure,
+  defaultSort,
+  sortAlarms,
   stateText,
   viewOf,
 } from './alarms.ts';
@@ -76,6 +88,55 @@ describe('alarm partition', () => {
   it('lists newest raise first in each view', () => {
     const set = mergeAlarms([[occurrence(1), occurrence(3)], [occurrence(2)]], [], undefined);
     expect(partition(set).active.map((item) => item.seq)).toEqual([3, 2, 1]);
+  });
+});
+
+describe('alarm list order (#371)', () => {
+  const low = occurrence(4, { priority: 'low' });
+  const high = occurrence(1, { priority: 'high' });
+  const medium = occurrence(3);
+  const newerHigh = occurrence(2, { priority: 'high' });
+  const list = [low, high, medium, newerHigh];
+  const seqs = (items: readonly { seq: number }[]) => items.map((item) => item.seq);
+
+  it('sorts by priority, highest first, then newest raise first within one', () => {
+    expect(seqs(sortAlarms(list, 'priority'))).toEqual([2, 1, 3, 4]);
+  });
+
+  it('sorts by raise time alone, newest first, whatever the priority', () => {
+    expect(seqs(sortAlarms(list, 'raised'))).toEqual([4, 3, 2, 1]);
+  });
+
+  it('puts the still-active alarms of a priority before its cleared ones, then by time', () => {
+    const cleared = (seq: number, state: 'unacked-cleared' | 'closed') =>
+      occurrence(seq, {
+        priority: 'high',
+        state,
+        active: false,
+        endedAt: '2026-10-15T06:00:00.000Z',
+      });
+    const newCleared = cleared(9, 'unacked-cleared');
+    const newClosed = cleared(8, 'closed');
+    const acked = occurrence(5, { priority: 'high', state: 'acked-active', acknowledged: ACK });
+    const sorted = sortAlarms([newCleared, newClosed, high, acked, medium], 'priority');
+    expect(seqs(sorted)).toEqual([5, 1, 9, 8, 3]);
+    // By raise time the cleared ones keep their place.
+    expect(seqs(sortAlarms([high, newCleared, acked], 'raised'))).toEqual([9, 5, 1]);
+  });
+
+  it('defaults the history to raise time and the live views to priority', () => {
+    expect(defaultSort('history')).toBe('raised');
+    expect(defaultSort('active')).toBe('priority');
+    expect(defaultSort('acknowledged')).toBe('priority');
+    expect(defaultSort('shelved')).toBe('priority');
+  });
+
+  it('breaks a tie of priority and raise time by id, and leaves the given list alone', () => {
+    const twin = occurrence(1, { priority: 'high', equipment: 'cnc-02', raisedAt: high.raisedAt });
+    const given = [high, twin];
+    expect(ids(sortAlarms(given, 'priority'))).toEqual([twin.id, high.id]);
+    expect(ids(sortAlarms([twin, high], 'priority'))).toEqual([twin.id, high.id]);
+    expect(given).toEqual([high, twin]);
   });
 });
 
@@ -268,5 +329,98 @@ describe('alarm KPIs', () => {
     expect(parseScopeKey('plant')).toEqual({ scope: 'plant', id: 'plant' });
     expect(parseScopeKey('work-center:x')).toBeUndefined();
     expect(parseScopeKey(undefined)).toBeUndefined();
+  });
+});
+
+describe('alarmShiftHours (UX-4b, #325)', () => {
+  const at = (iso: string) => Date.parse(iso);
+  const shift = { from: at('2026-10-15T03:00:00.000Z'), to: at('2026-10-15T11:00:00.000Z') };
+  const keys = (rows: ReturnType<typeof alarmShiftHours>) =>
+    rows.map((row) => `${row.key.slice(11, 16)}${row.bucket ? '' : ' quiet'}`);
+
+  it('lists every hour before the hour of the plant clock, the MES buckets in their place', () => {
+    const rows = alarmShiftHours(
+      [hourKpi('2026-10-15T04:00:00.000Z'), hourKpi('2026-10-15T06:00:00.000Z')],
+      shift,
+      at('2026-10-15T06:10:00.000Z'),
+    );
+    expect(keys(rows)).toEqual(['03:00 quiet', '04:00', '05:00 quiet', '06:00']);
+    expect(rows[0]).toEqual({
+      key: '2026-10-15T03:00:00.000Z',
+      from: '2026-10-15T03:00:00.000Z',
+      to: '2026-10-15T04:00:00.000Z',
+      bucket: undefined,
+    });
+    // The hour in progress is the MES's to list: not filled, even before its bucket arrived, and
+    // not when the clock is exactly on its start.
+    expect(keys(alarmShiftHours([], shift, at('2026-10-15T06:10:00.000Z')))).toEqual([
+      '03:00 quiet',
+      '04:00 quiet',
+      '05:00 quiet',
+    ]);
+    expect(keys(alarmShiftHours([], shift, at('2026-10-15T05:00:00.000Z')))).toEqual([
+      '03:00 quiet',
+      '04:00 quiet',
+    ]);
+  });
+
+  it('stops at the shift end, keeps a bucket outside the hours and fills nothing without a clock', () => {
+    expect(alarmShiftHours([], shift, at('2026-10-16T00:00:00.000Z'))).toHaveLength(8);
+    expect(keys(alarmShiftHours([], shift, at('2026-10-16T00:00:00.000Z'))).at(-1)).toBe(
+      '10:00 quiet',
+    );
+    // A bucket the MES listed is never dropped, even past the clock's hour.
+    expect(
+      keys(
+        alarmShiftHours(
+          [hourKpi('2026-10-15T09:00:00.000Z')],
+          shift,
+          at('2026-10-15T04:30:00.000Z'),
+        ),
+      ),
+    ).toEqual(['03:00 quiet', '09:00']);
+    expect(keys(alarmShiftHours([hourKpi('2026-10-15T04:00:00.000Z')], shift, undefined))).toEqual([
+      '04:00',
+    ]);
+    expect(alarmShiftHours([], shift, undefined)).toEqual([]);
+    // A shift that starts off the hour: the hours are the MES's, aligned on the hour.
+    const half = { from: at('2026-10-15T03:30:00.000Z'), to: at('2026-10-15T05:30:00.000Z') };
+    expect(keys(alarmShiftHours([], half, at('2026-10-15T09:00:00.000Z')))).toEqual([
+      '03:00 quiet',
+      '04:00 quiet',
+      '05:00 quiet',
+    ]);
+  });
+
+  it('fills a night shift across midnight, by the instant (UX-4b review)', () => {
+    // Shift C, 22:00–06:00 plant time (UTC+3): 19:00 to 03:00 UTC, across both midnights.
+    const night = { from: at('2026-10-21T19:00:00.000Z'), to: at('2026-10-22T03:00:00.000Z') };
+    const rows = alarmShiftHours(
+      [hourKpi('2026-10-21T22:00:00.000Z'), hourKpi('2026-10-22T01:00:00.000Z')],
+      night,
+      at('2026-10-22T01:20:00.000Z'),
+    );
+    expect(rows.map((row) => `${row.from}${row.bucket ? '' : ' quiet'}`)).toEqual([
+      '2026-10-21T19:00:00.000Z quiet',
+      '2026-10-21T20:00:00.000Z quiet',
+      '2026-10-21T21:00:00.000Z quiet',
+      '2026-10-21T22:00:00.000Z',
+      '2026-10-21T23:00:00.000Z quiet',
+      '2026-10-22T00:00:00.000Z quiet',
+      '2026-10-22T01:00:00.000Z',
+    ]);
+    expect(rows[5]?.to).toBe('2026-10-22T01:00:00.000Z');
+    // Once over, every one of its eight hours.
+    expect(alarmShiftHours([], night, at('2026-10-22T05:00:00.000Z'))).toHaveLength(8);
+  });
+});
+
+describe('RATE_VERDICT (UX-4b, #325)', () => {
+  it('gives each EEMUA 191 band one tone and word: colour only for abnormal', () => {
+    expect(RATE_VERDICT).toEqual({
+      acceptable: { tone: 'neutral', label: 'Acceptable' },
+      manageable: { tone: 'warn', label: 'Manageable' },
+      over: { tone: 'alarm', label: 'Over the benchmark' },
+    });
   });
 });

@@ -6,6 +6,7 @@ import type {
   LotTraceDto,
   SerialTraceDto,
   TraceRecordDto,
+  TraceSearchDto,
   TraceUnitDto,
 } from '@shopfloor/contracts/mes-api';
 import { PLANT, json, problem } from './fixtures.ts';
@@ -209,7 +210,7 @@ export function hold(overrides: Partial<HoldDto> = {}): HoldDto {
 
 /** What the fake MES answers; tests change it between reads. */
 export interface TraceState {
-  search: Record<string, { kind: 'serial' | 'lot' | 'carton' | 'order'; id: string }[]>;
+  search: Record<string, TraceSearchDto['results']>;
   serials: Record<string, SerialTraceDto>;
   lots: Record<string, LotTraceDto>;
   cartons: Record<string, CartonTraceDto>;

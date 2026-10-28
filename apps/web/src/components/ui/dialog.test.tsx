@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { useRef, useState } from 'react';
+import { StrictMode, useRef, useState } from 'react';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -96,6 +96,59 @@ describe('Dialog', () => {
     expect(document.activeElement).toBe(opener);
   });
 
+  it('starts on its title with focusTitle, and passes data-* and the close button test id', () => {
+    function Sheet() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(true);
+            }}
+          >
+            Details
+          </button>
+          <Dialog
+            open={open}
+            onClose={() => {
+              setOpen(false);
+            }}
+            title="Coolant pressure low"
+            variant="sheet"
+            focusTitle
+            testId="note-dialog"
+            closeTestId="close-alarm"
+            data-alarm="a1"
+          >
+            <label>
+              Comment <input />
+            </label>
+          </Dialog>
+        </>
+      );
+    }
+    render(<Sheet />);
+    const opener = screen.getByRole('button', { name: 'Details' });
+    opener.focus();
+    fireEvent.click(opener);
+    const title = screen.getByRole('heading', { level: 2, name: 'Coolant pressure low' });
+    expect(document.activeElement).toBe(title);
+    expect(title.getAttribute('tabindex')).toBe('-1');
+    expect(dialogEl().dataset.alarm).toBe('a1');
+    fireEvent.click(screen.getByTestId('close-alarm'));
+    expect(dialogEl().open).toBe(false);
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it('leaves the title out of the Tab order without focusTitle', () => {
+    render(<Harness />);
+    openIt();
+    expect(
+      screen.getByRole('heading', { level: 2, name: 'Edit the note' }).hasAttribute('tabindex'),
+    ).toBe(false);
+  });
+
   it('asks the owner to close on Escape instead of closing by itself', () => {
     const onClose = vi.fn();
     function Stubborn() {
@@ -140,6 +193,31 @@ describe('Dialog', () => {
     openIt();
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
     expect(onClose).toHaveBeenCalledTimes(1);
+    await flushOverlayEvents();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays open when it mounts open under StrictMode, and still hears the browser close it (#375)', async () => {
+    // A detail sheet mounts open (`?record=` in the URL). StrictMode (vite dev) runs the opening
+    // effect, its cleanup (`close()`) and the effect again: the cleanup's `close` event comes a
+    // task later, to a dialog open again, and must not close it.
+    const onClose = vi.fn();
+    render(
+      <StrictMode>
+        <Dialog open onClose={onClose} title="Record DT-7" variant="sheet" testId="note-dialog">
+          <p>Details</p>
+        </Dialog>
+      </StrictMode>,
+    );
+    await flushOverlayEvents();
+    await flushOverlayEvents();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(dialogEl().open).toBe(true);
+    expect(screen.getByRole('heading', { name: 'Record DT-7' })).toBeTruthy();
+    // The browser's own close is still told to the owner.
+    act(() => {
+      dialogEl().close();
+    });
     await flushOverlayEvents();
     expect(onClose).toHaveBeenCalledTimes(1);
   });
@@ -248,11 +326,13 @@ describe('Dialog', () => {
 function Confirm({
   tone,
   pending,
+  size,
   onConfirm,
   onCancel,
 }: {
   readonly tone?: 'danger' | 'default';
   readonly pending?: boolean;
+  readonly size?: 'md' | 'touch';
   readonly onConfirm: () => void | Promise<void>;
   readonly onCancel: () => void;
 }) {
@@ -264,6 +344,7 @@ function Confirm({
       confirmLabel="Close order"
       tone={tone}
       pending={pending}
+      size={size}
       onConfirm={onConfirm}
       onCancel={onCancel}
       testId="confirm"
@@ -280,8 +361,6 @@ describe('ConfirmDialog', () => {
     expect(
       document.getElementById(dialog.getAttribute('aria-describedby') ?? '')?.textContent,
     ).toBe('Its open quantity is cancelled. A closed order cannot be opened again.');
-    // Everything is said in the description: no empty, padded body between it and the buttons.
-    expect(dialog.querySelector('[data-dialog-body]')).toBeNull();
     const confirm = screen.getByRole('button', { name: 'Close order' });
     expect(confirm.className).toContain('bg-alarm-solid');
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Cancel' }));
@@ -296,6 +375,38 @@ describe('ConfirmDialog', () => {
     const confirm = screen.getByRole('button', { name: 'Close order' });
     expect(document.activeElement).toBe(confirm);
     expect(confirm.className).toContain('bg-accent');
+  });
+
+  it('has no empty body between its description and its buttons (UX-7 iPad check)', () => {
+    render(<Confirm onConfirm={() => undefined} onCancel={() => undefined} />);
+    const dialog = screen.getByRole('dialog', { name: 'Close order PO-2610-303?' });
+    expect(dialog.querySelector('.overflow-y-auto')).toBeNull();
+    expect(dialog.querySelector('footer')).not.toBeNull();
+  });
+
+  it('has 56 px buttons, a 56 px close button and larger text at the touch size (UX-7)', () => {
+    const { unmount } = render(<Confirm onConfirm={() => undefined} onCancel={() => undefined} />);
+    const heights = () =>
+      ['Cancel', 'Close order', 'Close'].map((name) =>
+        screen
+          .getByRole('button', { name })
+          .className.split(/\s+/)
+          .find((c) => c.startsWith('min-h-')),
+      );
+    expect(heights()).toEqual(['min-h-9', 'min-h-9', 'min-h-7']);
+    expect(screen.getByRole('heading', { name: 'Close order PO-2610-303?' }).className).toContain(
+      'text-lg',
+    );
+    unmount();
+    render(<Confirm size="touch" onConfirm={() => undefined} onCancel={() => undefined} />);
+    expect(heights()).toEqual(['min-h-14', 'min-h-14', 'min-h-14']);
+    expect(screen.getByRole('heading', { name: 'Close order PO-2610-303?' }).className).toContain(
+      'text-xl',
+    );
+    const dialog = screen.getByRole('dialog');
+    expect(
+      document.getElementById(dialog.getAttribute('aria-describedby') ?? '')?.className,
+    ).toContain('text-base');
   });
 
   it('while pending: busy confirm, and neither Escape nor Cancel closes it', () => {

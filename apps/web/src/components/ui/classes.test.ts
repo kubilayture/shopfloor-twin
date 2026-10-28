@@ -65,6 +65,8 @@ const FILES = [
   'screens/spc.tsx',
   // The alarm list (UX-4a, #324).
   'screens/alarm-list.tsx',
+  // Downtime coding (UX-5a, #326).
+  'screens/downtime-coding.tsx',
   // Shift reports and handover notes (UX-5b, #327).
   'components/shift-picker.tsx',
   'components/shift-state-badge.tsx',

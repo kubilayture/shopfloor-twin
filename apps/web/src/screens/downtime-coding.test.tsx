@@ -106,7 +106,7 @@ afterEach(() => {
 
 async function openRecord() {
   const row = await screen.findByTestId(`downtime-row-${UNCODED.id}`);
-  fireEvent.click(within(row).getByRole('button', { name: /^Code / }));
+  fireEvent.click(within(row).getByRole('button', { name: /^(Code|View) / }));
   return screen.findByTestId('coding-panel');
 }
 
@@ -155,7 +155,7 @@ describe('downtime coding', () => {
     const optionTexts = first
       .getAllByRole('option')
       .map((option) => [option.textContent, (option as HTMLOptionElement).disabled]);
-    expect(optionTexts).toContainEqual(['  Spindle overload', false]);
+    expect(optionTexts).toContainEqual(['Spindle overload', false]);
     expect(optionTexts).toContainEqual(['Not coded (not codable)', true]);
     fireEvent.change(first.getByTestId('reason-picker'), {
       target: { value: 'BREAKDOWN/SPINDLE-OVERLOAD' },
@@ -404,7 +404,7 @@ describe('downtime coding', () => {
 
     await app.push({ type: 'downtime', event: 'removed', record: created });
     expect(screen.queryByTestId(`downtime-row-${created.id}`)).toBeNull();
-    expect(screen.getByText('No uncoded downtime in this shift.')).toBeTruthy();
+    expect(screen.getByText('No uncoded downtime in this shift')).toBeTruthy();
   });
 
   it.each([
@@ -447,5 +447,461 @@ describe('downtime coding', () => {
     const entry = await within(panel).findByTestId('audit-entry');
     expect(entry.textContent).toContain('by Mehmet at');
     expect(entry.textContent).not.toContain('not authenticated');
+  });
+});
+
+/**
+ * `matchMedia` for a window `width` px wide: the shell's `xl` nav, the DataTable's `md` stack and
+ * the detail's `wide` panel (design system 3.1) each answer by their own query.
+ */
+function stubWidth(width: number) {
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn((query: string) => {
+      const min = /min-width:\s*([\d.]+)rem/.exec(query);
+      const max = /max-width:\s*([\d.]+)rem/.exec(query);
+      const px = (match: RegExpExecArray) => Number(match[1]) * 16;
+      return {
+        matches: min ? width >= px(min) : max ? width <= px(max) : false,
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      };
+    }),
+  );
+}
+
+describe('downtime coding on the design system (UX-5a, #326)', () => {
+  it('shows states and losses as badges, uncoded rows with a bar and a badge, lengths by the rule', async () => {
+    const open = record({
+      id: 'cnc-01~1790000000~3',
+      start: '2026-10-15T05:00:00.000Z',
+      end: null,
+    });
+    const server = mes(
+      () => json({}),
+      () => [{ ...UNCODED, cause: 'E-4711' }, CODED, open],
+    );
+    vi.stubGlobal('fetch', server.fetch);
+    await renderApp('/downtime');
+    const row = await screen.findByTestId(`downtime-row-${UNCODED.id}`);
+    const cell = (element: HTMLElement, name: string) =>
+      element.querySelector<HTMLElement>(`[data-cell="c-${name}"]`);
+    expect(screen.getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
+      'Machine',
+      'From',
+      'Length',
+      'State',
+      'Loss',
+      'Reason',
+      'Actions',
+    ]);
+    // The machine names its row; times and lengths keep to one line (D-01).
+    expect(within(row).getByRole('rowheader').textContent).toBe('Machine cnc-01');
+    expect(cell(row, 'from')?.className).toContain('whitespace-nowrap');
+    expect(cell(row, 'length')?.className).toContain('whitespace-nowrap');
+    expect(cell(row, 'length')?.textContent).toBe('10 min');
+    // The state is the badge every screen shows; the loss a badge too (D-02).
+    expect(cell(row, 'state')?.querySelector('[data-state]')?.getAttribute('data-state')).toBe(
+      'Down',
+    );
+    expect(cell(row, 'state')?.textContent).toBe('DownE-4711');
+    expect(cell(row, 'loss')?.querySelector('[data-kind]')?.getAttribute('data-kind')).toBe('own');
+    // Uncoded time: a warn bar and an "Uncoded" badge; a coded record has neither.
+    expect(cell(row, 'machine')?.className).toContain('var(--color-warn-border)');
+    expect(cell(row, 'reason')?.textContent).toBe('Uncoded');
+    const coded = screen.getByTestId(`downtime-row-${CODED.id}`);
+    expect(cell(coded, 'machine')?.className).not.toContain('var(--color-warn-border)');
+    expect(cell(coded, 'reason')?.textContent).toBe('Tool change');
+    // An open record says so beside its length so far.
+    expect(cell(screen.getByTestId(`downtime-row-${open.id}`), 'length')?.textContent).toBe(
+      '5 min (open)',
+    );
+  });
+
+  it('says "View" to a role that cannot code, "Code" to one that can (D-04)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mes(
+        () => json({}),
+        () => [UNCODED],
+      ).fetch,
+    );
+    await renderApp('/downtime', { session: sessionOf(['quality']) });
+    const action = await screen.findByTestId(`code-${UNCODED.id}`);
+    expect(action.textContent).toBe('View');
+    expect(action.getAttribute('aria-label')).toBe('View Machine cnc-01 at 07:00:00');
+    fireEvent.click(action);
+    const panel = await screen.findByTestId('coding-panel');
+    expect(within(panel).getByTestId('coding-not-allowed').getAttribute('role')).toBeNull();
+  });
+
+  it('labels the action "Code" with the machine and the time for a role that codes', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mes(
+        () => json({}),
+        () => [UNCODED],
+      ).fetch,
+    );
+    await renderApp('/downtime');
+    const action = await screen.findByTestId(`code-${UNCODED.id}`);
+    expect(action.textContent).toBe('Code');
+    expect(action.getAttribute('aria-label')).toBe('Code Machine cnc-01 at 07:00:00');
+  });
+
+  it('opens a side panel from 1440 px after a skip link, the full-width table otherwise (G-26, G-33)', async () => {
+    stubWidth(1440);
+    vi.stubGlobal(
+      'fetch',
+      mes(
+        () => json({}),
+        () => [{ ...UNCODED, cause: 'E-4711' }, CODED],
+      ).fetch,
+    );
+    await renderApp('/downtime');
+    await screen.findByTestId(`downtime-row-${UNCODED.id}`);
+    // Nothing chosen: no empty pane beside the table, nothing to skip to.
+    expect(screen.queryByTestId('coding-panel')).toBeNull();
+    expect(screen.queryByText(/Choose a record/)).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Skip to the details' })).toBeNull();
+    const panel = await openRecord();
+    expect(panel.tagName).toBe('SECTION');
+    expect(panel.dataset.variant).toBe('panel');
+    expect(panel.dataset.record).toBe(UNCODED.id);
+    const title = within(panel).getByRole('heading', { level: 2 });
+    expect(title.textContent).toBe('Machine cnc-01: Down');
+    expect(document.activeElement).toBe(title);
+    const skip = screen.getByRole('link', { name: 'Skip to the details' });
+    expect(skip.getAttribute('href')).toBe(`#${title.id}`);
+    // The skip link comes before the table, so the Tab run through its rows can be skipped.
+    expect(
+      skip.compareDocumentPosition(screen.getByTestId('downtime-table')) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    title.blur();
+    fireEvent.click(skip);
+    expect(document.activeElement).toBe(title);
+    // Beside the panel the loss and the cause code leave the table (the panel shows them).
+    const state = screen
+      .getByTestId(`downtime-row-${UNCODED.id}`)
+      .querySelector<HTMLElement>('[data-cell="c-state"]');
+    expect(state?.textContent).toBe('Down');
+    expect(state?.className).toContain('whitespace-nowrap');
+    expect(within(panel).getByText('E-4711')).toBeTruthy();
+    expect(screen.getAllByRole('columnheader').map((header) => header.textContent)).not.toContain(
+      'Loss',
+    );
+    expect(screen.getByTestId(`downtime-row-${UNCODED.id}`).getAttribute('aria-current')).toBe(
+      'true',
+    );
+    expect(within(panel).getByText('Own')).toBeTruthy();
+  });
+
+  it('opens a side sheet below 1440 px (1280 included) with the same test ids', async () => {
+    stubWidth(1280);
+    vi.stubGlobal(
+      'fetch',
+      mes(
+        () => json({}),
+        () => [UNCODED, CODED],
+      ).fetch,
+    );
+    await renderApp('/downtime');
+    const action = await screen.findByTestId(`code-${CODED.id}`);
+    action.focus();
+    fireEvent.click(action);
+    const sheet = await screen.findByTestId('coding-panel');
+    expect(sheet.tagName).toBe('DIALOG');
+    expect(sheet.dataset.variant).toBe('sheet');
+    expect(sheet.dataset.record).toBe(CODED.id);
+    expect(document.activeElement?.tagName).toBe('H2');
+    expect(screen.queryByRole('link', { name: 'Skip to the details' })).toBeNull();
+    expect(within(sheet).getAllByTestId('reason-picker')).toHaveLength(1);
+    fireEvent.click(within(sheet).getByTestId('close-coding'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('coding-panel')).toBeNull();
+    });
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByTestId(`code-${CODED.id}`));
+    });
+  });
+
+  it('stacks each record as a card with a 44 px action at 390 px', async () => {
+    stubWidth(390);
+    vi.stubGlobal(
+      'fetch',
+      mes(
+        () => json({}),
+        () => [UNCODED],
+      ).fetch,
+    );
+    await renderApp('/downtime');
+    const row = await screen.findByTestId(`downtime-row-${UNCODED.id}`);
+    expect(row.tagName).toBe('LI');
+    expect(row.dataset.uncoded).toBe('true');
+    expect(within(row).getByTestId(`code-${UNCODED.id}`).className).toContain('min-h-11');
+  });
+
+  it('splits at a plant time on PlantTimeInput: Enter splits, a time outside the record is refused', async () => {
+    const server = mes(
+      () => json({}),
+      () => [UNCODED],
+    );
+    vi.stubGlobal('fetch', server.fetch);
+    await renderApp('/downtime');
+    const panel = await openRecord();
+    const time = within(panel).getByTestId<HTMLInputElement>('split-at');
+    expect(time.type).toBe('text');
+    expect(time.placeholder).toBe('hh:mm:ss');
+    expect(within(panel).getByRole('group', { name: /^Split at, plant time in / })).toBeTruthy();
+    // The record's start is not inside it: a split there would leave an empty segment.
+    fireEvent.change(time, { target: { value: '07:00:00' } });
+    fireEvent.click(within(panel).getByTestId('split'));
+    expect(within(panel).getByText(/inside the record/)).toBeTruthy();
+    expect(time.getAttribute('aria-invalid')).toBe('true');
+    expect(within(panel).getAllByTestId('reason-picker')).toHaveLength(1);
+    // Enter in the time box splits, and does not save the form.
+    fireEvent.change(time, { target: { value: '07:04:30' } });
+    expect(within(panel).getByTestId('split-at-utc').textContent).toBe('= 2026-10-15 04:04:30 UTC');
+    fireEvent.keyDown(time, { key: 'Enter' });
+    expect(within(panel).getAllByTestId('reason-picker')).toHaveLength(2);
+    expect(within(panel).getByTestId('segment-0').textContent).toContain('07:00:00 – 07:04:30');
+    expect(time.value).toBe('');
+    expect(within(panel).queryByText(/inside the record/)).toBeNull();
+    expect(server.calls.some((call) => call.method === 'PUT')).toBe(false);
+  });
+
+  it('groups child reasons under their parent, so a screen reader hears the tree; values stay the ids', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mes(
+        () => json({}),
+        () => [UNCODED],
+      ).fetch,
+    );
+    await renderApp('/downtime');
+    const panel = await openRecord();
+    const picker = within(panel).getByTestId<HTMLSelectElement>('reason-picker');
+    const groups = [...picker.querySelectorAll('optgroup')].map((group) => [
+      group.label,
+      [...group.querySelectorAll('option')].map((option) => [option.value, option.textContent]),
+    ]);
+    expect(groups).toEqual([
+      [
+        'Breakdown',
+        [
+          ['BREAKDOWN', 'Breakdown'],
+          ['BREAKDOWN/SPINDLE-OVERLOAD', 'Spindle overload'],
+          ['BREAKDOWN/UNSPECIFIED', 'Breakdown, cause not reported'],
+        ],
+      ],
+      [
+        'Setup',
+        [
+          ['SETUP', 'Setup'],
+          ['SETUP/TOOL-CHANGE', 'Tool change'],
+        ],
+      ],
+    ]);
+    // Reasons without children stand alone; the automatic reason comes first.
+    const loose = [...picker.children]
+      .filter((child) => child.tagName === 'OPTION')
+      .map((option) => (option as HTMLOptionElement).value);
+    expect(loose).toEqual(['', 'OLD', 'UNCODED']);
+    fireEvent.change(picker, { target: { value: 'SETUP/TOOL-CHANGE' } });
+    expect(picker.value).toBe('SETUP/TOOL-CHANGE');
+  });
+
+  it('splits a record longer than a day on the day where the time is inside it', async () => {
+    const long = record({
+      id: 'cnc-01~1790000000~77',
+      start: '2026-10-14T04:00:00.000Z',
+      end: '2026-10-15T05:00:00.000Z',
+    });
+    vi.stubGlobal(
+      'fetch',
+      mes(
+        () => json({}),
+        () => [long],
+      ).fetch,
+    );
+    await renderApp('/downtime');
+    fireEvent.click(await screen.findByTestId(`code-${long.id}`));
+    const panel = await screen.findByTestId('coding-panel');
+    // 07:00:00 plant time is the record's start on the 14th (no split) and inside it on the 15th.
+    fireEvent.change(within(panel).getByTestId('split-at'), { target: { value: '07:00:00' } });
+    expect(within(panel).getByTestId('split-at-utc').textContent).toBe('= 2026-10-15 04:00:00 UTC');
+    fireEvent.click(within(panel).getByTestId('split'));
+    expect(within(panel).queryByText(/inside the record/)).toBeNull();
+    const segments = within(panel).getAllByTestId(/^segment-\d$/);
+    expect(segments).toHaveLength(2);
+    expect(segments[1]?.querySelector('time')?.getAttribute('dateTime')).toBe(
+      '2026-10-15T04:00:00.000Z',
+    );
+  });
+
+  it('shows the Uncoded badge alone as the automatic reason when no rule gave one', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mes(
+        () => json({}),
+        () => [UNCODED, CODED],
+      ).fetch,
+    );
+    await renderApp('/downtime');
+    const panel = await openRecord();
+    const facts = within(panel).getByRole('definition', {
+      name: (_name, element) => element.previousElementSibling?.textContent === 'Automatic reason',
+    });
+    expect(facts.textContent).toBe('Uncoded');
+  });
+
+  it('sends one write for two quick saves, and keeps both buttons busy meanwhile', async () => {
+    let answer: (response: Response) => void = () => undefined;
+    const server = mes(
+      () => json({}),
+      () => [
+        {
+          ...UNCODED,
+          codings: [
+            {
+              from: UNCODED.start,
+              to: UNCODED.end ?? UNCODED.start,
+              reason: 'SETUP',
+              comment: '',
+              codedBy: 'B',
+              codedAt: '2026-10-16T08:00:00.000Z',
+              version: 3,
+            },
+          ],
+        },
+      ],
+    );
+    const fetch = (input: RequestInfo | URL, init?: RequestInit) =>
+      init?.method === 'PUT'
+        ? (server.calls.push({ method: 'PUT', path: '', body: null }),
+          new Promise<Response>((resolve) => {
+            answer = resolve;
+          }))
+        : server.fetch(input, init);
+    vi.stubGlobal('fetch', fetch);
+    await renderApp('/downtime');
+    const panel = await openRecord();
+    fireEvent.change(within(panel).getByTestId('reason-picker'), { target: { value: 'SETUP' } });
+    const form = within(panel).getByRole('form', { name: /^Coding of cnc-01 at / });
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+    await waitFor(() => {
+      expect(server.calls.filter((call) => call.method === 'PUT')).toHaveLength(1);
+    });
+    await waitFor(() => {
+      expect(within(panel).getByTestId('save-coding').getAttribute('aria-busy')).toBe('true');
+    });
+    expect(within(panel).getByTestId('clear-coding').getAttribute('aria-disabled')).toBe('true');
+    fireEvent.click(within(panel).getByTestId('clear-coding'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(server.calls.filter((call) => call.method === 'PUT')).toHaveLength(1);
+    answer(json({ record: { ...UNCODED, version: 4 }, version: 4 }));
+    expect(await within(panel).findByTestId('coding-message')).toBeTruthy();
+  });
+
+  it('moves the focus to the next row when the coded record left "Only uncoded" and its detail closes', async () => {
+    const other = record({
+      id: 'cnc-01~1790000000~9',
+      start: '2026-10-15T05:00:00.000Z',
+      end: '2026-10-15T05:05:00.000Z',
+    });
+    let records = [UNCODED, other];
+    const coded = {
+      ...UNCODED,
+      uncoded: false,
+      reason: 'SETUP',
+      version: 4,
+      codings: [
+        {
+          from: UNCODED.start,
+          to: UNCODED.end ?? UNCODED.start,
+          reason: 'SETUP',
+          comment: '',
+          codedBy: 'Ayşe K.',
+          codedAt: '2026-10-16T08:00:00.000Z',
+          version: 4,
+        },
+      ],
+    };
+    const server = mes(
+      () => {
+        records = [other];
+        return json({ record: coded, version: 4 });
+      },
+      () => records,
+    );
+    vi.stubGlobal('fetch', server.fetch);
+    await renderApp('/downtime?uncoded=true');
+    const panel = await openRecord();
+    fireEvent.change(within(panel).getByTestId('reason-picker'), { target: { value: 'SETUP' } });
+    fireEvent.click(within(panel).getByTestId('save-coding'));
+    expect((await within(panel).findByTestId('coding-message')).dataset.kind).toBe('saved');
+    await waitFor(() => {
+      expect(screen.queryByTestId(`downtime-row-${UNCODED.id}`)).toBeNull();
+    });
+    // The detail stays open on the coded record until it is closed.
+    expect(screen.getByTestId('coding-panel').dataset.record).toBe(UNCODED.id);
+    fireEvent.click(within(panel).getByTestId('close-coding'));
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByTestId(`code-${other.id}`));
+    });
+  });
+
+  it('says so when the record in the URL is not in the list, and closes the note', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mes(
+        () => json({}),
+        () => [UNCODED],
+      ).fetch,
+    );
+    await renderApp('/downtime?record=cnc-01~1~1');
+    const note = await screen.findByTestId('record-not-found');
+    expect(note.textContent).toContain('cnc-01~1~1');
+    expect(note.textContent).toContain('not among the records of this shift');
+    expect(screen.queryByTestId('coding-panel')).toBeNull();
+    fireEvent.click(within(note).getByRole('button', { name: 'Close the note' }));
+    await waitFor(() => {
+      expect(screen.queryByTestId('record-not-found')).toBeNull();
+    });
+  });
+
+  it('shows the empty state instead of the table, by the filter', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mes(
+        () => json({}),
+        () => [],
+      ).fetch,
+    );
+    await renderApp('/downtime');
+    const empty = await screen.findByTestId('downtime-empty');
+    expect(empty.textContent).toContain('No downtime in this shift');
+    expect(screen.queryByRole('table')).toBeNull();
+    expect(screen.getByTestId('downtime-summary').textContent).toBe(
+      '0 records, 0 with uncoded time; uncoded first',
+    );
+  });
+
+  it('shows a failed read of the records in place of the table, with a retry', async () => {
+    const server = mes(
+      () => json({}),
+      () => [UNCODED],
+    );
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) =>
+      requestUrl(input).includes('/api/v1/downtime?')
+        ? Promise.resolve(problem(503, 'Service Unavailable', 'starting', '/api/v1/downtime'))
+        : server.fetch(input, init),
+    );
+    await renderApp('/downtime');
+    expect(await screen.findByText(/Could not load the downtime records/)).toBeTruthy();
+    expect(screen.queryByRole('table')).toBeNull();
   });
 });

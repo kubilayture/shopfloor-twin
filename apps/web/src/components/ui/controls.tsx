@@ -423,6 +423,11 @@ export interface ChoiceGroupProps {
   readonly required?: boolean | undefined;
   /** The choices side by side, wrapping, instead of one per line. */
   readonly inline?: boolean | undefined;
+  /**
+   * The legend visually hidden, still the group's name: where a column header or a row already
+   * says what the choices are (a user's roles in the users table).
+   */
+  readonly legendHidden?: boolean | undefined;
   readonly className?: string | undefined;
   /** The `Checkbox` or `Radio` elements. */
   readonly children: ReactNode;
@@ -438,6 +443,7 @@ export function ChoiceGroup({
   error,
   required,
   inline = false,
+  legendHidden = false,
   className,
   children,
 }: ChoiceGroupProps) {
@@ -447,7 +453,7 @@ export function ChoiceGroup({
       aria-describedby={ids.describedBy}
       className={join('flex min-w-0 flex-col gap-1', className)}
     >
-      <legend className="mb-1 text-sm font-medium text-ink">
+      <legend className={legendHidden ? 'sr-only' : 'mb-1 text-sm font-medium text-ink'}>
         <LabelText required={required}>{legend}</LabelText>
       </legend>
       <div className={inline ? 'flex flex-wrap gap-x-4 gap-y-1' : 'flex flex-col gap-0.5'}>

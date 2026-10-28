@@ -80,6 +80,11 @@ test('roles: an operator sees no release or dispatch and is refused; an admin ma
   await expect(admin.page.getByTestId(`user-${made}`)).toBeVisible();
   await expect(admin.page.getByTestId(`user-roles-${made}`)).toContainText(/quality/i);
   await admin.page.getByTestId(`toggle-enabled-${made}`).click();
+  // Disabling asks first (UX-10, #334; design system 4.9).
+  await admin.page
+    .getByTestId('confirm-disable')
+    .getByRole('button', { name: 'Disable user', exact: true })
+    .click();
   await expect(admin.page.getByTestId(`toggle-enabled-${made}`)).toHaveText('Enable');
   // The admin has no order permission: no action is offered, and the API refuses.
   await admin.page.goto(`/orders/${orderId}`);

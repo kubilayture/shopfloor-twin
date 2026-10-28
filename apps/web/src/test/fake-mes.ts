@@ -28,6 +28,7 @@ export function fakeMes(
   const signedIn = (must = false) =>
     options.session?.() ?? sessionOf(roles, { mustChangePassword: must, username });
   let session: SessionDto | null = options.signedIn ? signedIn() : null;
+  let logins = 0;
   const users = [...(options.users ?? [])];
   const calls: Call[] = [];
   const unauthenticated = (path: string) =>
@@ -49,6 +50,11 @@ export function fakeMes(
         return session ? json(session) : unauthenticated(path);
       }
       if (method === 'DELETE') {
+        // As the MES (#390): with `createdAt`, only the session created then ends.
+        const named = (body as { createdAt?: string } | undefined)?.createdAt;
+        if (session && named !== undefined && named !== session.createdAt) {
+          return json({ ended: false });
+        }
         const ended = session !== null;
         session = null;
         return json({ ended });
@@ -58,7 +64,13 @@ export function fakeMes(
         return problem(401, 'Unauthorized', 'login failed', path, PROBLEM_TYPES.unauthenticated);
       }
       username = login.username;
-      session = signedIn(options.mustChange);
+      logins += 1;
+      // Each login a session of its own, told apart by its `createdAt` (#390).
+      const fresh = signedIn(options.mustChange);
+      session = {
+        ...fresh,
+        createdAt: new Date(Date.parse(fresh.createdAt) + logins).toISOString(),
+      };
       return json(session);
     }
     if (!session) return unauthenticated(path);
@@ -95,5 +107,7 @@ export function fakeMes(
     end: () => {
       session = null;
     },
+    /** The session the MES holds for the cookie now. */
+    current: () => session,
   };
 }

@@ -38079,16 +38079,23 @@
         "tags": [
           "identity"
         ],
-        "description": "The body is an empty JSON object (writes are application/json). Clears the cookie also when the session already ended or expired, or the cookie is invalid (`ended: false`). Access: anyone (no session needed).",
+        "description": "The body is a JSON object (writes are application/json), empty for a plain logout. Clears the cookie also when the session already ended or expired, or the cookie is invalid (`ended: false`). With `createdAt` (#390) only the session created at that time ends: a live session of the cookie created at any other time (a newer login, maybe from another tab) is left live with its cookie (`ended: false`, no `Set-Cookie`). The web sends it when a page replays a logout an earlier page of the tab left on its way. Access: anyone (no session needed).",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
-                "properties": {},
+                "properties": {
+                  "createdAt": {
+                    "description": "Ends the cookie's session only if it was created at this time (the `createdAt` of `GET /session`): a logout replayed by a later page never ends a newer session",
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  }
+                },
                 "additionalProperties": false,
-                "description": "An empty JSON object"
+                "description": "A logout: an empty object ends the cookie's session, whichever it is"
               }
             }
           }

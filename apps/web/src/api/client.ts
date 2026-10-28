@@ -260,6 +260,7 @@ export function sendJson<S extends z.ZodType>(
   path: string,
   body: unknown,
   schema: S,
+  signal?: AbortSignal,
 ): Promise<z.output<S>> {
   return requestJson(path, schema, {
     method,
@@ -267,6 +268,7 @@ export function sendJson<S extends z.ZodType>(
     body: JSON.stringify(body),
     credentials: 'same-origin',
     mode: 'same-origin',
+    ...(signal ? { signal } : {}),
   });
 }
 

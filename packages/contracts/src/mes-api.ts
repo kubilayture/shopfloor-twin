@@ -1923,6 +1923,17 @@ export const loginRequestSchema = z
   })
   .describe('A login: sets the session cookie');
 
+export const logoutRequestSchema = z
+  .strictObject({
+    createdAt: time
+      .optional()
+      .describe(
+        "Ends the cookie's session only if it was created at this time (the `createdAt` of " +
+          '`GET /session`): a logout replayed by a later page never ends a newer session',
+      ),
+  })
+  .describe("A logout: an empty object ends the cookie's session, whichever it is");
+
 export const sessionUserSchema = z.object({
   id: int,
   username: z.string(),
@@ -1993,6 +2004,7 @@ export const passwordResetRequestSchema = z
   .describe('Resets a password; ends every session of the user and clears a lock');
 
 export type LoginRequest = z.input<typeof loginRequestSchema>;
+export type LogoutRequest = z.infer<typeof logoutRequestSchema>;
 export type SessionDto = z.infer<typeof sessionSchema>;
 export type SessionUserDto = z.infer<typeof sessionUserSchema>;
 export type PasswordChangeRequest = z.infer<typeof passwordChangeRequestSchema>;

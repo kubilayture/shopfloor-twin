@@ -28,18 +28,22 @@ export interface RenderOptions {
    * reload (#311); by default it is started before the app renders.
    */
   readonly live?: 'started' | 'stopped';
+  /** `'app'` keeps the app's retries of failed reads (`shouldRetry`); none by default. */
+  readonly retry?: 'none' | 'app';
 }
 
 /** The whole app at a path, with a fake socket the test drives and the stubbed fetch. */
 export async function renderApp(
   path: string,
-  { session = SESSION, live: liveState = 'started' }: RenderOptions = {},
+  { session = SESSION, live: liveState = 'started', retry = 'none' }: RenderOptions = {},
 ) {
   const factory = socketFactory();
   const queryClient = createQueryClient();
   // No retries in tests; the app's other defaults (`networkMode`, #312) stay as they ship.
   const defaults = queryClient.getDefaultOptions();
-  queryClient.setDefaultOptions({ ...defaults, queries: { ...defaults.queries, retry: false } });
+  if (retry === 'none') {
+    queryClient.setDefaultOptions({ ...defaults, queries: { ...defaults.queries, retry: false } });
+  }
   if (session !== 'fetch') queryClient.setQueryData(sessionKey, session);
   const live = new LiveClient({ url: 'ws://test/api/v1/ws', createSocket: factory.create });
   connectLiveToCache(live, queryClient);

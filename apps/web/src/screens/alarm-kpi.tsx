@@ -6,7 +6,13 @@ import {
   type BadActorDto,
   type FloodEpisodeDto,
 } from '@shopfloor/contracts/mes-api';
-import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  skipToken,
+  useQueries,
+  useQuery,
+  useQueryClient,
+  type UseQueryResult,
+} from '@tanstack/react-query';
 import { useNavigate, useSearch } from '@tanstack/react-router';
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import {
@@ -32,7 +38,14 @@ import {
   itemFlags,
   type GroupFinality,
 } from '../components/oee-ui.tsx';
-import { QueryError } from '../components/query-error.tsx';
+import {
+  ScreenError,
+  SectionError,
+  queryRead,
+  screenErrors,
+  selectionRead,
+  type ScreenErrors,
+} from '../components/screen-error.tsx';
 import {
   ShiftPicker,
   ShiftSpan,
@@ -87,6 +100,61 @@ interface Range {
 
 /** `plant` → `plant`, `position:cell-m1` → `position-cell-m1` (test ids). */
 const testKey = (key: string): string => key.replace(':', '-');
+
+/**
+ * The details' reads of one scope (#394): read by the screen, which says one error when every read
+ * failed, and handed to the tables that show them. Not asked until the scope and range are known.
+ */
+function useBucketsRead(
+  scope: AlarmScopeRef | undefined,
+  bucket: 'hour' | 'shift',
+  range: Range | undefined,
+) {
+  return useQuery({
+    queryKey: queryKeys.alarmKpi(
+      scope ? scopeKey(scope) : '',
+      bucket,
+      range?.from ?? 0,
+      range?.to ?? 0,
+    ),
+    queryFn:
+      scope && range
+        ? ({ signal }) => getAlarmKpi({ ...scope, bucket, from: range.from, to: range.to }, signal)
+        : skipToken,
+  });
+}
+
+function useFloodsRead(scope: AlarmScopeRef | undefined, range: Range | undefined) {
+  return useQuery({
+    queryKey: queryKeys.alarmFloods(scope ? scopeKey(scope) : '', range?.from ?? 0, range?.to ?? 0),
+    queryFn: scope && range ? ({ signal }) => getFloods({ ...scope, ...range }, signal) : skipToken,
+  });
+}
+
+function useBadActorsRead(scope: AlarmScopeRef | undefined, range: Range | undefined) {
+  return useQuery({
+    queryKey: queryKeys.badActors(scope ? scopeKey(scope) : '', range?.from ?? 0, range?.to ?? 0),
+    queryFn:
+      scope && range ? ({ signal }) => getBadActors({ ...scope, ...range }, signal) : skipToken,
+  });
+}
+
+function useOperatorRead(scope: AlarmScopeRef | undefined, range: Range | undefined) {
+  return useQuery({
+    queryKey: queryKeys.operatorKpi(scope ? scopeKey(scope) : '', range?.from ?? 0, range?.to ?? 0),
+    queryFn:
+      scope && range
+        ? ({ signal }) => getOperatorKpi({ ...scope, bucket: 'range', ...range }, signal)
+        : skipToken,
+  });
+}
+
+/** A detail's read as the screen hands it on: its query, and the screen's errors it is one of. */
+interface DetailRead<T> {
+  readonly query: UseQueryResult<T>;
+  readonly errors: ScreenErrors;
+  readonly readKey: string;
+}
 
 /** Reads `queryKey` again after `trigger` changes, at most every `REREAD_THROTTLE_MS`. */
 function useThrottledReread(trigger: unknown, queryKey: readonly unknown[], enabled: boolean) {
@@ -170,9 +238,9 @@ function ScopeTile({
   readonly bucket: AlarmKpiBucketDto | undefined;
   readonly read: {
     readonly isError: boolean;
-    readonly error: unknown;
     readonly loaded: boolean;
-    readonly retry: () => void;
+    /** Its failure as the screen says it here (#394): its own error, or a quiet line. */
+    readonly error: ReactNode;
   };
   readonly finality: GroupFinality | undefined;
   readonly config: AlarmConfig | undefined;
@@ -237,7 +305,7 @@ function ScopeTile({
           : []
       }
     >
-      {read.isError ? <QueryError what="the KPIs" error={read.error} onRetry={read.retry} /> : null}
+      {read.error}
       {bucket ? (
         <DescriptionList
           columns="tile"
@@ -423,6 +491,7 @@ function BucketTable({
   range,
   clockHour,
   live,
+  read,
 }: {
   readonly scope: AlarmScopeRef;
   readonly bucket: 'hour' | 'shift';
@@ -430,13 +499,11 @@ function BucketTable({
   /** The plant clock's hour (its start): only the hours before it are filled in. */
   readonly clockHour: number | undefined;
   readonly live: boolean;
+  readonly read: DetailRead<Awaited<ReturnType<typeof getAlarmKpi>>>;
 }) {
   const key = scopeKey(scope);
-  const rest = useQuery({
-    queryKey: queryKeys.alarmKpi(key, bucket, range.from, range.to),
-    queryFn: ({ signal }) =>
-      getAlarmKpi({ ...scope, bucket, from: range.from, to: range.to }, signal),
-  });
+  const rest = read.query;
+  const failed = read.errors.inSection(read.readKey);
   const pushedKpi = useLiveAlarmKpi(key);
   const config = useAlarmConfig();
   const per = windowLabel(config?.kpi.windowMs);
@@ -480,7 +547,7 @@ function BucketTable({
   const title = bucket === 'hour' ? 'Hours of the shift' : 'Shifts of the last week';
   return (
     <div className="flex flex-col gap-4">
-      {bucket === 'hour' && !rest.isError ? (
+      {bucket === 'hour' && !failed ? (
         <EChart
           testId="kpi-hourly"
           title={`Raises and peak per ${per}, by hour`}
@@ -505,11 +572,9 @@ function BucketTable({
         title={title}
         status={<SectionFinality buckets={listed} testId="kpi-buckets-finality" />}
       >
-        {rest.isError ? (
-          <QueryError what="the buckets" error={rest.error} onRetry={() => void rest.refetch()} />
-        ) : null}
+        <SectionError errors={read.errors} readKey={read.readKey} />
         <div data-testid="kpi-buckets" data-bucket={bucket} className="flex flex-col gap-2">
-          {rest.isError ? null : (
+          {failed ? null : (
             <DataTable
               caption={`Alarm KPIs per ${bucket === 'hour' ? 'hour of the shift' : 'shift of the last week'}`}
               testId="kpi-bucket-table"
@@ -527,7 +592,8 @@ function BucketTable({
               }
               density="compact"
               loading={
-                rest.isPending
+                // A failed read waits here while the screen's other reads are on their way.
+                rest.data === undefined
                   ? `Loading the ${bucket === 'hour' ? 'hours' : 'shifts'}…`
                   : undefined
               }
@@ -616,18 +682,17 @@ function FloodTable({
   range,
   live,
   name,
+  read,
 }: {
   readonly scope: AlarmScopeRef;
   readonly range: Range;
   readonly live: boolean;
   readonly name: (id: string) => string;
+  readonly read: DetailRead<Awaited<ReturnType<typeof getFloods>>>;
 }) {
   const key = scopeKey(scope);
   const queryKey = queryKeys.alarmFloods(key, range.from, range.to);
-  const floods = useQuery({
-    queryKey,
-    queryFn: ({ signal }) => getFloods({ ...scope, ...range }, signal),
-  });
+  const floods = read.query;
   useThrottledReread(useLiveAlarmKpi(key), queryKey, live);
   const { clock } = usePlantClock();
   return (
@@ -638,8 +703,8 @@ function FloodTable({
       description="Sliding windows with more raises than the flood threshold."
       className="min-w-0"
     >
-      {floods.isError ? (
-        <QueryError what="the floods" error={floods.error} onRetry={() => void floods.refetch()} />
+      {read.errors.inSection(read.readKey) ? (
+        <SectionError errors={read.errors} readKey={read.readKey} />
       ) : (
         <DataTable
           caption="Sliding flood episodes in the shift"
@@ -652,7 +717,7 @@ function FloodTable({
           rowTone={(episode) => (episode.endAt === null ? 'alarm' : undefined)}
           density="compact"
           narrow="stack"
-          loading={floods.isPending ? 'Loading flood episodes…' : undefined}
+          loading={floods.data === undefined ? 'Loading flood episodes…' : undefined}
           empty={
             <div className="px-4">
               <EmptyState size="inline" icon="check" title="No flood in this shift" />
@@ -702,18 +767,17 @@ function BadActorTable({
   range,
   live,
   name,
+  read,
 }: {
   readonly scope: AlarmScopeRef;
   readonly range: Range;
   readonly live: boolean;
   readonly name: (id: string) => string;
+  readonly read: DetailRead<Awaited<ReturnType<typeof getBadActors>>>;
 }) {
   const key = scopeKey(scope);
   const queryKey = queryKeys.badActors(key, range.from, range.to);
-  const actors = useQuery({
-    queryKey,
-    queryFn: ({ signal }) => getBadActors({ ...scope, ...range }, signal),
-  });
+  const actors = read.query;
   useThrottledReread(useLiveAlarmKpi(key), queryKey, live);
   const rows = (actors.data?.actors ?? []).map((actor, index) => ({ actor, rank: index + 1 }));
   return (
@@ -724,12 +788,8 @@ function BadActorTable({
       description="The alarm points with the most raises in the shift, most first."
       className="min-w-0"
     >
-      {actors.isError ? (
-        <QueryError
-          what="the bad actors"
-          error={actors.error}
-          onRetry={() => void actors.refetch()}
-        />
+      {read.errors.inSection(read.readKey) ? (
+        <SectionError errors={read.errors} readKey={read.readKey} />
       ) : (
         <DataTable
           caption="Alarm points with the most raises in the shift, most first"
@@ -741,7 +801,7 @@ function BadActorTable({
           rowProps={({ actor }) => ({ 'data-raises': String(actor.raises) })}
           density="compact"
           narrow="stack"
-          loading={actors.isPending ? 'Loading bad actors…' : undefined}
+          loading={actors.data === undefined ? 'Loading bad actors…' : undefined}
           empty={
             <div className="px-4">
               <EmptyState size="inline" icon="check" title="No alarm in this shift" />
@@ -770,18 +830,17 @@ function OperatorMeasures({
   range,
   live,
   name,
+  read,
 }: {
   readonly scope: AlarmScopeRef;
   readonly range: Range;
   readonly live: boolean;
   readonly name: (id: string) => string;
+  readonly read: DetailRead<Awaited<ReturnType<typeof getOperatorKpi>>>;
 }) {
   const key = scopeKey(scope);
   const queryKey = queryKeys.operatorKpi(key, range.from, range.to);
-  const measures = useQuery({
-    queryKey,
-    queryFn: ({ signal }) => getOperatorKpi({ ...scope, bucket: 'range', ...range }, signal),
-  });
+  const measures = read.query;
   // Acknowledgements and shelves change them; they come on the `alarms` topic.
   useThrottledReread(useLiveAlarms()?.seq, queryKey, live);
   const bucket = measures.data?.buckets[0];
@@ -805,14 +864,10 @@ function OperatorMeasures({
       }
       description="From the MES only, not reconciled with the ground truth: they depend on what operators do."
     >
-      {measures.isError ? (
-        <QueryError
-          what="the operator measures"
-          error={measures.error}
-          onRetry={() => void measures.refetch()}
-        />
+      <SectionError errors={read.errors} readKey={read.readKey} />
+      {measures.data === undefined && !read.errors.inSection(read.readKey) ? (
+        <Skeleton shape="text" label="Loading operator measures…" />
       ) : null}
-      {measures.isPending ? <Skeleton shape="text" label="Loading operator measures…" /> : null}
       {measures.isSuccess && !bucket ? (
         <EmptyState size="inline" icon="info" title="No operator measures for this shift yet" />
       ) : null}
@@ -945,6 +1000,27 @@ export function AlarmKpi() {
 
   const focusName = focus ? (focus.scope === 'equipment' ? machineName(focus.id) : focus.name) : '';
 
+  // The details' reads, here so the screen says one error when all of its reads failed (#394).
+  const detailScope = range ? focus : undefined;
+  const bucketsRead = useBucketsRead(detailScope, bucket, bucket === 'hour' ? range : week);
+  const floodsRead = useFloodsRead(detailScope, range);
+  const actorsRead = useBadActorsRead(detailScope, range);
+  const operatorRead = useOperatorRead(detailScope, range);
+  const errors = screenErrors([
+    selectionRead(selection),
+    queryRead('the alarm scopes', scopes, 'base'),
+    ...cards
+      .map((scope, index) => {
+        const read = cardReads[index];
+        return read ? queryRead('the KPIs', read, 'section', `card:${scopeKey(scope)}`) : undefined;
+      })
+      .filter((read) => read !== undefined),
+    queryRead('the buckets', bucketsRead, 'section'),
+    queryRead('the floods', floodsRead, 'section'),
+    queryRead('the bad actors', actorsRead, 'section'),
+    queryRead('the operator measures', operatorRead, 'section'),
+  ]);
+
   return (
     <section aria-labelledby="alarm-kpi-title">
       <PageHeader
@@ -970,16 +1046,7 @@ export function AlarmKpi() {
         }
       />
       {selection.pending ? <Skeleton shape="card" label="Loading shifts…" /> : null}
-      {selection.error ? (
-        <QueryError what="the shifts" error={selection.error} onRetry={selection.retry} />
-      ) : null}
-      {scopes.isError ? (
-        <QueryError
-          what="the alarm scopes"
-          error={scopes.error}
-          onRetry={() => void scopes.refetch()}
-        />
-      ) : null}
+      <ScreenError errors={errors} className="mb-6" />
       {!selection.pending && !selection.error && shiftKey !== undefined && !range ? (
         <Card padding="compact">
           <EmptyState
@@ -1002,7 +1069,7 @@ export function AlarmKpi() {
         <Skeleton shape="card" label="Loading the alarm scopes…" />
       ) : null}
 
-      {range && shiftKey && scopes.data ? (
+      {range && shiftKey && scopes.data && !errors.whole ? (
         <Section
           id="kpi-scopes-title"
           title="Plant and operator positions"
@@ -1023,10 +1090,9 @@ export function AlarmKpi() {
                     scope={scope}
                     bucket={cardBuckets[index]}
                     read={{
-                      isError: read?.isError ?? false,
-                      error: read?.error,
+                      isError: errors.inSection(`card:${scopeKey(scope)}`),
                       loaded: read?.data !== undefined,
-                      retry: () => void read?.refetch(),
+                      error: <SectionError errors={errors} readKey={`card:${scopeKey(scope)}`} />,
                     }}
                     finality={cardFinality}
                     config={config}
@@ -1039,7 +1105,7 @@ export function AlarmKpi() {
         </Section>
       ) : null}
 
-      {range && focus ? (
+      {range && focus && !errors.whole ? (
         <Section
           id="kpi-details-title"
           title={`Details: ${focusName}`}
@@ -1092,6 +1158,7 @@ export function AlarmKpi() {
                 range={range}
                 clockHour={clockHour}
                 live={live}
+                read={{ query: bucketsRead, errors, readKey: 'the buckets' }}
               />
             ) : week === undefined ? (
               <Card padding="compact">
@@ -1108,18 +1175,37 @@ export function AlarmKpi() {
                 range={week}
                 clockHour={undefined}
                 live={live}
+                read={{ query: bucketsRead, errors, readKey: 'the buckets' }}
               />
             )}
             <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
               {/* Each in its own cell, so each section is the first of its kind (no top margin). */}
               <div className="min-w-0">
-                <FloodTable scope={focus} range={range} live={live} name={machineName} />
+                <FloodTable
+                  scope={focus}
+                  range={range}
+                  live={live}
+                  name={machineName}
+                  read={{ query: floodsRead, errors, readKey: 'the floods' }}
+                />
               </div>
               <div className="min-w-0">
-                <BadActorTable scope={focus} range={range} live={live} name={machineName} />
+                <BadActorTable
+                  scope={focus}
+                  range={range}
+                  live={live}
+                  name={machineName}
+                  read={{ query: actorsRead, errors, readKey: 'the bad actors' }}
+                />
               </div>
             </div>
-            <OperatorMeasures scope={focus} range={range} live={live} name={machineName} />
+            <OperatorMeasures
+              scope={focus}
+              range={range}
+              live={live}
+              name={machineName}
+              read={{ query: operatorRead, errors, readKey: 'the operator measures' }}
+            />
           </div>
         </Section>
       ) : null}

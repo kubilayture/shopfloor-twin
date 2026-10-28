@@ -26,6 +26,7 @@ import {
 } from '../api/quality.ts';
 import { useCan, useUnsavedDraft } from '../auth/auth.tsx';
 import { QueryError } from '../components/query-error.tsx';
+import { ScreenError, SectionError, queryRead, screenErrors } from '../components/screen-error.tsx';
 import {
   CommentInput,
   FailureMessage,
@@ -641,6 +642,16 @@ export function HoldOpen() {
       }
     },
   });
+  // One error for the form's reads (#394): the suggested scope and the reasons both failed, or the
+  // reasons failed without a suggestion to read, is one error at the top of the form; otherwise
+  // each says its own in place. An unknown episode (404) is an answer, said by its own callout.
+  const unknownEpisode = suggestion.error instanceof ApiError && suggestion.error.status === 404;
+  const errors = screenErrors([
+    ...(fromSignal !== undefined && !unknownEpisode
+      ? [queryRead('the suggested scope', suggestion, 'section')]
+      : []),
+    queryRead('the hold reasons', reasons, 'section'),
+  ]);
   const subjectsToOpen = (): HoldSubjectDto[] | string[] => {
     if (fromSignal !== undefined) {
       const offered = suggestion.data ? suggestedSubjects(suggestion.data) : [];
@@ -684,20 +695,19 @@ export function HoldOpen() {
           write.mutate({ subjects: subjects as HoldSubjectDto[], confirmed: false });
         }}
       >
+        <ScreenError errors={errors} />
         {fromSignal !== undefined ? (
           suggestion.isPending ? (
             <Skeleton shape="text" rows={3} label="Loading the episode’s suggested scope…" />
           ) : suggestion.isError ? (
-            suggestion.error instanceof ApiError && suggestion.error.status === 404 ? (
+            unknownEpisode ? (
               <Callout tone="alarm" role="alert" data-testid="hold-suggestion-missing">
                 Episode {fromSignal} is unknown or withdrawn: it suggests no scope.
               </Callout>
-            ) : (
-              <QueryError
-                what="the suggested scope"
-                error={suggestion.error}
-                onRetry={() => void suggestion.refetch()}
-              />
+            ) : errors.inSection('the suggested scope') ? (
+              <SectionError errors={errors} readKey="the suggested scope" />
+            ) : errors.summary.length > 0 ? null : (
+              <Skeleton shape="text" rows={3} label="Loading the episode’s suggested scope…" />
             )
           ) : (
             <Suggestion
@@ -755,13 +765,7 @@ export function HoldOpen() {
             </option>
           ))}
         </Select>
-        {reasons.isError ? (
-          <QueryError
-            what="the hold reasons"
-            error={reasons.error}
-            onRetry={() => void reasons.refetch()}
-          />
-        ) : null}
+        <SectionError errors={errors} readKey="the hold reasons" />
         <CommentInput
           id={commentId}
           label="Comment"

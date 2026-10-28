@@ -621,3 +621,33 @@ it('flags a date without a time on the optional At and From, instead of sending 
   expect(screen.getByTestId<HTMLDialogElement>('confirm-failure').open).toBe(true);
   expect(sim.calls.filter((c) => c.method !== 'GET')).toEqual([]);
 });
+
+it('says one error when the simulator is down, each section quietly, one retry for all (#394)', async () => {
+  const sim = fakeSim();
+  let down = true;
+  vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : String(input), 'http://localhost');
+    if (down && url.pathname.startsWith('/sim/api/v1/')) {
+      return new Response('Bad Gateway', { status: 502 });
+    }
+    return sim.fetch(input, init);
+  });
+  await renderApp('/console', { session: ADMIN });
+  const alert = await screen.findByRole('alert');
+  // The machines (the MES's) loaded: the sections are drawn, the one error names the rest.
+  expect(alert.textContent).toContain(
+    'Could not load the run, the timelines, the lots, the operators, the actions, the failure injections and the drifts.',
+  );
+  expect(screen.getAllByRole('alert')).toEqual([alert]);
+  const lots = screen.getByTestId('console-lots');
+  expect(lots.querySelector('[data-error]')?.getAttribute('data-error')).toBe('quiet');
+  expect(within(lots).queryByRole('button', { name: 'Try again' })).toBeNull();
+
+  down = false;
+  fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
+  await waitFor(() => {
+    expect(screen.getByTestId('sim-state').dataset.state).toBe('idle');
+  });
+  expect(await screen.findByTestId('lot-BL100-2610-01')).toBeTruthy();
+  expect(screen.queryByRole('alert')).toBeNull();
+});

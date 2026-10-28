@@ -17,7 +17,13 @@ import {
   ratioStat,
   type GroupFinality,
 } from '../components/oee-ui.tsx';
-import { QueryError } from '../components/query-error.tsx';
+import {
+  ScreenError,
+  SectionError,
+  queryRead,
+  screenErrors,
+  type ScreenErrors,
+} from '../components/screen-error.tsx';
 import { Callout } from '../components/ui/callout.tsx';
 import { Card } from '../components/ui/card.tsx';
 import { Code } from '../components/ui/code.tsx';
@@ -226,9 +232,12 @@ function hourColumns(
 function LineHours({
   hours,
   read,
+  errors,
 }: {
   readonly hours: readonly LineBucketDto[];
   readonly read: LineOeeView['hoursRead'];
+  /** The card's reads (#394): whether, and how, this one's failure is said here. */
+  readonly errors: ScreenErrors;
 }) {
   // E-01: the hours without planned line time (the rest of a running shift, an idle hour) are
   // counted, not listed as rows of dashes.
@@ -245,13 +254,9 @@ function LineHours({
       }
       defaultOpen
     >
-      {read.isError ? (
-        <QueryError
-          what="the hourly line OEE"
-          error={read.error}
-          onRetry={() => void read.refetch()}
-        />
-      ) : read.isPending && hours.length === 0 ? (
+      {errors.inSection('the hourly line OEE') ? (
+        <SectionError errors={errors} readKey="the hourly line OEE" />
+      ) : read.data === undefined && hours.length === 0 ? (
         <Skeleton shape="table" rows={3} label="Loading hours…" />
       ) : (
         <div className="flex flex-col gap-2">
@@ -356,6 +361,14 @@ export function LineOeeCard({
 }) {
   const { shift, shiftRead } = view;
   const idle = shift?.oee === null;
+  // Both of the card's reads failed: one error for the card (#394), not one per read.
+  const errors = screenErrors([
+    queryRead('the line OEE', shiftRead, 'section'),
+    queryRead('the hourly line OEE', view.hoursRead, 'section'),
+  ]);
+  // Failed, and not said yet: the other read is still on its way.
+  const shiftWaits =
+    shiftRead.isError && errors.summary.length === 0 && !errors.inSection('the line OEE');
   return (
     <Card
       as="article"
@@ -371,13 +384,8 @@ export function LineOeeCard({
     >
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)]">
         <div className="flex min-w-0 flex-col gap-3">
-          {shiftRead.isError ? (
-            <QueryError
-              what="the line OEE"
-              error={shiftRead.error}
-              onRetry={() => void shiftRead.refetch()}
-            />
-          ) : null}
+          <ScreenError errors={errors} />
+          <SectionError errors={errors} readKey="the line OEE" />
           {shift && !idle ? (
             <LineFigures shift={shift} />
           ) : shift && idle ? (
@@ -407,7 +415,7 @@ export function LineOeeCard({
               />
               <StatusFlags flags={lineFlags(shift)} />
             </>
-          ) : shiftRead.isPending ? (
+          ) : shiftRead.isPending || shiftWaits ? (
             <Skeleton shape="stat" label="Loading the line OEE…" />
           ) : shiftRead.isError ? null : (
             <EmptyState
@@ -421,7 +429,9 @@ export function LineOeeCard({
         </div>
         <div className="flex min-w-0 flex-col gap-4">
           <Bottlenecks bottlenecks={view.bottlenecks} equipment={equipment} />
-          <LineHours hours={view.hours} read={view.hoursRead} />
+          {errors.whole ? null : (
+            <LineHours hours={view.hours} read={view.hoursRead} errors={errors} />
+          )}
         </div>
       </div>
     </Card>

@@ -12,6 +12,10 @@ import { Icon } from './icons.tsx';
  * gone (#343 review): one line, not announced, no retry (the reads run again by themselves when
  * the connection is back), so an offline screen with five failed reads raises one alert, the
  * bar's, instead of six.
+ *
+ * `failures` is for one error that stands for several failed reads (#394, `ScreenError`): `what`
+ * names them all, each read's detail is said once (one line when they all say the same, else one
+ * line per read), and "Try again" is offered when a retry can fix any of them.
  */
 export interface ErrorStateProps {
   readonly what: string;
@@ -19,6 +23,13 @@ export interface ErrorStateProps {
   readonly onRetry?: (() => void) | undefined;
   readonly quiet?: boolean;
   readonly testId?: string | undefined;
+  readonly failures?: readonly Failure[] | undefined;
+}
+
+/** One failed read of several: what it is ("the equipment") and how it failed. */
+export interface Failure {
+  readonly what: string;
+  readonly error: unknown;
 }
 
 /** The HTTP status of an API or console error (0: no answer), when the error carries one. */
@@ -52,8 +63,46 @@ export function errorDetail(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown error';
 }
 
-export function ErrorState({ what, error, onRetry, quiet = false, testId }: ErrorStateProps) {
-  const detail = errorDetail(error);
+/**
+ * What the reads' errors say, each once: one entry when every read says the same (`what` left
+ * out), else one per read and distinct detail, named by its read.
+ */
+export function failureDetails(
+  failures: readonly Failure[],
+): readonly { readonly what?: string; readonly detail: string }[] {
+  const details = failures.map((failure) => ({
+    what: failure.what,
+    detail: errorDetail(failure.error),
+  }));
+  if (new Set(details.map((entry) => entry.detail)).size <= 1) {
+    return details.slice(0, 1).map(({ detail }) => ({ detail }));
+  }
+  const seen = new Set<string>();
+  return details.filter(({ what, detail }) => {
+    const key = `${what}\u0000${detail}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+const capitalised = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
+
+export function ErrorState({
+  what,
+  error,
+  onRetry,
+  quiet = false,
+  testId,
+  failures,
+}: ErrorStateProps) {
+  const all = failures !== undefined && failures.length > 0 ? failures : [{ what, error }];
+  const details = failureDetails(all);
+  const detail = details
+    .map((entry) =>
+      entry.what === undefined ? entry.detail : `${capitalised(entry.what)}: ${entry.detail}`,
+    )
+    .join('; ');
   if (quiet) {
     return (
       <p
@@ -76,8 +125,18 @@ export function ErrorState({ what, error, onRetry, quiet = false, testId }: Erro
       data-error="shown"
       title={`Could not load ${what}.`}
     >
-      <p className="text-ink-secondary">{detail}</p>
-      {onRetry && isRetryable(error) ? (
+      {details.length === 1 ? (
+        <p className="text-ink-secondary">{detail}</p>
+      ) : (
+        <ul className="flex flex-col gap-0.5 text-ink-secondary">
+          {details.map((entry) => (
+            <li key={`${entry.what ?? ''}|${entry.detail}`}>
+              <span className="text-ink">{capitalised(entry.what ?? '')}:</span> {entry.detail}
+            </li>
+          ))}
+        </ul>
+      )}
+      {onRetry && all.some((failure) => isRetryable(failure.error)) ? (
         <Button variant="secondary" size="sm" className="mt-2" onClick={onRetry}>
           Try again
         </Button>

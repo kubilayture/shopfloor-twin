@@ -29,6 +29,12 @@ import {
   type GroupFinality,
 } from '../components/oee-ui.tsx';
 import { QueryError } from '../components/query-error.tsx';
+import {
+  ScreenError,
+  queryRead,
+  screenErrors,
+  selectionRead,
+} from '../components/screen-error.tsx';
 import { ShiftPicker, ShiftSpan, useShiftSelection } from '../components/shift-picker.tsx';
 import { Badge } from '../components/ui/badge.tsx';
 import { Callout } from '../components/ui/callout.tsx';
@@ -856,6 +862,13 @@ export function OeeDashboard() {
     bottleneck: bottlenecks.has(rest.id),
   }));
   const machineFinality = groupFinality(machineRows.map((row) => row.bucket));
+  // One error for the screen's own reads (#394); the sections' reads (the line, the hours, the
+  // Pareto) run once the shift's OEE is in, and say their own failures.
+  const errors = screenErrors([
+    selectionRead(selection),
+    queryRead('the equipment', equipment, 'base'),
+    queryRead("the shift's OEE", shiftOee, 'main'),
+  ]);
 
   return (
     <section aria-labelledby="oee-title">
@@ -882,9 +895,7 @@ export function OeeDashboard() {
         }
       />
       {selection.pending ? <Skeleton shape="card" label="Loading shifts…" /> : null}
-      {selection.error ? (
-        <QueryError what="the shifts" error={selection.error} onRetry={selection.retry} />
-      ) : null}
+      <ScreenError errors={errors} className="mb-6" />
       {!selection.pending && shiftKey === undefined && !selection.error ? (
         <Card padding="compact">
           <EmptyState
@@ -893,20 +904,6 @@ export function OeeDashboard() {
             body="No shift yet: the plant clock has not started."
           />
         </Card>
-      ) : null}
-      {equipment.isError ? (
-        <QueryError
-          what="the equipment"
-          error={equipment.error}
-          onRetry={() => void equipment.refetch()}
-        />
-      ) : null}
-      {shiftOee.isError ? (
-        <QueryError
-          what="the shift's OEE"
-          error={shiftOee.error}
-          onRetry={() => void shiftOee.refetch()}
-        />
       ) : null}
       {shiftOee.isPending && shiftKey !== undefined ? (
         <Skeleton shape="card" label="Loading OEE…" />

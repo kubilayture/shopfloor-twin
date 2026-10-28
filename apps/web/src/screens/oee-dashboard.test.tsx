@@ -613,4 +613,60 @@ describe('OEE dashboard', () => {
     await renderApp('/oee');
     expect(await screen.findByText(/plant clock has not started/)).toBeTruthy();
   });
+
+  it('says one error when every read of the screen fails, and one retry reads them all (#394)', async () => {
+    let down = true;
+    const up = api();
+    const asked: string[] = [];
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(requestUrl(input), 'http://localhost').pathname;
+      asked.push(path);
+      return down && path !== '/api/v1/plant' && path !== '/api/v1/session'
+        ? Promise.resolve(problem(503, 'Service Unavailable', 'database down', path))
+        : up(input, init);
+    });
+    await renderApp(`/oee?shift=${SHIFT_KEY}`);
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain(
+      "Could not load the shifts, the equipment and the shift's OEE.",
+    );
+    expect(screen.getAllByRole('alert')).toEqual([alert]);
+    expect(within(alert).getAllByText(/database down/)).toHaveLength(1);
+    expect(screen.queryByText(/^Could not load /, { selector: 'p' })).toBe(
+      within(alert).getByText(/^Could not load /),
+    );
+
+    down = false;
+    asked.length = 0;
+    fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByTestId('oee-card-cell-m1')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    for (const path of [
+      '/api/v1/shifts/current',
+      '/api/v1/equipment',
+      `/api/v1/shifts/${SHIFT_KEY}/oee`,
+    ]) {
+      expect(asked).toContain(path);
+    }
+  });
+
+  it('says one error in the line card when both of its reads fail (#394)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      api({
+        '/api/v1/oee/line': () =>
+          problem(503, 'Service Unavailable', 'line OEE is not available', '/api/v1/oee/line'),
+      }),
+    );
+    await renderApp('/oee');
+    const card = await screen.findByTestId('line-oee-card');
+    await waitFor(() => {
+      expect(within(card).getByRole('alert').textContent).toContain(
+        'Could not load the line OEE and the hourly line OEE.',
+      );
+    });
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    // Nothing of the card loaded: the hours are not drawn under the error (no skeleton for ever).
+    expect(within(card).queryByText(/Line OEE per hour/)).toBeNull();
+  });
 });

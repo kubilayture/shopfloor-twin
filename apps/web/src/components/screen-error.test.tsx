@@ -1,0 +1,331 @@
+import { fireEvent, render, screen, within } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import { ApiError } from '../api/client.ts';
+import {
+  ScreenError,
+  SectionError,
+  namesText,
+  queryRead,
+  screenErrors,
+  selectionRead,
+  type ReadKind,
+  type ScreenRead,
+} from './screen-error.tsx';
+
+/** #394: one error for a screen whose reads failed, a section's own only when the rest loaded. */
+
+const unavailable = (detail = 'database down') =>
+  new ApiError(`Service Unavailable: ${detail}`, 503);
+
+function read(
+  key: string,
+  kind: ReadKind,
+  state: 'idle' | 'loading' | 'failed' | 'loaded' | 'stale',
+  error: unknown = unavailable(),
+): ScreenRead {
+  return {
+    key,
+    what: `the ${key}`,
+    kind,
+    failed: state === 'failed' || state === 'stale',
+    error: state === 'failed' || state === 'stale' ? error : null,
+    hasData: state === 'loaded' || state === 'stale',
+    loading: state === 'loading',
+    retry: vi.fn(),
+  };
+}
+
+const keys = (reads: readonly ScreenRead[]) => reads.map((r) => r.key);
+
+describe('screenErrors', () => {
+  it('names every failed read once when nothing loaded, the whole screen', () => {
+    const errors = screenErrors([
+      read('shifts', 'base', 'failed'),
+      read('equipment', 'base', 'loaded'),
+      read('oee', 'main', 'failed'),
+      read('hours', 'section', 'failed'),
+      read('pareto', 'section', 'idle'),
+    ]);
+    expect(keys(errors.summary)).toEqual(['shifts', 'oee', 'hours']);
+    expect(errors.whole).toBe(true);
+    // A section of a screen that did not load says nothing of its own.
+    expect(errors.inSection('hours')).toBe(false);
+    expect(errors.section('hours')).toBeUndefined();
+  });
+
+  it('says nothing while nothing loaded and a read is still on its way', () => {
+    const errors = screenErrors([read('shifts', 'base', 'failed'), read('oee', 'main', 'loading')]);
+    expect(errors.summary).toEqual([]);
+    expect(errors.whole).toBe(false);
+    expect(errors.inSection('shifts')).toBe(false);
+  });
+
+  it('lets the one failed section of a loaded screen say it itself', () => {
+    const errors = screenErrors([
+      read('oee', 'main', 'loaded'),
+      read('hours', 'section', 'failed'),
+      read('pareto', 'section', 'loaded'),
+      // Still on its way: the screen loaded, so the failure is said at once.
+      read('line', 'section', 'loading'),
+    ]);
+    expect(errors.summary).toEqual([]);
+    expect(errors.whole).toBe(false);
+    expect(errors.inSection('hours')).toBe(true);
+    expect(errors.section('hours')?.own).toBe(true);
+    expect(errors.inSection('pareto')).toBe(false);
+  });
+
+  it('names several failures of a loaded screen in one error, the sections quietly', () => {
+    const errors = screenErrors([
+      read('oee', 'main', 'loaded'),
+      read('hours', 'section', 'failed'),
+      read('pareto', 'section', 'failed'),
+    ]);
+    expect(keys(errors.summary)).toEqual(['hours', 'pareto']);
+    expect(errors.whole).toBe(false);
+    expect(errors.section('hours')?.own).toBe(false);
+    expect(errors.section('pareto')?.own).toBe(false);
+  });
+
+  it('names a failed screen read with the screen loaded, never in a section', () => {
+    const errors = screenErrors([
+      read('oee', 'main', 'failed'),
+      read('hours', 'section', 'loaded'),
+    ]);
+    expect(keys(errors.summary)).toEqual(['oee']);
+    expect(errors.whole).toBe(false);
+    expect(errors.inSection('oee')).toBe(false);
+    const base = screenErrors([read('reasons', 'base', 'failed'), read('list', 'main', 'loaded')]);
+    expect(keys(base.summary)).toEqual(['reasons']);
+  });
+
+  it('counts a base answer alone as nothing loaded', () => {
+    const errors = screenErrors([
+      read('scopes', 'base', 'loaded'),
+      read('kpis', 'section', 'failed'),
+      read('floods', 'section', 'failed'),
+    ]);
+    expect(keys(errors.summary)).toEqual(['kpis', 'floods']);
+    expect(errors.whole).toBe(true);
+    // One failed section with only a base read in is the whole screen's error too.
+    const one = screenErrors([read('scopes', 'base', 'loaded'), read('kpis', 'section', 'failed')]);
+    expect(keys(one.summary)).toEqual(['kpis']);
+    expect(one.whole).toBe(true);
+    expect(one.inSection('kpis')).toBe(false);
+  });
+
+  it('counts an earlier answer kept by a failed read as loaded', () => {
+    const errors = screenErrors([
+      read('list', 'section', 'stale'),
+      read('other', 'section', 'loaded'),
+    ]);
+    expect(errors.summary).toEqual([]);
+    expect(errors.section('list')?.own).toBe(true);
+  });
+
+  it('is empty when nothing failed', () => {
+    const errors = screenErrors([read('a', 'main', 'loaded'), read('b', 'section', 'idle')]);
+    expect(errors.summary).toEqual([]);
+    expect(errors.whole).toBe(false);
+  });
+});
+
+describe('queryRead and selectionRead', () => {
+  const query = (over: Partial<Parameters<typeof queryRead>[1]>) => ({
+    status: 'pending' as const,
+    fetchStatus: 'fetching' as const,
+    data: undefined,
+    error: null,
+    refetch: vi.fn(),
+    ...over,
+  });
+
+  it('reads a query: loading, disabled, failed, loaded, a failed read again', () => {
+    expect(queryRead('the x', query({}), 'main')).toMatchObject({
+      key: 'the x',
+      what: 'the x',
+      kind: 'main',
+      loading: true,
+      failed: false,
+      hasData: false,
+    });
+    expect(queryRead('the x', query({ fetchStatus: 'idle' }), 'main', 'k')).toMatchObject({
+      key: 'k',
+      loading: false,
+      failed: false,
+    });
+    const error = unavailable();
+    expect(
+      queryRead('the x', query({ status: 'error', fetchStatus: 'idle', error }), 'section'),
+    ).toMatchObject({ failed: true, error, loading: false, hasData: false });
+    expect(
+      queryRead('the x', query({ status: 'success', fetchStatus: 'idle', data: [] }), 'section'),
+    ).toMatchObject({ failed: false, hasData: true, loading: false });
+    // Read again after a failure: still failed until the answer comes.
+    expect(
+      queryRead('the x', query({ status: 'error', fetchStatus: 'fetching', error }), 'section'),
+    ).toMatchObject({ failed: true, loading: false });
+    const refetch = vi.fn();
+    queryRead('the x', query({ refetch }), 'main').retry();
+    expect(refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads the shift picker as the screen’s base', () => {
+    const retry = vi.fn();
+    expect(selectionRead({ pending: true, error: null, current: undefined, retry })).toMatchObject({
+      key: 'the shifts',
+      what: 'the shifts',
+      kind: 'base',
+      loading: true,
+      failed: false,
+      hasData: false,
+    });
+    const error = unavailable();
+    const failed = selectionRead({ pending: false, error, current: undefined, retry });
+    expect(failed).toMatchObject({ failed: true, error, loading: false });
+    failed.retry();
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(
+      selectionRead({ pending: false, error: undefined, current: { shift: null }, retry }),
+    ).toMatchObject({ failed: false, hasData: true });
+    // The current shift failed while it was first read: failed, not loading.
+    expect(selectionRead({ pending: true, error, current: undefined, retry }).loading).toBe(false);
+  });
+});
+
+describe('namesText', () => {
+  it('names each read once, in order', () => {
+    expect(namesText([])).toBe('');
+    expect(namesText(['the shifts'])).toBe('the shifts');
+    expect(namesText(['the shifts', 'the equipment'])).toBe('the shifts and the equipment');
+    expect(namesText(['a', 'b', 'a', 'c'])).toBe('a, b and c');
+  });
+});
+
+describe('ScreenError', () => {
+  it('is one alert naming every failed read, the shared detail once, one retry for all', () => {
+    const reads = [
+      read('shifts', 'base', 'failed'),
+      read('equipment', 'base', 'failed'),
+      read('oee', 'main', 'failed'),
+    ];
+    const before = document.activeElement;
+    render(<ScreenError errors={screenErrors(reads)} testId="screen-error" />);
+    const alert = screen.getByRole('alert');
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(alert.dataset.testid).toBe('screen-error');
+    expect(alert.dataset.error).toBe('shown');
+    expect(alert.className).toContain('bg-alarm-soft');
+    expect(
+      within(alert).getByText('Could not load the shifts, the equipment and the oee.'),
+    ).toBeTruthy();
+    expect(within(alert).getAllByText('Service Unavailable: database down')).toHaveLength(1);
+    expect(within(alert).queryByRole('list')).toBeNull();
+    // Announced, not focused: as ErrorState.
+    expect(document.activeElement).toBe(before);
+    expect(
+      within(alert)
+        .getAllByRole('button')
+        .map((b) => b.textContent),
+    ).toEqual(['Try again']);
+    fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
+    for (const r of reads) expect(r.retry).toHaveBeenCalledTimes(1);
+  });
+
+  it('lists each read’s own detail when they differ, and dedupes reads that share a name', () => {
+    const reads = [
+      { ...read('kpi-a', 'section', 'failed', unavailable('busy')), what: 'the KPIs' },
+      { ...read('kpi-b', 'section', 'failed', unavailable('busy')), what: 'the KPIs' },
+      read('floods', 'section', 'failed', new ApiError('Bad Request: no scope', 400)),
+    ];
+    render(<ScreenError errors={screenErrors(reads)} />);
+    const alert = screen.getByRole('alert');
+    expect(within(alert).getByText('Could not load the KPIs and the floods.')).toBeTruthy();
+    const items = within(within(alert).getByRole('list')).getAllByRole('listitem');
+    expect(items.map((item) => item.textContent)).toEqual([
+      'The KPIs: Service Unavailable: busy',
+      'The floods: Bad Request: no scope',
+    ]);
+    // A retry can fix one of them: offered, and it reads every one again.
+    fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
+    for (const r of reads) expect(r.retry).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers no retry when none can help, and draws nothing without a failure', () => {
+    const refused = new ApiError('Forbidden: no', 403);
+    const { rerender, container } = render(
+      <ScreenError
+        errors={screenErrors([
+          read('a', 'main', 'failed', refused),
+          read('b', 'main', 'failed', refused),
+        ])}
+      />,
+    );
+    expect(screen.getByRole('alert').textContent).toContain('Could not load the a and the b.');
+    expect(screen.queryByRole('button')).toBeNull();
+    // Its frame (the page's spacing) only with an error.
+    rerender(
+      <ScreenError
+        errors={screenErrors([read('a', 'main', 'failed', refused)])}
+        className="mb-6"
+      />,
+    );
+    expect(screen.getByRole('alert').parentElement?.className).toBe('mb-6');
+    rerender(<ScreenError errors={screenErrors([read('a', 'main', 'loaded')])} className="mb-6" />);
+    expect(container.innerHTML).toBe('');
+    rerender(<ScreenError errors={screenErrors([read('a', 'main', 'loaded')])} />);
+    expect(container.innerHTML).toBe('');
+    rerender(
+      <ScreenError
+        errors={screenErrors([read('a', 'main', 'failed'), read('b', 'main', 'loading')])}
+      />,
+    );
+    expect(container.innerHTML).toBe('');
+  });
+
+  it('stays an alert for a failure to reach the MES without the offline bar, as QueryError', () => {
+    // Quiet under the bar: `offline.test.tsx` (the alarm list's one quiet line).
+    const unreachable = new ApiError('The MES cannot be reached', 0);
+    render(
+      <ScreenError
+        errors={screenErrors([
+          read('a', 'main', 'failed', unreachable),
+          read('b', 'main', 'failed', unreachable),
+        ])}
+      />,
+    );
+    expect(screen.getByRole('alert').textContent).toContain('Could not load the a and the b.');
+  });
+});
+
+describe('SectionError', () => {
+  it('is the section’s own alert with a retry when it is the screen’s only failure', () => {
+    const failed = read('hours', 'section', 'failed');
+    render(
+      <SectionError
+        errors={screenErrors([read('oee', 'main', 'loaded'), failed])}
+        readKey="hours"
+      />,
+    );
+    const alert = screen.getByRole('alert');
+    expect(alert.textContent).toContain('Could not load the hours.');
+    fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
+    expect(failed.retry).toHaveBeenCalledTimes(1);
+  });
+
+  it('is a quiet line when the screen’s error names it, and nothing when it did not fail', () => {
+    const errors = screenErrors([
+      read('oee', 'main', 'loaded'),
+      read('hours', 'section', 'failed'),
+      read('pareto', 'section', 'failed'),
+    ]);
+    const { container, rerender } = render(<SectionError errors={errors} readKey="hours" />);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button')).toBeNull();
+    const line = container.querySelector('[data-error]');
+    expect(line?.getAttribute('data-error')).toBe('quiet');
+    expect(line?.textContent).toBe('Could not load the hours. Service Unavailable: database down');
+    rerender(<SectionError errors={errors} readKey="oee" />);
+    expect(container.innerHTML).toBe('');
+  });
+});

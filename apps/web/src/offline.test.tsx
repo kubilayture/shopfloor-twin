@@ -25,6 +25,10 @@ function barRefetches(calls: readonly (readonly unknown[])[]): number {
     .filter((f) => f?.type === 'active' && f.predicate?.(errored) === true).length;
 }
 
+/** The alarm list's one error with every read failed (#394). */
+const EVERY_ALARM_READ =
+  'Could not load the active alarms, the acknowledged alarms, the shelved alarms and the alarm points.';
+
 const api = fakeFetch({
   '/api/v1/equipment': () => json({ equipment: EQUIPMENT }),
   '/api/v1/plant': () => json(PLANT),
@@ -84,11 +88,12 @@ describe('offline (#312)', () => {
     });
     await screen.findByText(/Could not load the active alarms/);
     expect(screen.getAllByText(/The MES cannot be reached/).length).toBeGreaterThan(0);
-    // One alert for the outage, the bar's (#317 after #343): the failed reads are quiet lines
-    // without "Try again", not an alert each.
+    // One alert for the outage, the bar's (#317 after #343): the failed reads are one quiet line
+    // without "Try again" (#394: one error for the screen, naming every read), not an alert each.
     await waitFor(() => {
-      expect(screen.getAllByText(/^Could not load /).length).toBeGreaterThan(1);
+      expect(screen.getByText(/^Could not load /).textContent).toBe(EVERY_ALARM_READ);
     });
+    expect(screen.getAllByText(/^Could not load /)).toHaveLength(1);
     expect(screen.getAllByRole('alert')).toEqual([screen.getByTestId('offline-bar')]);
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
     expect(
@@ -204,7 +209,7 @@ describe('offline (#312)', () => {
       void app.queryClient.refetchQueries({ type: 'active' });
     });
     await waitFor(() => {
-      expect(screen.getAllByText(/^Could not load /).length).toBeGreaterThan(1);
+      expect(screen.getByText(/^Could not load /).textContent).toBe(EVERY_ALARM_READ);
     });
     expect(screen.getAllByRole('alert')).toEqual([screen.getByTestId('offline-bar')]);
 
@@ -227,7 +232,7 @@ describe('offline (#312)', () => {
     // second time by the bar (#352 re-review), which keeps its own call for a hung first connect.
     expect(barRefetches(refetch.mock.calls)).toBe(0);
     expect(refetch.mock.calls.length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/^Could not load /).length).toBeGreaterThan(1);
+    expect(screen.getByText(/^Could not load /).textContent).toBe(EVERY_ALARM_READ);
     expect(screen.queryAllByRole('alert')).toEqual([]);
     held = undefined;
     release();
@@ -267,7 +272,7 @@ describe('offline (#312)', () => {
     // The handshake hangs: after 5 s of connecting the bar is up and the reads are quiet.
     await screen.findByTestId('offline-bar', {}, { timeout: 8_000 });
     await waitFor(() => {
-      expect(screen.getAllByText(/^Could not load /).length).toBeGreaterThan(1);
+      expect(screen.getByText(/^Could not load /).textContent).toBe(EVERY_ALARM_READ);
     });
     expect(screen.getAllByRole('alert')).toEqual([screen.getByTestId('offline-bar')]);
     down = false;

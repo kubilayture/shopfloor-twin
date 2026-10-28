@@ -36,6 +36,9 @@ function shownInstance(
   return live && isNewerShift(live, rest) ? live : rest;
 }
 
+/** The note under the list: the "Skip past the shifts" link's target (G-33, UX-F1 #337). */
+const SHIFT_NOTE_ID = 'shift-list-note';
+
 /** Whether a record's revision counters say something (S-01: shown only above 0). */
 const revised = (record: ShiftRecordDto): boolean =>
   record.revision.inputs > 0 || record.revision.content > 0;
@@ -208,6 +211,9 @@ export function ShiftList() {
             'data-current': String(row.current),
           })}
           narrow="stack"
+          // G-33 (UX-F1, #337): 21 shift links in a row; a way past them to the note below.
+          skipToDetails={SHIFT_NOTE_ID}
+          skipLabel="Skip past the shifts"
           empty={
             <EmptyState
               icon="clock"
@@ -219,7 +225,7 @@ export function ShiftList() {
         />
       ) : null}
       {loaded && rows.length > 0 ? (
-        <p className="mt-3 text-sm text-ink-secondary">
+        <p id={SHIFT_NOTE_ID} className="mt-3 text-sm text-ink-secondary">
           A report is final once every input (OEE, downtime, alarm KPIs) is final; its revision
           counts what changed after that.
         </p>

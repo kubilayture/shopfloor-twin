@@ -1,8 +1,14 @@
 import { AxeBuilder } from '@axe-core/playwright';
 import type { Locator, Page } from '@playwright/test';
 import {
+  followsSkip,
   fromAxe,
-  longestTableRun,
+  keyboardCapError,
+  skipTableOf,
+  TAB_PRESS_CAP,
+  tableRuns,
+  type SkipFacts,
+  TABLE_RUN_LIMIT,
   type FocusStop,
   type ImpactCounts,
   type OverlayCheck,
@@ -103,13 +109,36 @@ export async function screenshot(page: Page, path: string, width: number): Promi
   });
 }
 
-/** The focused element as the report shows it; `null` on the body. */
-function focusedNow(): (FocusStop & { onScreen: boolean; covered: boolean }) | null {
+/**
+ * Activates the focused skip link the way the keyboard would: DataTable's (`data-skip-link`) by
+ * its own handler, which focuses the target; any other by focusing its target, so the browser's
+ * hash navigation (and the router) is left alone.
+ */
+function followSkipLink(): void {
+  const link = document.activeElement;
+  if (!(link instanceof HTMLAnchorElement)) return;
+  const target = document.getElementById(
+    decodeURIComponent((link.getAttribute('href') ?? '').slice(1)),
+  );
+  if (link.hasAttribute('data-skip-link')) link.click();
+  if (target instanceof HTMLElement && document.activeElement !== target) target.focus();
+}
+
+/** The focused element as the report shows it, with the facts of a skip link; `null` on the body. */
+function focusedNow():
+  | (Omit<FocusStop, 'skipsTable'> & { onScreen: boolean; covered: boolean; skip: SkipFacts })
+  | null {
   const el = document.activeElement;
   if (!(el instanceof HTMLElement) || el === document.body) return null;
   const cs = getComputedStyle(el);
   const outline = cs.outlineStyle !== 'none' && parseFloat(cs.outlineWidth) > 0;
   const ring = cs.boxShadow !== 'none' && el.matches(':focus-visible');
+  // A ring drawn by a pseudo-element around a larger hit area (the terminal picker's whole-tile
+  // link, UX-7): its `::after` (or `::before`) outline counts.
+  const pseudo = ['::after', '::before'].some((p) => {
+    const ps = getComputedStyle(el, p);
+    return ps.content !== 'none' && ps.outlineStyle !== 'none' && parseFloat(ps.outlineWidth) > 0;
+  });
   const r = el.getBoundingClientRect();
   const onScreen =
     r.width > 0 &&
@@ -123,7 +152,47 @@ function focusedNow(): (FocusStop & { onScreen: boolean; covered: boolean }) | n
   const y = Math.min(Math.max(r.top + Math.min(r.height / 2, 8), 0), window.innerHeight - 1);
   const top = onScreen ? document.elementFromPoint(x, y) : null;
   const covered = top !== null && top !== el && !el.contains(top) && !top.contains(el);
-  const table = el.closest('table');
+  // A table's own focusable scroll frame (DataTable's named region, when the table is wider than
+  // the screen) is a stop of that table: it is the first of its Tab run, right after a skip link.
+  const table =
+    el.closest('table') ??
+    (el.getAttribute('role') === 'region' && el.querySelectorAll('table').length === 1
+      ? el.querySelector('table')
+      : null);
+  const tables = [...document.querySelectorAll('table')];
+  // A skip link ("Skip past the units", G-33): the first table between it and its target.
+  const href = el instanceof HTMLAnchorElement ? (el.getAttribute('href') ?? '') : '';
+  const target = href.startsWith('#')
+    ? document.getElementById(decodeURIComponent(href.slice(1)))
+    : null;
+  const table_ =
+    target === null
+      ? -1
+      : tables.findIndex(
+          (t) =>
+            (el.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0 &&
+            (t.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0 &&
+            !t.contains(target),
+        );
+  // The Tab stops a skip link passes over: tabbable, rendered, between it and its target.
+  const targetAfter =
+    target !== null &&
+    (el.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+  const between = targetAfter
+    ? [
+        ...document.querySelectorAll<HTMLElement>(
+          'a[href], button, input, select, textarea, summary, [tabindex]',
+        ),
+      ].filter(
+        (c) =>
+          (el.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0 &&
+          (c.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0 &&
+          c.tabIndex >= 0 &&
+          !(c as HTMLButtonElement).disabled &&
+          c.closest('[inert]') === null &&
+          c.getClientRects().length > 0,
+      ).length
+    : 0;
   const label =
     el instanceof HTMLInputElement ||
     el instanceof HTMLSelectElement ||
@@ -141,8 +210,26 @@ function focusedNow(): (FocusStop & { onScreen: boolean; covered: boolean }) | n
   return {
     element: `${el.getAttribute('role') ?? el.tagName.toLowerCase()} "${name}"`,
     region,
-    visible: outline || ring,
-    inTable: table ? [...document.querySelectorAll('table')].indexOf(table) : null,
+    visible: outline || ring || pseudo,
+    inTable: table ? tables.indexOf(table) : null,
+    // Whether the link can take the focus anywhere: its target rendered (a box, not inert) and
+    // focusable, or a skip link that moves the focus to it (`data-skip-link`, DataTable).
+    skip: {
+      table: table_,
+      targetRendered:
+        target !== null &&
+        target.getClientRects().length > 0 &&
+        getComputedStyle(target).visibility !== 'hidden' &&
+        target.closest('[inert]') === null,
+      targetFocusable:
+        target !== null &&
+        (target.hasAttribute('tabindex') ||
+          (target instanceof HTMLElement && target.tabIndex >= 0) ||
+          el.hasAttribute('data-skip-link')),
+      marked: el.hasAttribute('data-skip-link'),
+      targetAfter,
+      between,
+    },
     onScreen,
     covered,
   };
@@ -155,8 +242,17 @@ function focusedNow(): (FocusStop & { onScreen: boolean; covered: boolean }) | n
  */
 export async function sampleKeyboard(
   page: Page,
-  presses = 40,
-): Promise<{ stops: FocusStop[]; longestTableRun: number; findings: string[] }> {
+  presses = TAB_PRESS_CAP,
+): Promise<{
+  stops: FocusStop[];
+  longestTableRun: number;
+  skippedByLinkRun: number;
+  hidden: string[];
+  offScreen: string[];
+  covered: string[];
+  findings: string[];
+  error?: string;
+}> {
   await page.evaluate(() => {
     (document.activeElement as HTMLElement | null)?.blur();
     window.scrollTo(0, 0);
@@ -167,22 +263,36 @@ export async function sampleKeyboard(
   const offScreen: string[] = [];
   const covered: string[] = [];
   let bodies = 0;
-  for (let i = 0; i < presses; i += 1) {
+  /** The most stops one followed skip link passed over. */
+  let followed = 0;
+  // The whole page (UX-F1 review): until the focus wraps round or leaves the page twice, so no
+  // table's run is cut short; a page still going at `presses` is a sample not taken.
+  let ended = false;
+  let pressed = 0;
+  for (; pressed < presses && !ended; pressed += 1) {
     await page.keyboard.press('Tab');
     const stop = await page.evaluate(focusedNow);
     if (stop === null) {
       bodies += 1;
-      if (bodies > 1) break;
+      ended = bodies > 1;
       continue;
     }
     // Wrapped round to the first stop: the page's whole order was seen.
-    if (stops.length > 0 && stop.element === stops[0]?.element && stop.region === stops[0].region)
-      break;
-    const { onScreen, covered: isCovered, ...kept } = stop;
+    if (stops.length > 0 && stop.element === stops[0]?.element && stop.region === stops[0].region) {
+      ended = true;
+      continue;
+    }
+    const { onScreen, covered: isCovered, skip, ...rest } = stop;
+    const kept: FocusStop = { ...rest, skipsTable: skipTableOf(skip) };
     stops.push(kept);
     if (!kept.visible) hidden.push(kept.element);
     if (!onScreen) offScreen.push(kept.element);
     else if (isCovered) covered.push(kept.element);
+    // A skip link: follow it, as a keyboard user would, and go on from its target (UX-F1).
+    if (followsSkip(skip)) {
+      followed = Math.max(followed, skip.between ?? 0);
+      await page.evaluate(followSkipLink);
+    }
   }
   if (hidden.length > 0)
     findings.push(
@@ -194,9 +304,21 @@ export async function sampleKeyboard(
     );
   if (covered.length > 0)
     findings.push(`focused element covered by another (2.4.11): ${covered.slice(0, 5).join(', ')}`);
-  const run = longestTableRun(stops);
-  if (run >= 10) findings.push(`${String(run)} stops inside one table before leaving it (G-33)`);
-  return { stops, longestTableRun: run, findings };
+  // A run right after a skip link past its table is reported apart, not as a finding (G-33).
+  const runs = tableRuns(stops);
+  if (runs.longest >= TABLE_RUN_LIMIT)
+    findings.push(`${String(runs.longest)} stops inside one table before leaving it (G-33)`);
+  const error = keyboardCapError(pressed, presses, ended);
+  return {
+    ...(error === undefined ? {} : { error }),
+    stops,
+    longestTableRun: runs.longest,
+    skippedByLinkRun: Math.max(runs.skippedByLink, followed),
+    hidden,
+    offScreen,
+    covered,
+    findings,
+  };
 }
 
 /** The visible overlay opened last, marked `data-a11y-overlay`; its kind and whether modal. */

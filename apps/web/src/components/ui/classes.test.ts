@@ -213,6 +213,8 @@ for (const word of ['report-section', 'break']) NOT_CLASSES.add(word);
 NOT_CLASSES.add('max-time-to-ack');
 /** UX-10 (#334): the console's repair time unit, `unit="min"`. */
 NOT_CLASSES.add('min');
+/** UX-F1 (#337): the CSS unit of the data table's measured scroll padding, `${height}px`. */
+NOT_CLASSES.add('px');
 
 const CLASSES = [...new Set([...FILES.flatMap(harvest), ...PASSED_IN])]
   .filter((c) => !NOT_CLASSES.has(c))

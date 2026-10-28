@@ -561,10 +561,26 @@ describe('downtime coding on the design system (UX-5a, #326)', () => {
     );
     await renderApp('/downtime');
     await screen.findByTestId(`downtime-row-${UNCODED.id}`);
-    // Nothing chosen: no empty pane beside the table, nothing to skip to.
+    // Nothing chosen: no empty pane beside the table; the skip link goes past the records to
+    // their end, which shows itself once it has the focus (G-33, UX-F1).
     expect(screen.queryByTestId('coding-panel')).toBeNull();
     expect(screen.queryByText(/Choose a record/)).toBeNull();
     expect(screen.queryByRole('link', { name: 'Skip to the details' })).toBeNull();
+    const past = screen.getByRole('link', { name: 'Skip past the records' });
+    expect(past.getAttribute('href')).toBe('#downtime-list-end');
+    expect(
+      past.compareDocumentPosition(screen.getByTestId('downtime-table')) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    const end = screen.getByText('End of the downtime records.');
+    expect(end.id).toBe('downtime-list-end');
+    expect(
+      screen.getByTestId('downtime-table').compareDocumentPosition(end) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(end.className).toMatch(/\bsr-only\b.*\bfocus:not-sr-only\b/);
+    fireEvent.click(past);
+    expect(document.activeElement).toBe(end);
     const panel = await openRecord();
     expect(panel.tagName).toBe('SECTION');
     expect(panel.dataset.variant).toBe('panel');
@@ -574,6 +590,9 @@ describe('downtime coding on the design system (UX-5a, #326)', () => {
     expect(document.activeElement).toBe(title);
     const skip = screen.getByRole('link', { name: 'Skip to the details' });
     expect(skip.getAttribute('href')).toBe(`#${title.id}`);
+    // With the detail beside the table, the details follow it: no list end of its own.
+    expect(screen.queryByRole('link', { name: 'Skip past the records' })).toBeNull();
+    expect(screen.queryByText('End of the downtime records.')).toBeNull();
     // The skip link comes before the table, so the Tab run through its rows can be skipped.
     expect(
       skip.compareDocumentPosition(screen.getByTestId('downtime-table')) &

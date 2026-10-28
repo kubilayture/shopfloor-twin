@@ -62,6 +62,16 @@ function menuItems(menu: HTMLElement | null): HTMLElement[] {
   ];
 }
 
+/**
+ * The index an opening menu focuses: the last for ArrowUp; otherwise the checked radio item, as
+ * the WAI-ARIA menu pattern has it for a choice (#391), else the first.
+ */
+function openingIndex(menu: HTMLElement | null, from: 'first' | 'last'): number {
+  if (from === 'last') return -1;
+  const checked = menuItems(menu).findIndex((item) => item.getAttribute('aria-checked') === 'true');
+  return Math.max(checked, 0);
+}
+
 /** Focuses the item at `index`, wrapping: -1 is the last. */
 function focusItem(menu: HTMLElement | null, index: number): void {
   const all = menuItems(menu);
@@ -95,7 +105,7 @@ export function Menu({
       element.toggleAttribute('data-placed', opened);
       if (opened) {
         if (trigger.current) positionPopover(trigger.current, element, { side: 'bottom', align });
-        focusItem(element, focusOnOpen.current === 'last' ? -1 : 0);
+        focusItem(element, openingIndex(element, focusOnOpen.current));
         focusOnOpen.current = 'first';
         return;
       }

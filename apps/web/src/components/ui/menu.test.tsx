@@ -264,7 +264,10 @@ describe('Menu', () => {
       true,
       false,
     ]);
-    // The arrows, End and the type-ahead move over radio items as over plain ones.
+    // It opens on the checked item (#391, the WAI-ARIA menu pattern for a choice); the arrows,
+    // End and the type-ahead move over radio items as over plain ones.
+    expect(document.activeElement).toBe(radios[1]);
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'ArrowUp' });
     expect(document.activeElement).toBe(radios[0]);
     fireEvent.keyDown(screen.getByRole('menu'), { key: 'ArrowDown' });
     expect(document.activeElement).toBe(radios[1]);
@@ -275,6 +278,16 @@ describe('Menu', () => {
     fireEvent.click(screen.getByRole('menuitemradio', { name: 'Gamma' }));
     expect(chosen).toHaveBeenCalledWith('c');
     expect(document.activeElement).toBe(trigger);
+    // From the keyboard too (ArrowDown); ArrowUp still opens on the last item.
+    await flushOverlayEvents();
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+    await flushOverlayEvents();
+    expect(document.activeElement).toBe(screen.getAllByRole('menuitemradio')[1]);
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+    await flushOverlayEvents();
+    fireEvent.keyDown(trigger, { key: 'ArrowUp' });
+    await flushOverlayEvents();
+    expect(document.activeElement).toBe(screen.getAllByRole('menuitemradio')[2]);
   });
 
   it('keeps plain items menuitem with no aria-checked', async () => {

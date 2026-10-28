@@ -24,6 +24,8 @@ const failed = (key: string, error: unknown): ScreenRead => ({
   hasData: false,
   loading: false,
   retrying: false,
+  failedAt: 1,
+  busy: false,
   retry: () => undefined,
 });
 

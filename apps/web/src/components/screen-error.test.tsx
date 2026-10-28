@@ -33,6 +33,8 @@ function read(
     hasData: state === 'loaded' || state === 'stale',
     loading: state === 'loading',
     retrying: false,
+    failedAt: state === 'failed' || state === 'stale' ? 1 : 0,
+    busy: false,
     retry: vi.fn(),
   };
 }
@@ -139,6 +141,7 @@ describe('queryRead and selectionRead', () => {
     data: undefined,
     error: null,
     errorUpdateCount: 0,
+    errorUpdatedAt: 0,
     refetch: vi.fn(),
     ...over,
   });
@@ -183,7 +186,15 @@ describe('queryRead and selectionRead', () => {
   it('reads the shift picker as the screen’s base', () => {
     const retry = vi.fn();
     expect(
-      selectionRead({ pending: true, error: null, current: undefined, retrying: false, retry }),
+      selectionRead({
+        pending: true,
+        error: null,
+        current: undefined,
+        retrying: false,
+        failedAt: 0,
+        fetching: false,
+        retry,
+      }),
     ).toMatchObject({
       key: 'the shifts',
       what: 'the shifts',
@@ -198,6 +209,8 @@ describe('queryRead and selectionRead', () => {
       error,
       current: undefined,
       retrying: false,
+      failedAt: 0,
+      fetching: false,
       retry,
     });
     expect(failed).toMatchObject({ failed: true, error, loading: false });
@@ -209,15 +222,33 @@ describe('queryRead and selectionRead', () => {
         error: undefined,
         current: { shift: null },
         retrying: false,
+        failedAt: 0,
+        fetching: false,
         retry,
       }),
     ).toMatchObject({ failed: false, hasData: true });
     expect(
-      selectionRead({ pending: true, error: null, current: undefined, retrying: true, retry }),
+      selectionRead({
+        pending: true,
+        error: null,
+        current: undefined,
+        retrying: true,
+        failedAt: 0,
+        fetching: false,
+        retry,
+      }),
     ).toMatchObject({ failed: false, loading: false, retrying: true });
     // The current shift failed while it was first read: failed, not loading.
     expect(
-      selectionRead({ pending: true, error, current: undefined, retrying: false, retry }).loading,
+      selectionRead({
+        pending: true,
+        error,
+        current: undefined,
+        retrying: false,
+        failedAt: 0,
+        fetching: false,
+        retry,
+      }).loading,
     ).toBe(false);
   });
 });
@@ -226,6 +257,8 @@ describe('useScreenErrors', () => {
   const retrying = (key: string, kind: ReadKind): ScreenRead => ({
     ...read(key, kind, 'idle'),
     retrying: true,
+    failedAt: 1,
+    busy: true,
   });
 
   it('keeps a failure while its read is read again, until it answers', () => {
@@ -253,6 +286,17 @@ describe('useScreenErrors', () => {
     rerender();
     expect(result.current.summary).toEqual([]);
     expect(result.current.inSection('hours')).toBe(false);
+  });
+
+  it('keeps a failure only for its own query: another one under the same name is loading (#394)', () => {
+    let reads = [read('hours', 'section', 'failed'), read('oee', 'main', 'loaded')];
+    const { result, rerender } = renderHook(() => useScreenErrors(reads));
+    expect(result.current.section('hours')?.own).toBe(true);
+    // Another focus whose query failed before (another time) is read again: not this error.
+    reads = [{ ...retrying('hours', 'section'), failedAt: 2 }, read('oee', 'main', 'loaded')];
+    rerender();
+    expect(result.current.inSection('hours')).toBe(false);
+    expect(result.current.summary).toEqual([]);
   });
 
   it('counts a re-read it saw no failure of as loading', () => {
@@ -319,6 +363,52 @@ describe('ScreenError', () => {
     // A retry can fix one of them: offered, and it reads every one again.
     fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
     for (const r of reads) expect(r.retry).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows "Try again" busy from the press until the reads it asked for answered (#394)', () => {
+    const view = (busy: boolean) => (
+      <ScreenError
+        errors={screenErrors([
+          read('a', 'main', 'failed'),
+          { ...read('b', 'main', 'failed'), busy },
+        ])}
+      />
+    );
+    const button = () => screen.getByRole('button', { name: 'Try again' });
+    const { rerender } = render(view(true));
+    // A poll on its way: not busy, the button stays as it is.
+    expect(button().getAttribute('aria-busy')).toBeNull();
+    rerender(view(false));
+    fireEvent.click(button());
+    expect(button().getAttribute('aria-busy')).toBe('true');
+    expect(button().getAttribute('aria-disabled')).toBe('true');
+    rerender(view(true));
+    expect(button().getAttribute('aria-busy')).toBe('true');
+    // Answered (failed again): ready for another try, and a later poll does not make it busy.
+    rerender(view(false));
+    expect(button().getAttribute('aria-busy')).toBeNull();
+    rerender(view(true));
+    expect(button().getAttribute('aria-busy')).toBeNull();
+  });
+
+  it('shows a section’s own "Try again" busy after its press', () => {
+    const view = (busy: boolean) => (
+      <SectionError
+        errors={screenErrors([
+          read('oee', 'main', 'loaded'),
+          { ...read('hours', 'section', 'failed'), busy },
+        ])}
+        readKey="hours"
+      />
+    );
+    const { rerender } = render(view(false));
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    rerender(view(true));
+    expect(screen.getByRole('button', { name: 'Try again' }).getAttribute('aria-busy')).toBe(
+      'true',
+    );
+    rerender(view(false));
+    expect(screen.getByRole('button', { name: 'Try again' }).getAttribute('aria-busy')).toBeNull();
   });
 
   it('offers a retry when a later read can be helped, the first one refused', () => {

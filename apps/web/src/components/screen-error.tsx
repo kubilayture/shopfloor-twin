@@ -48,6 +48,14 @@ export interface ScreenRead {
    * errors keep its last failure meanwhile (`useScreenErrors`), so the error does not flap.
    */
   readonly retrying: boolean;
+  /**
+   * When its last failure was (TanStack Query's `errorUpdatedAt`, 0: none): kept while it is read
+   * again, and a mark of which query failed. Another query under the same name (another focus,
+   * another shift) has its own, so a kept failure is never shown for the next one (#394 review).
+   */
+  readonly failedAt: number;
+  /** A request of it is on its way now: its "Try again" shows as busy. */
+  readonly busy: boolean;
   readonly retry: () => void;
 }
 
@@ -59,6 +67,8 @@ export interface QueryLike {
   readonly error: unknown;
   /** How often it failed since it was created: more than none, a fetch now is a re-read. */
   readonly errorUpdateCount: number;
+  /** When it last failed (0: never). */
+  readonly errorUpdatedAt: number;
   readonly refetch: () => unknown;
 }
 
@@ -79,6 +89,8 @@ export function queryRead(
     hasData: query.data !== undefined,
     loading: fetching && query.errorUpdateCount === 0,
     retrying: fetching && query.errorUpdateCount > 0,
+    failedAt: query.errorUpdatedAt,
+    busy: query.fetchStatus === 'fetching',
     retry: () => {
       void query.refetch();
     },
@@ -92,6 +104,10 @@ export function selectionRead(selection: {
   readonly current: unknown;
   /** One of its reads is read again after a failure, with no answer yet. */
   readonly retrying: boolean;
+  /** When one of its reads last failed (0: never). */
+  readonly failedAt: number;
+  /** One of its reads is on its way now. */
+  readonly fetching: boolean;
   readonly retry: () => void;
 }): ScreenRead {
   const failed = selection.error !== null && selection.error !== undefined;
@@ -105,6 +121,8 @@ export function selectionRead(selection: {
     hasData: selection.current !== undefined,
     loading: selection.pending && !failed && !retrying,
     retrying,
+    failedAt: selection.failedAt,
+    busy: selection.fetching,
     retry: selection.retry,
   };
 }
@@ -119,23 +137,36 @@ export function selectionRead(selection: {
 export function useScreenErrors(reads: readonly ScreenRead[]): ScreenErrors {
   // The last failure of each read that is being read again, by key (state set while rendering, the
   // way React derives state from props: the render that saw it uses `next` at once).
-  const [last, setLast] = useState<ReadonlyMap<string, unknown>>(() => new Map());
+  // Kept with the time of the failure: a re-read of the same query has the same `failedAt`,
+  // another query under the same name (another focus or shift) its own, and is not given this one.
+  const [last, setLast] = useState<ReadonlyMap<string, Kept>>(() => new Map());
   const next = new Map(last);
   const kept = reads.map((read): ScreenRead => {
     if (read.failed) {
-      next.set(read.key, read.error);
+      next.set(read.key, { error: read.error, at: read.failedAt });
       return read;
     }
-    if (read.retrying && next.has(read.key)) {
-      return { ...read, failed: true, error: next.get(read.key), retrying: false };
+    const earlier = next.get(read.key);
+    if (read.retrying && earlier?.at === read.failedAt) {
+      return { ...read, failed: true, error: earlier.error, retrying: false };
     }
-    if (!read.retrying) next.delete(read.key);
+    next.delete(read.key);
     return read;
   });
   const changed =
-    next.size !== last.size || [...next].some(([key, error]) => last.get(key) !== error);
+    next.size !== last.size ||
+    [...next].some(([key, kept]) => {
+      const before = last.get(key);
+      return before?.error !== kept.error || before?.at !== kept.at;
+    });
   if (changed) setLast(next);
   return screenErrors(kept);
+}
+
+/** A read's failure kept while it is read again, and when it was. */
+interface Kept {
+  readonly error: unknown;
+  readonly at: number;
 }
 
 export interface ScreenErrors {
@@ -179,6 +210,23 @@ export function screenErrors(reads: readonly ScreenRead[]): ScreenErrors {
   };
 }
 
+/**
+ * Whether "Try again" shows as busy: from the press until the reads it asked for have answered
+ * (been on their way and are no longer). A poll of a failed read does not make it busy, so the
+ * button does not spin on every poll (#394 review).
+ */
+function useTrying(fetching: boolean): { readonly busy: boolean; readonly pressed: () => void } {
+  const [phase, setPhase] = useState<'idle' | 'pressed' | 'on-its-way'>('idle');
+  if (phase === 'pressed' && fetching) setPhase('on-its-way');
+  if (phase === 'on-its-way' && !fetching) setPhase('idle');
+  return {
+    busy: phase === 'pressed' || (phase === 'on-its-way' && fetching),
+    pressed: () => {
+      setPhase('pressed');
+    },
+  };
+}
+
 /** "a", "a and b", "a, b and c": each name once. */
 export function namesText(names: readonly string[]): string {
   const unique = [...new Set(names)];
@@ -205,6 +253,7 @@ export function ScreenError({
 }) {
   const failed = errors.summary;
   const quiet = useQuietErrors(failed.map((read) => read.error));
+  const trying = useTrying(failed.some((read) => read.busy));
   const first = failed[0];
   if (first === undefined) return null;
   const error = (
@@ -213,9 +262,11 @@ export function ScreenError({
       error={first.error}
       failures={failed}
       onRetry={() => {
+        trying.pressed();
         for (const read of failed) read.retry();
       }}
       quiet={quiet}
+      busy={trying.busy}
       testId={testId}
     />
   );
@@ -236,10 +287,20 @@ export function SectionError({
 }) {
   const shown = errors.section(readKey);
   const quiet = useQuietErrors(shown ? [shown.read.error] : []);
+  const trying = useTrying(shown?.read.busy ?? false);
   if (!shown) return null;
   const { read, own } = shown;
   return (
     // A quiet line has no "Try again": the screen's error, which names it, has the one.
-    <ErrorState what={read.what} error={read.error} onRetry={read.retry} quiet={quiet || !own} />
+    <ErrorState
+      what={read.what}
+      error={read.error}
+      onRetry={() => {
+        trying.pressed();
+        read.retry();
+      }}
+      quiet={quiet || !own}
+      busy={trying.busy}
+    />
   );
 }

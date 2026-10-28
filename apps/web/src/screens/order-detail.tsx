@@ -1031,7 +1031,8 @@ function OrderDetail({ id }: { readonly id: string }) {
     enabled: read.data !== undefined,
   });
   const oeeRead = useOrderOeeRead(id, read.data !== undefined);
-  const oeePushed = useLiveOrderOee(id);
+  // Held only once the order is read (it exists): no order OEE topic for an unknown order.
+  const oeePushed = useLiveOrderOee(id, read.data !== undefined);
   const errors = useScreenErrors([
     queryRead('the order', read, 'main'),
     queryRead(EXECUTION_READ, execution, 'section'),

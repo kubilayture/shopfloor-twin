@@ -77,6 +77,10 @@ export interface ShiftSelection {
    * TanStack Query shows it as pending meanwhile; the screen's error keeps its failure (#394).
    */
   readonly retrying: boolean;
+  /** When one of its reads last failed (0: never): which failure the screen's error keeps. */
+  readonly failedAt: number;
+  /** One of its reads is on its way now ("Try again" busy). */
+  readonly fetching: boolean;
   readonly retry: () => void;
 }
 
@@ -112,6 +116,8 @@ export function useShiftSelection(requested: string | undefined): ShiftSelection
     retrying: [current, list].some(
       (read) => read.isPending && read.fetchStatus !== 'idle' && read.errorUpdateCount > 0,
     ),
+    failedAt: Math.max(current.errorUpdatedAt, list.errorUpdatedAt),
+    fetching: current.fetchStatus === 'fetching' || list.fetchStatus === 'fetching',
     retry: () => {
       void current.refetch();
       void list.refetch();

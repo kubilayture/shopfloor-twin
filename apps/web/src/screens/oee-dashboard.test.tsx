@@ -19,6 +19,7 @@ import {
   result,
 } from '../test/oee-fixtures.ts';
 import { renderApp, settle } from '../test/render-app.tsx';
+import { queryKeys } from '../api/queries.ts';
 import { expectDecimals } from '../test/decimals.ts';
 import { NA_REASON } from '../components/oee-ui.tsx';
 
@@ -477,17 +478,26 @@ describe('OEE dashboard', () => {
     expect(screen.getByTestId('machine-bottleneck-state').textContent).toContain('loading…');
     loading.unmount();
 
-    vi.stubGlobal(
-      'fetch',
-      api({
-        '/api/v1/oee/line': () =>
-          problem(503, 'Service Unavailable', 'line OEE is not available', '/api/v1/oee/line'),
-      }),
+    let hang = false;
+    const failing = api({
+      '/api/v1/oee/line': () =>
+        problem(503, 'Service Unavailable', 'line OEE is not available', '/api/v1/oee/line'),
+    });
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) =>
+      hang && new URL(requestUrl(input), 'http://localhost').pathname === '/api/v1/oee/line'
+        ? new Promise<Response>(() => undefined)
+        : failing(input, init),
     );
-    await renderApp('/oee');
+    const app = await renderApp('/oee');
     await waitFor(() => {
       expect(screen.getByTestId('bottleneck-line-a1').dataset.state).toBe('unknown');
     });
+    // Read again (a poll) with no answer yet: still unknown, not back to "loading" (#394).
+    hang = true;
+    await settle(() => {
+      void app.queryClient.refetchQueries({ queryKey: queryKeys.lineOee('shift', SHIFT_KEY) });
+    });
+    expect(screen.getByTestId('bottleneck-line-a1').dataset.state).toBe('unknown');
     expect(screen.getByTestId('bottleneck-line-a1').textContent).toContain(
       'unknown (line OEE unavailable)',
     );

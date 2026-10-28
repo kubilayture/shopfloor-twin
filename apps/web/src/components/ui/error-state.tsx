@@ -24,6 +24,11 @@ export interface ErrorStateProps {
   readonly quiet?: boolean;
   readonly testId?: string | undefined;
   readonly failures?: readonly Failure[] | undefined;
+  /**
+   * A read it names is on its way again (#394 review): "Try again" shows as busy (`Button`
+   * `loading`: `aria-busy`, `aria-disabled`, the label kept), since the error stays up meanwhile.
+   */
+  readonly busy?: boolean;
 }
 
 /** One failed read of several: what it is ("the equipment") and how it failed. */
@@ -95,6 +100,7 @@ export function ErrorState({
   quiet = false,
   testId,
   failures,
+  busy = false,
 }: ErrorStateProps) {
   const all = failures !== undefined && failures.length > 0 ? failures : [{ what, error }];
   const details = failureDetails(all);
@@ -137,7 +143,7 @@ export function ErrorState({
         </ul>
       )}
       {onRetry && all.some((failure) => isRetryable(failure.error)) ? (
-        <Button variant="secondary" size="sm" className="mt-2" onClick={onRetry}>
+        <Button variant="secondary" size="sm" className="mt-2" loading={busy} onClick={onRetry}>
           Try again
         </Button>
       ) : null}

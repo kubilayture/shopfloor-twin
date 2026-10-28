@@ -16,6 +16,7 @@ import {
   LOGOUT_PENDING_KEY,
   LOGOUT_PENDING_MAX_AGE_MS,
   LOGOUT_REPLAY_TIMEOUT_MS,
+  LOGOUT_TIMEOUT_MS,
   markLogout,
 } from './pending-logout.ts';
 
@@ -160,8 +161,47 @@ describe('a logout racing a read of the session, in one page', () => {
     await settle(release);
     await settle(() => undefined);
     expect(mes.sessionCalls().map((c) => c.method)).toEqual(['GET', 'DELETE', 'GET']);
+    // A Log out ends the cookie's session, whichever it is.
+    expect(mes.sessionCalls()[1]?.body).toEqual({});
     expect(app.queryClient.getQueryData(sessionKey)).toBeNull();
     expect(screen.getByTestId('login-reason').dataset.reason).toBe('logout');
+  });
+
+  it('stops waiting for a logout the MES never answers after LOGOUT_TIMEOUT_MS, keeping the mark', async () => {
+    const mes = racingMes({ signedIn: true });
+    const app = await signedInAt('/', mes);
+    let aborted = 0;
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
+      if (requestOf(input, init).method !== 'DELETE') return mes.fetch(input, init);
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          aborted = Date.now();
+          reject(new DOMException('timed out', 'TimeoutError'));
+        });
+      });
+    });
+    const started = Date.now();
+    fireEvent.click(screen.getByTestId('logout'));
+    await waitFor(() => {
+      expect(app.history.location.pathname).toBe('/login');
+    });
+    expect(screen.getByTestId('login-submit').textContent).toContain('Logging out…');
+    await waitFor(
+      () => {
+        expect(screen.getByTestId('login-submit').textContent).toBe('Log in');
+      },
+      { timeout: LOGOUT_TIMEOUT_MS + 2_000 },
+    );
+    expect(aborted - started).toBeGreaterThanOrEqual(LOGOUT_TIMEOUT_MS - 50);
+    expect(tabStorage.getItem(LOGOUT_PENDING_KEY)).not.toBeNull();
+    // Reads go on again.
+    const before = mes.sessionCalls().length;
+    await settle(() => {
+      void app.queryClient.invalidateQueries({ queryKey: sessionKey });
+    });
+    await waitFor(() => {
+      expect(mes.sessionCalls().length).toBe(before + 1);
+    });
   });
 
   it("ignores the idle keepalive's read when a logout came meanwhile", async () => {
@@ -223,6 +263,10 @@ describe('a logout racing a read of the session, in one page', () => {
     await settle(release);
     await settle(() => undefined);
     expect(mes.current()).toBeNull();
+    // A timeout the user did not ask for ends only that session (never another tab's newer one).
+    expect(mes.sessionCalls().find((c) => c.method === 'DELETE')?.body).toEqual({
+      createdAt: created,
+    });
     expect(tabStorage.getItem(LOGOUT_PENDING_KEY)).toBeNull();
     expect(app.queryClient.getQueryData(sessionKey)).toBeNull();
     expect(screen.getByTestId('login-reason').dataset.reason).toBe('idle');
@@ -341,6 +385,21 @@ describe('a logout a page left on its way, replayed by the next page of the tab'
     expect((await screen.findByTestId('signed-in-user')).textContent).toBe('ayse');
     expect(mes.sessionCalls().filter((c) => c.method === 'DELETE')).toHaveLength(0);
     expect(tabStorage.getItem(LOGOUT_PENDING_KEY)).toBeNull();
+  });
+
+  it('replays a fresh mark despite a login dated in the future (the clock went back)', async () => {
+    const mes = racingMes({ signedIn: true });
+    const created = mes.current()?.createdAt ?? '';
+    markLogout(created, Date.now() - 1_000);
+    browserStorage.setItem(LAST_LOGIN_KEY, String(Date.now() + 5 * 60_000));
+    vi.stubGlobal('fetch', mes.fetch);
+    await renderApp('/login', { session: 'fetch', live: 'stopped' });
+    await screen.findByTestId('login-username');
+    expect(mes.sessionCalls().map((c) => [c.method, c.body])).toEqual([
+      ['DELETE', { createdAt: created }],
+      ['GET', undefined],
+    ]);
+    expect(mes.current()).toBeNull();
   });
 
   it('drops an unreadable mark without replaying it', async () => {

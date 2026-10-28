@@ -1925,11 +1925,13 @@ export const loginRequestSchema = z
 
 export const logoutRequestSchema = z
   .strictObject({
-    createdAt: time
+    createdAt: z.iso
+      .datetime({ precision: 3 })
       .optional()
       .describe(
-        "Ends the cookie's session only if it was created at this time (the `createdAt` of " +
-          '`GET /session`): a logout replayed by a later page never ends a newer session',
+        "Ends the cookie's session only if it was created at this time, to the millisecond (the " +
+          '`createdAt` of `GET /session`): a logout replayed by a later page never ends a newer ' +
+          'session',
       ),
   })
   .describe("A logout: an empty object ends the cookie's session, whichever it is");

@@ -1512,16 +1512,18 @@ describe('authentication on every route (MES_AUTH=on, #168)', () => {
   it('ends only the session created at `createdAt` when a logout names one (#390)', async () => {
     const a = await login('m-quality');
     const created = sessionSchema.parse(a.body).createdAt;
-    // Another session holds the cookie (a newer login): a replayed logout leaves it live.
-    const other = new Date(Date.parse(created) - 1).toISOString();
-    const kept = await send('DELETE', '/api/v1/session', {
-      cookie: a.cookie,
-      body: { createdAt: other },
-    });
-    expect(kept.statusCode).toBe(200);
-    expect(kept.json()).toEqual({ ended: false });
-    expect(kept.headers['set-cookie']).toBeUndefined();
-    expect((await send('GET', '/api/v1/session', { cookie: a.cookie })).statusCode).toBe(200);
+    // Another session holds the cookie (a login before or after the named one): left live.
+    for (const shift of [-1, 1]) {
+      const other = new Date(Date.parse(created) + shift).toISOString();
+      const kept = await send('DELETE', '/api/v1/session', {
+        cookie: a.cookie,
+        body: { createdAt: other },
+      });
+      expect(kept.statusCode).toBe(200);
+      expect(kept.json()).toEqual({ ended: false });
+      expect(kept.headers['set-cookie']).toBeUndefined();
+      expect((await send('GET', '/api/v1/session', { cookie: a.cookie })).statusCode).toBe(200);
+    }
     // The session it names ends, and the cookie is cleared.
     const ended = await send('DELETE', '/api/v1/session', {
       cookie: a.cookie,
@@ -1537,8 +1539,14 @@ describe('authentication on every route (MES_AUTH=on, #168)', () => {
     });
     expect(gone.json()).toEqual({ ended: false });
     expect(String(gone.headers['set-cookie'])).toMatch(/^sft_session=; Max-Age=0;/);
-    // Anything but a time, or another field, is refused.
-    for (const body of [{ createdAt: 'yesterday' }, { other: 1 }]) {
+    // Anything but a time to the millisecond in UTC, or another field, is refused.
+    for (const body of [
+      { createdAt: 'yesterday' },
+      { createdAt: created.replace(/\.(\d{3})Z$/, '.$1999Z') },
+      { createdAt: created.replace(/\.\d{3}Z$/, 'Z') },
+      { createdAt: created.replace(/Z$/, '+00:00') },
+      { other: 1 },
+    ]) {
       expect((await send('DELETE', '/api/v1/session', { cookie: a.cookie, body })).statusCode).toBe(
         400,
       );

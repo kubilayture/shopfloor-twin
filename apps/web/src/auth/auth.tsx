@@ -14,7 +14,13 @@ import {
 import { getSession, logout } from '../api/identity.ts';
 import { forgetCharts } from '../api/quality.ts';
 import { authEventsFor } from './events.ts';
-import { clearLogoutMark, finishPendingLogout, markLogout, noteLogin } from './pending-logout.ts';
+import {
+  LOGOUT_TIMEOUT_MS,
+  clearLogoutMark,
+  finishPendingLogout,
+  markLogout,
+  noteLogin,
+} from './pending-logout.ts';
 import { Restarts } from './restarts.ts';
 import { useLiveClient } from '../live/live-context.tsx';
 
@@ -241,19 +247,22 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
 
   /**
    * Ends `held` at the MES (a logout, the idle timeout): reads of the session wait for it, a login
-   * waits for it (`loggingOut`), and a page left before it ended replays it (`markLogout`).
+   * waits for it (`loggingOut`), at most `LOGOUT_TIMEOUT_MS`, and a page left before it ended
+   * replays it (`markLogout`). `scoped` (a timeout the user did not ask for) ends only `held`, never
+   * a newer session another tab's login put in the cookie; a Log out ends the cookie's session.
    */
-  const endAtMes = useCallback(async (held: SessionDto | null | undefined) => {
+  const endAtMes = useCallback(async (held: SessionDto | null | undefined, scoped = false) => {
     generation.current += 1;
     if (held) markLogout(held.createdAt);
     setLoggingOut(true);
-    const done = logout().then(
+    const body = scoped && held ? { createdAt: held.createdAt } : {};
+    const done = logout(body, AbortSignal.timeout(LOGOUT_TIMEOUT_MS)).then(
       () => {
         clearLogoutMark();
       },
       () => {
-        // The cookie may outlive an unreachable MES; the session still ends at its idle expiry.
-        // The mark stays (within its age): the next page of the tab tries again.
+        // The cookie may outlive an unreachable or hung MES; the session still ends at its idle
+        // expiry. The mark stays (within its age): the next page of the tab tries again.
       },
     );
     ending.current = done;
@@ -281,7 +290,7 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
     const held = queryClient.getQueryData<SessionDto | null>(sessionKey);
     sessionLost('idle');
     // Ends it at the MES too (other tabs then close their sockets with 4401).
-    void endAtMes(held);
+    void endAtMes(held, true);
   }, [queryClient, sessionLost, endAtMes]);
 
   const refresh = useCallback(async () => {

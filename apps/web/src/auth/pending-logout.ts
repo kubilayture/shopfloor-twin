@@ -24,6 +24,12 @@ export const LAST_LOGIN_KEY = 'shopfloor.lastLogin';
 /** The replay waits at most this long for the MES; the session is read after it either way. */
 export const LOGOUT_REPLAY_TIMEOUT_MS = 3_000;
 
+/**
+ * A logout of this page waits at most this long for the MES: the login and the reads of the
+ * session wait for it, and a MES that hangs must not keep them waiting. The mark stays.
+ */
+export const LOGOUT_TIMEOUT_MS = 5_000;
+
 interface Mark {
   /** The `createdAt` of the session being logged out. */
   readonly createdAt: string;
@@ -75,10 +81,11 @@ export function noteLogin(now = Date.now()): void {
   }
 }
 
-function lastLogin(): number {
+/** The last login in any tab; none if dated after `now` (the clock went back since). */
+function lastLogin(now: number): number {
   try {
     const value = Number(browser().getItem(LAST_LOGIN_KEY));
-    return Number.isFinite(value) ? value : 0;
+    return Number.isFinite(value) && value <= now ? value : 0;
   } catch {
     return 0;
   }
@@ -96,8 +103,9 @@ export async function finishPendingLogout(
 ): Promise<void> {
   const mark = readMark();
   if (!mark) return;
-  const age = now() - mark.at;
-  if (age < 0 || age > LOGOUT_PENDING_MAX_AGE_MS || lastLogin() >= mark.at) {
+  const at = now();
+  const age = at - mark.at;
+  if (age < 0 || age > LOGOUT_PENDING_MAX_AGE_MS || lastLogin(at) >= mark.at) {
     clearLogoutMark();
     return;
   }

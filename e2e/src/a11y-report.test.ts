@@ -874,11 +874,17 @@ describe('followsSkip (the keyboard sample follows a skip link)', () => {
 
   it('does not follow a link backwards, to a hidden or unfocusable target, or a plain one', () => {
     expect(followsSkip({ ...facts, targetAfter: false })).toBe(false);
-    expect(followsSkip({ ...facts, targetAfter: undefined })).toBe(false);
+    const bare = {
+      table: facts.table,
+      targetRendered: true,
+      targetFocusable: true,
+      between: facts.between,
+    };
+    expect(followsSkip(bare)).toBe(false);
     expect(followsSkip({ ...facts, targetRendered: false })).toBe(false);
     expect(followsSkip({ ...facts, targetFocusable: false })).toBe(false);
     expect(followsSkip({ ...facts, table: -1 })).toBe(false);
-    expect(followsSkip({ ...facts, table: -1, marked: undefined })).toBe(false);
+    expect(followsSkip({ ...bare, targetAfter: true, table: -1 })).toBe(false);
   });
 });
 

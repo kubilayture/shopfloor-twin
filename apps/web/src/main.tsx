@@ -7,6 +7,11 @@ import { App, createQueryClient } from './app.tsx';
 import './index.css';
 import { connectLiveToCache } from './live/live-cache.ts';
 import { LiveClient, sameOriginWsUrl } from './live/live-client.ts';
+import { startTheme } from './theme/theme-preference.ts';
+
+// The theme before anything renders (UX-12): `bootTheme` in <head> already set it; this keeps it
+// current with the system setting, other tabs and printing.
+startTheme();
 
 const root = document.getElementById('root');
 if (!root) throw new Error('index.html has no #root element');

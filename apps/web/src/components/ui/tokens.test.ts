@@ -33,11 +33,14 @@ import {
 const CSS_PATH = join(import.meta.dirname, '..', '..', 'index.css');
 const css = readFileSync(CSS_PATH, 'utf8');
 
-/** The declarations of the first block whose selector line starts with `prelude`. */
-function declarations(prelude: string): Map<string, string> {
-  const start = css.indexOf(`${prelude} {`);
+/**
+ * The declarations of the first block whose selector line is `prelude` (nested `indent` deep: a
+ * rule inside `@media` ends at its own indented brace).
+ */
+function declarations(prelude: string, indent = ''): Map<string, string> {
+  const start = css.indexOf(`${indent}${prelude} {`);
   expect(start, `${prelude} block`).toBeGreaterThanOrEqual(0);
-  const body = css.slice(start, css.indexOf('\n}\n', start));
+  const body = css.slice(start, css.indexOf(`\n${indent}}\n`, start));
   const found = new Map<string, string>();
   for (const match of body
     .replaceAll(/\/\*[\s\S]*?\*\//g, '')
@@ -50,6 +53,10 @@ function declarations(prelude: string): Map<string, string> {
 
 const theme = declarations('@theme static');
 const dark = declarations(":root[data-theme='dark']");
+/** UX-12: the dark values when `data-theme` is absent (scripts off), on screen only. */
+const MEDIA_PRELUDE =
+  '@media screen and (prefers-color-scheme: dark) {\n  :root:not([data-theme]) {';
+const systemDark = declarations(':root:not([data-theme])', '  ');
 
 /** Every variable `@theme` must define, with its value. */
 function expectedTheme(): Map<string, string> {
@@ -85,6 +92,16 @@ describe('the token map and src/index.css', () => {
     }
     expect(Object.fromEntries(dark)).toEqual(Object.fromEntries(expected));
     expect(css).toMatch(/:root\[data-theme='dark'\] \{\s*color-scheme: dark;/);
+  });
+
+  it('applies the same dark values under prefers-color-scheme: dark while data-theme is absent, on screen only (UX-12)', () => {
+    expect(css).toContain(MEDIA_PRELUDE);
+    expect(css.indexOf(MEDIA_PRELUDE)).toBe(css.lastIndexOf(MEDIA_PRELUDE));
+    expect(systemDark.size).toBeGreaterThan(0);
+    expect(Object.fromEntries(systemDark)).toEqual(Object.fromEntries(dark));
+    expect(css).toMatch(/:root:not\(\[data-theme\]\) \{\s*color-scheme: dark;/);
+    // Light by default, so the form controls and scroll bars follow the theme in use.
+    expect(css).toMatch(/\n:root \{\s*color-scheme: light;\s*\}/);
   });
 
   it('has no duplicate colour names and covers every tone, state and priority', () => {
@@ -147,6 +164,10 @@ describe('the token map and src/index.css', () => {
     );
     expect(css).toMatch(
       /\[data-surface='dark'\]:focus-visible,\s*\[data-surface='dark'\] :focus-visible \{\s*outline-color: var\(--color-focus-on-dark\);\s*\}/,
+    );
+    // A light surface inside the dark top bar (the theme menu) has the `focus` ring again.
+    expect(css).toMatch(
+      /\[data-surface='dark'\] \[data-surface='light'\]:focus-visible,\s*\[data-surface='dark'\] \[data-surface='light'\] :focus-visible \{\s*outline-color: var\(--color-focus\);\s*\}/,
     );
     expect(css).toMatch(
       /h1\[tabindex='-1'\]:focus-visible,\s*h2\[tabindex='-1'\]:focus-visible,\s*main\[tabindex='-1'\]:focus \{\s*outline: none;\s*\}/,
@@ -428,6 +449,45 @@ describe('contrast (design system sections 2 and 8, WCAG 2.x)', () => {
       }
       expect(ratio('focus-on-dark', 'topbar')).toBeGreaterThanOrEqual(NON_TEXT);
       expect(ratio('focus-on-dark', 'nav')).toBeGreaterThanOrEqual(NON_TEXT);
+    },
+  );
+
+  // UX-12: every text colour a screen sets on every ground it can sit on, not only its own pair:
+  // a tone's text in a table row under the pointer, a link on a selected row, an `ok` value in a
+  // `warn` callout. And every meaningful edge (a ring, a control's border, a tone's border, a
+  // ghost button's text) on every plain ground.
+  it.each(['light', 'dark'] as const)(
+    'meets AA for every text colour on every ground, and every edge on every plain ground (%s)',
+    (which) => {
+      const ratio = (fg: string, bg: string) =>
+        contrastRatio(colorValue(fg, which), colorValue(bg, which));
+      const plain = ['canvas', 'surface', 'surface-sunken', 'surface-hover'];
+      const grounds = [
+        ...plain,
+        'accent-subtle',
+        'disabled',
+        'line-subtle',
+        ...TONES.map((tone) => `${tone}-soft`),
+      ];
+      const texts = [
+        'ink',
+        'ink-secondary',
+        'link',
+        'accent',
+        'disabled-ink',
+        ...TONES.map((tone) => `${tone}-ink`),
+      ];
+      for (const text of texts) {
+        for (const ground of grounds) {
+          expect(ratio(text, ground), `${text} on ${ground}`).toBeGreaterThanOrEqual(TEXT);
+        }
+      }
+      const edges = ['line-strong', 'focus', 'accent', ...TONES.map((tone) => `${tone}-border`)];
+      for (const edge of edges) {
+        for (const ground of plain) {
+          expect(ratio(edge, ground), `${edge} on ${ground}`).toBeGreaterThanOrEqual(NON_TEXT);
+        }
+      }
     },
   );
 });

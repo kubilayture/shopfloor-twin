@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { timed } from '../test/timing.ts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { sessionKey } from '../auth/auth.tsx';
@@ -229,5 +229,23 @@ describe('roles in the app (#170)', () => {
     expect((await screen.findByTestId('password-changed')).textContent).toBe(
       'Password changed. 1 other session ended.',
     );
+  });
+
+  it('offers the theme on the account page, in its own Appearance card (UX-12)', async () => {
+    const mes = fakeMes({ signedIn: true, roles: ['operator'] });
+    vi.stubGlobal('fetch', mes.fetch);
+    await renderApp('/account', { session: 'fetch' });
+    const card = (await screen.findByRole('heading', { name: 'Appearance' })).closest('section');
+    if (!card) throw new Error('the Appearance card is no section');
+    const group = within(card).getByRole('group', { name: 'Theme' });
+    expect(
+      within(group)
+        .getAllByRole<HTMLInputElement>('radio')
+        .map((radio) => [radio.value, radio.checked]),
+    ).toEqual([
+      ['system', true],
+      ['light', false],
+      ['dark', false],
+    ]);
   });
 });

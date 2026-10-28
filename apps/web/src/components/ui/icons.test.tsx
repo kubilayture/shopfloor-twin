@@ -36,6 +36,9 @@ describe('Icon', () => {
       'logout',
       'filter',
       'clock',
+      'monitor',
+      'sun',
+      'moon',
     ];
     const glyphs: IconName[] = [
       'rotate',

@@ -73,6 +73,20 @@ describe('TrendChart (UX-1f)', () => {
     expect(await screen.findByTestId('trend')).toBeTruthy();
   });
 
+  it('is not printed: the metrics table carries the values on paper (UX-12)', async () => {
+    render(
+      <TrendChart
+        label="Coolant temperature"
+        unit="°C"
+        window={WINDOW}
+        data={[[1], [18], [24], [21]]}
+      />,
+    );
+    const figure = (await screen.findByTestId('trend')).closest('figure');
+    expect(figure?.className.split(' ')).toContain('print:hidden');
+    expect(figure?.dataset.print).toBe('hidden');
+  });
+
   it('shows an empty state at the compact height without samples', () => {
     render(<TrendChart label="Spindle load" unit="%" window={WINDOW} data={[[], [], [], []]} />);
     const empty = screen.getByText('No samples in this range.');

@@ -1,53 +1,53 @@
 WEBVTT
 
 scene-1
-00:00:00.203 --> 00:00:03.676
-1. Overview: six machines live at 60× (plant 06:01–06:04)
+00:00:00.270 --> 00:00:05.038
+1. Overview: six machines live at 60× (plant 06:02–06:07)
 The operator sees the six machines live; the plant clock follows the run at 60×.
 
 scene-2
-00:00:03.679 --> 00:00:16.645
-2. Orders: release and dispatch; the CNCs accept (plant 06:04–06:14)
+00:00:05.041 --> 00:00:19.060
+2. Orders: release and dispatch; the CNCs accept (plant 06:07–06:14)
 The supervisor releases and dispatches the four ERP orders; each CNC accepts its job (OPC UA LoadOrder).
 
 scene-3
-00:00:16.649 --> 00:00:20.347
+00:00:19.062 --> 00:00:23.055
 3. Console: status, timeline progress, pause and resume (plant 06:14–06:17)
 The admin sees the run paused by the timeline at 06:14, its progress list; resume, pause, resume.
 
 wait-4
-00:00:20.347 --> 00:01:23.366
+00:00:23.055 --> 00:01:26.146
 The run goes on at 60× (plant 06:17 to 07:20); scene 4 opens at 07:20.
 
 scene-4
-00:01:23.366 --> 00:01:56.603
+00:01:26.146 --> 00:01:59.837
 4. Alarms and downtime: acknowledged, breakdown coded (plant 07:20–07:53)
 Maintenance acknowledges the spindle overload on CNC-01; after the repair, codes its breakdown.
 
 wait-5
-00:01:56.603 --> 00:03:03.341
+00:01:59.837 --> 00:03:05.962
 The run goes on at 60× (plant 07:53 to 09:00); scene 5 opens at 09:00.
 
 scene-5
-00:03:03.341 --> 00:03:13.084
-5. OEE: availability loss, bottleneck, an order’s OEE (plant 09:00–09:09)
+00:03:05.962 --> 00:03:16.173
+5. OEE: availability loss, bottleneck, an order’s OEE (plant 09:00–09:10)
 The supervisor sees CNC-01’s availability loss, the line’s bottleneck (ASM-01), an order’s OEE and first-pass yield.
 
 wait-6
-00:03:13.084 --> 00:06:03.269
-The run goes on at 60× (plant 09:09 to 12:00); scene 6 opens at 12:00.
+00:03:16.173 --> 00:06:06.090
+The run goes on at 60× (plant 09:10 to 12:00); scene 6 opens at 12:00.
 
 scene-6
-00:06:03.269 --> 00:06:06.789
+00:06:06.090 --> 00:06:09.802
 6. SPC: the leak test’s drift episode (plant 12:00–12:03)
 The quality user sees the leak test’s SPC chart with the drift’s first episode.
 
 scene-7
-00:06:06.794 --> 00:06:31.750
+00:06:09.808 --> 00:06:34.721
 7. Hold: from the episode; the close refused (plant 12:03–12:28)
 A hold from the episode, its scope on the holds screen; the order’s close refused while held.
 
 scene-8
-00:06:31.753 --> 00:06:39.418
+00:06:34.725 --> 00:06:42.615
 8. Traceability: a packed serial back, its blank lot forward (plant 12:28–12:36)
 A packed serial traced back to its lots, machines, operator and leak value; its blank lot forward to its cartons.

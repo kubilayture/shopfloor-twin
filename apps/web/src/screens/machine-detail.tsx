@@ -2,7 +2,7 @@ import type { Clock, CurrentStateDto, EquipmentDto, Metrics } from '@shopfloor/c
 import { MES_API_LIMITS } from '@shopfloor/contracts/mes-api';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, type ReactNode } from 'react';
-import { Link, useParams, useSearch } from '@tanstack/react-router';
+import { useParams, useSearch } from '@tanstack/react-router';
 import { ApiError, getEquipment, getIntervals, getMetrics, getSeries } from '../api/client.ts';
 import { plantClock, queryKeys, usePlantClock } from '../api/queries.ts';
 import { TrendChart } from '../chart/trend-chart.tsx';
@@ -25,7 +25,7 @@ import { Disclosure } from '../components/ui/disclosure.tsx';
 import { EmptyState } from '../components/ui/empty-state.tsx';
 import { Duration, PlantTime } from '../components/ui/format.tsx';
 import { NotFound } from '../components/ui/not-found.tsx';
-import { PageHeader } from '../components/ui/page-header.tsx';
+import { BackLink, PageHeader } from '../components/ui/page-header.tsx';
 import { Section } from '../components/ui/section.tsx';
 import { SegmentedLinks } from '../components/ui/segmented-links.tsx';
 import { Skeleton } from '../components/ui/skeleton.tsx';
@@ -199,7 +199,14 @@ function Timeline({ bands, window }: { readonly bands: readonly Band[]; readonly
       />
       <ul aria-label="Legend" className="mt-2 flex flex-wrap items-center gap-2">
         {states.map((state) => (
-          <li key={state}>
+          // The band's own look beside the word: Running, Off and Planned stop have near-equal
+          // fills, told apart by their edges (#339).
+          <li key={state} className="flex items-center gap-1.5">
+            <span
+              aria-hidden="true"
+              data-band-swatch={state}
+              className={`inline-block h-4 w-6 rounded-sm ${stateStyle(state).band}`}
+            />
             <StateBadge state={state} />
           </li>
         ))}
@@ -736,11 +743,7 @@ export function MachineDetail() {
     // No `h1` until the machine is read: the heading takes the focus when it mounts.
     return (
       <div className="flex flex-col gap-6">
-        <p className="text-sm">
-          <Link to="/" className="text-link underline-offset-4 hover:underline">
-            ‹ {BACK.label}
-          </Link>
-        </p>
+        <BackLink back={BACK} />
         <Skeleton shape="card" label="Loading machine…" />
       </div>
     );

@@ -46,7 +46,7 @@ import { Disclosure } from '../components/ui/disclosure.tsx';
 import { EmptyState } from '../components/ui/empty-state.tsx';
 import { Missing, PlantTime, WallTime } from '../components/ui/format.tsx';
 import { NotFound } from '../components/ui/not-found.tsx';
-import { PageHeader } from '../components/ui/page-header.tsx';
+import { BackLink, PageHeader } from '../components/ui/page-header.tsx';
 import { Section } from '../components/ui/section.tsx';
 import { SectionNav, type SectionNavItem } from '../components/ui/section-nav.tsx';
 import { Skeleton } from '../components/ui/skeleton.tsx';
@@ -78,6 +78,7 @@ import {
 import { HoldTable } from './holds.tsx';
 import { ORDER_OEE_READ, OrderOee, noOrderOee, useOrderOeeRead } from './order-oee.tsx';
 import { ActionForm, offeredActions, useOrderPermissions, type Done } from './order-actions.tsx';
+import { countOf } from '../domain/words.ts';
 
 /** The MES's order id rule (`orderParams`): anything else is no order. */
 const ORDER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/;
@@ -180,7 +181,8 @@ function OrderFacts({ order }: { readonly order: OrderDto }) {
   ];
   return (
     <div data-testid="order-summary" data-version={String(order.version)} className="mt-2">
-      <DescriptionList facts={facts} columns="compact" label="Order facts" />
+      {/* Key facts in 1 / 2 / 4 columns (design system 3.4, #339). */}
+      <DescriptionList facts={facts} label="Order facts" />
     </div>
   );
 }
@@ -501,7 +503,7 @@ function Operations({
       {detail.bom.length > 0 ? (
         <Disclosure
           className="mt-4"
-          summary={`Bill of materials (${String(detail.bom.length)} lines)`}
+          summary={`Bill of materials (${countOf(detail.bom.length, 'line')})`}
         >
           <ul className="flex flex-col gap-0.5">
             {detail.bom.map((line) => (
@@ -1058,11 +1060,7 @@ function OrderDetail({ id }: { readonly id: string }) {
     // No `h1` until the order is read: the heading takes the focus when it mounts.
     return (
       <div className="flex flex-col gap-6" data-testid="order-detail" data-order={id}>
-        <p className="text-sm">
-          <Link {...BACK.link} className="text-link underline-offset-4 hover:underline">
-            ‹ {BACK.label}
-          </Link>
-        </p>
+        <BackLink back={BACK} />
         <Skeleton shape="card" label="Loading the order…" />
       </div>
     );
@@ -1150,7 +1148,7 @@ function OrderDetail({ id }: { readonly id: string }) {
         </Callout>
       ) : null}
       {!anyPermission ? (
-        <Callout tone="info" data-testid="order-read-only" className="mb-4">
+        <Callout tone="neutral" data-testid="order-read-only" className="mb-4">
           Your role cannot change orders: they are shown read-only.
         </Callout>
       ) : null}

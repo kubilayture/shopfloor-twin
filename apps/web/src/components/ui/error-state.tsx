@@ -64,8 +64,26 @@ export function isRetryable(error: unknown): boolean {
   return status === 0 || status === 429 || status >= 500;
 }
 
+/**
+ * Words for an answer without a problem body (the proxy's own 502 or 504, a bare 503): the API
+ * client names it `HTTP <status>`, and a screen says no HTTP status codes (design system 6.4).
+ */
+const BARE_STATUS_TEXT: Readonly<Record<number, string>> = {
+  429: 'The MES is busy: too many requests at once. Wait a moment.',
+  500: 'The MES failed on this request.',
+  502: 'The MES cannot be reached.',
+  503: 'The MES is not available at the moment.',
+  504: 'The MES did not answer in time.',
+};
+
 export function errorDetail(error: unknown): string {
-  return error instanceof Error ? error.message : 'Unknown error';
+  if (!(error instanceof Error)) return 'Unknown error';
+  const bare = /^HTTP (\d{3})$/.exec(error.message);
+  if (!bare) return error.message;
+  const status = Number(bare[1]);
+  return (
+    BARE_STATUS_TEXT[status] ?? `The MES answered without saying why (status ${String(status)}).`
+  );
 }
 
 /**

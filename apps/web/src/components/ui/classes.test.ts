@@ -213,6 +213,8 @@ for (const word of ['report-section', 'break']) NOT_CLASSES.add(word);
 NOT_CLASSES.add('max-time-to-ack');
 /** UX-10 (#334): the console's repair time unit, `unit="min"`. */
 NOT_CLASSES.add('min');
+/** #339: the order's bill of materials counted with `countOf(n, 'line')`. */
+NOT_CLASSES.add('line');
 /** UX-F1 (#337): the CSS unit of the data table's measured scroll padding, `${height}px`. */
 NOT_CLASSES.add('px');
 
@@ -258,7 +260,7 @@ describe('the primitives’ classes', async () => {
         'text-3xl',
         'font-semibold',
         'text-[0.95em]',
-        'xl:columns-4',
+        'xl:grid-cols-4',
         'rounded-md',
         'bg-state-down-fill',
         'motion-safe:duration-fast',

@@ -77,6 +77,10 @@ describe('SPC chart page', () => {
     expect(screen.getByTestId('spc-signal-points-I').dataset.count).toBe('1');
     expect(screen.getByTestId('spc-no-points-Xbar')).toBeTruthy();
     expect(screen.getByTestId('spc-retests').dataset.count).toBe('1');
+    // One retest in the singular (#393 review F6).
+    expect(screen.getByTestId('spc-retests').textContent).toMatch(
+      /^1 retest after rework is marked/,
+    );
     // Every value on request.
     fireEvent.click(screen.getByTestId('spc-values-toggle-I'));
     expect(screen.getByTestId('spc-values-I').dataset.count).toBe('2');
@@ -87,6 +91,13 @@ describe('SPC chart page', () => {
     const row1 = screen.getByTestId('signal-row-1');
     expect(row1.dataset.extentFinal).toBe('true');
     expect(within(row1).getByTestId('signal-finality').textContent).toBe('Final, extent final');
+    // An unacknowledged episode's bar is in its badge's tone (#339): final alarm, provisional warn.
+    const bar = (row: HTMLElement) => row.firstElementChild?.className ?? '';
+    expect(bar(row1)).toContain('var(--color-alarm-border)');
+    expect(bar(row2)).toContain('var(--color-warn-border)');
+    // Values in the sans font, tabular (G-15): no monospace number in the table.
+    expect(screen.getByTestId('spc-values-I').querySelector('.font-mono')).toBeNull();
+    expect(screen.getByTestId('spc-values-I').querySelector('.tabular-nums')).not.toBeNull();
     expect(screen.getByTestId('limit-version-1').dataset.createdBy).toBe('system');
     // A pushed episode grows, another opens, a provisional one is removed.
     await app.push({
@@ -148,7 +159,11 @@ describe('SPC chart page', () => {
     fireEvent.click(screen.getByTestId('spc-values-toggle-I'));
     expect(valueCell('spc-values-I', 0)).toBe('2.100');
     expect(valueCell('spc-values-I', 1)).toBe('3.381');
+    // One moving range: "Show the value", never "Show all 1 value" (#393 re-review).
+    expect(screen.getByTestId('spc-values-toggle-I').textContent).toBe('Hide the values');
+    expect(screen.getByTestId('spc-values-toggle-MR').textContent).toBe('Show the value');
     fireEvent.click(screen.getByTestId('spc-values-toggle-MR'));
+    expect(screen.getByTestId('spc-values-toggle-MR').textContent).toBe('Hide the value');
     expect(valueCell('spc-values-MR')).toBe('0.300');
     // X̄ points, centre lines and limits are statistics: one decimal more.
     fireEvent.click(screen.getByTestId('spc-values-toggle-Xbar'));

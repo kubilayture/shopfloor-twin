@@ -24,6 +24,7 @@ import {
   OrderLink,
   UnitStatusBadge,
 } from './trace-common.tsx';
+import { countOf } from '../domain/words.ts';
 
 type Result = TraceSearchDto['results'][number];
 type Kind = Result['kind'];
@@ -127,7 +128,7 @@ function summaryText(results: readonly Result[]): string {
     return [`${String(n)} ${n === 1 ? KIND_TEXT[kind].one.toLowerCase() : KIND_TEXT[kind].many}`];
   });
   const total = results.length;
-  return `${String(total)} result${total === 1 ? '' : 's'}: ${parts.join(', ')}`;
+  return `${countOf(total, 'result')}: ${parts.join(', ')}`;
 }
 
 function Results({ q }: { readonly q: string }) {
@@ -214,7 +215,7 @@ function Results({ q }: { readonly q: string }) {
         ]}
       />
       {cut.length > 0 ? (
-        <Callout tone="info" className="mt-3">
+        <Callout tone="neutral" className="mt-3">
           {cut.map((kind) => (
             <p key={kind} data-testid={`trace-more-${kind}`}>
               Only the first {GENEALOGY_LIMITS.search} {KIND_TEXT[kind].many} are shown: type more

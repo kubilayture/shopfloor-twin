@@ -350,6 +350,7 @@ describe('handover note editor', () => {
       expect(screen.queryByTestId('new-note')).toBeNull();
       expect(screen.queryByTestId('edit-note-1')).toBeNull();
       expect(screen.getByTestId('notes-read-only').textContent).toContain('cannot write');
+      expect(screen.getByTestId('notes-read-only').className).toContain('bg-neutral-soft');
     }
   });
 });

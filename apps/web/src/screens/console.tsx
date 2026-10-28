@@ -58,6 +58,7 @@ import { Section } from '../components/ui/section.tsx';
 import { SectionNav, type SectionNavItem } from '../components/ui/section-nav.tsx';
 import { Skeleton } from '../components/ui/skeleton.tsx';
 import { parsePlantDate, plantTimeText } from '../domain/time.ts';
+import { countOf } from '../domain/words.ts';
 
 // The simulation console (#237, Phase 9 plan "Simulation console", ADR-0037): the physical world
 // under test, for `admin` only (`sim:control`). Everything goes to the simulator's control API
@@ -1391,7 +1392,7 @@ const actionText = (a: SimAction): string => {
     case 'lot-release':
       return `Release lot ${a.lot} (${a.material}) at ${timeText(a.at)}`;
     case 'tool-breakage':
-      return `Tool breakage on ${a.machine} at ${timeText(a.at)}${a.cycles === undefined ? '' : ` after ${String(a.cycles)} cycles`}`;
+      return `Tool breakage on ${a.machine} at ${timeText(a.at)}${a.cycles === undefined ? '' : ` after ${countOf(a.cycles, 'cycle')}`}`;
     case 'operators-absent':
       return `${a.operators.join(', ')} absent in shift ${a.shift}`;
   }

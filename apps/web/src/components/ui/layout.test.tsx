@@ -9,7 +9,7 @@ import { act, render, renderHook, screen, within } from '@testing-library/react'
 import type { ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 import { requestHeadingFocus } from '../heading-focus.ts';
-import { PageHeader } from './page-header.tsx';
+import { BackLink, PageHeader } from './page-header.tsx';
 import { Section } from './section.tsx';
 import { documentTitle, usePageTitle, useRouteTitle } from './use-page-title.ts';
 
@@ -160,6 +160,23 @@ describe('PageHeader (design system 3.3)', () => {
       back.compareDocumentPosition(screen.getByRole('heading', { level: 1 })) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+});
+
+describe('BackLink (#339)', () => {
+  it("is the header's way back on a page that has no header yet, never the current page", async () => {
+    // A detail page shows it alone while it loads (#372 review: it was hand-rolled and announced
+    // as the current page under its parent for about a second).
+    await renderInRouter(
+      <BackLink back={{ label: 'All orders', link: { to: '/orders' } }} testId="back" />,
+    );
+    const back = screen.getByRole('link', { name: '‹ All orders' });
+    expect(back.getAttribute('href')).toBe('/orders');
+    expect(back.getAttribute('data-testid')).toBe('back');
+    expect(back.hasAttribute('aria-current')).toBe(false);
+    expect(back.className).toBe('text-link underline-offset-4 hover:underline');
+    expect(back.parentElement?.tagName).toBe('P');
+    expect(back.parentElement?.className).toBe('text-sm print:hidden');
   });
 });
 

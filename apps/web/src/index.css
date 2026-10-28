@@ -495,8 +495,7 @@
    */
   html[data-nav-open] {
     overflow: hidden;
-    /* With classic scrollbars the hidden root's scrollbar keeps its place: no sideways shift. */
-    scrollbar-gutter: stable;
+    /* The scrollbar keeps its place through `html`'s own `scrollbar-gutter: stable` (#339). */
   }
   html[data-nav-open] body {
     position: fixed;
@@ -599,4 +598,10 @@ html:has(dialog:modal) {
  */
 html {
   scroll-padding-top: 6rem;
+  /*
+   * The scrollbar's room stays when the nav drawer or a dialog holds the page still (overflow
+   * hidden): with visible scrollbars (Windows) the page behind no longer shifts sideways (#351
+   * review, #339). Overlay scrollbars (macOS, iPadOS, phones) take no room either way.
+   */
+  scrollbar-gutter: stable;
 }

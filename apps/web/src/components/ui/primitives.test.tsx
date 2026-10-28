@@ -4,7 +4,7 @@ import { Badge } from './badge.tsx';
 import { Callout } from './callout.tsx';
 import { Card } from './card.tsx';
 import { Code } from './code.tsx';
-import { DescriptionList } from './description-list.tsx';
+import { DescriptionList, placeByColumn } from './description-list.tsx';
 import { Missing } from './format.tsx';
 import { KpiTile, Stat } from './stat.tsx';
 
@@ -337,7 +337,7 @@ describe('DescriptionList', () => {
     expect(list.tagName).toBe('DL');
     expect(list.getAttribute('aria-label')).toBe('Order facts');
     expect(classesOf(list)).toEqual(
-      expect.arrayContaining(['columns-1', 'sm:columns-2', 'xl:columns-4']),
+      expect.arrayContaining(['grid', 'grid-cols-1', 'sm:grid-cols-2', 'xl:grid-cols-4']),
     );
     const terms = within(list)
       .getAllByRole('term')
@@ -362,7 +362,8 @@ describe('DescriptionList', () => {
     expect(detail?.previousElementSibling?.textContent).toBe('Peak per 10 min');
     // A tile's list: two columns at every width.
     expect(screen.getByTestId('f').className.split(' ')).toEqual([
-      'columns-2',
+      'grid',
+      'grid-cols-2',
       'gap-x-6',
       'text-sm',
     ]);
@@ -370,14 +371,43 @@ describe('DescriptionList', () => {
 
   it('takes one or two columns', () => {
     const { rerender } = render(<DescriptionList testId="f" columns={1} facts={[]} />);
-    expect(screen.getByTestId('f').className).not.toContain('sm:columns-2');
+    expect(screen.getByTestId('f').className).not.toContain('sm:grid-cols-2');
     rerender(<DescriptionList testId="f" columns={2} facts={[]} />);
-    expect(screen.getByTestId('f').className).not.toContain('xl:columns-4');
+    expect(screen.getByTestId('f').className).not.toContain('xl:grid-cols-4');
     // Compact: two columns already on a phone, four from xl (a page header's short facts).
     rerender(<DescriptionList testId="f" columns="compact" facts={[]} />);
     expect(screen.getByTestId('f').className.split(' ')).toEqual(
-      expect.arrayContaining(['columns-2', 'xl:columns-4']),
+      expect.arrayContaining(['grid-cols-2', 'xl:grid-cols-4']),
     );
-    expect(screen.getByTestId('f').className).not.toContain('columns-1');
+    expect(screen.getByTestId('f').className).not.toContain('grid-cols-1');
+  });
+
+  it('fills every column, flowing by column: nine facts in four are 3, 2, 2, 2 (#339)', () => {
+    const at = (count: number, columns: number) =>
+      Array.from({ length: count }, (_, index) => {
+        const place = placeByColumn(index, count, columns);
+        return `${String(place.column)}.${String(place.row)}`;
+      });
+    expect(at(9, 4)).toEqual(['1.1', '1.2', '1.3', '2.1', '2.2', '3.1', '3.2', '4.1', '4.2']);
+    expect(at(8, 4)).toEqual(['1.1', '1.2', '2.1', '2.2', '3.1', '3.2', '4.1', '4.2']);
+    expect(at(3, 4)).toEqual(['1.1', '2.1', '3.1']);
+    expect(at(5, 2)).toEqual(['1.1', '1.2', '1.3', '2.1', '2.2']);
+    expect(at(4, 1)).toEqual(['1.1', '1.2', '1.3', '1.4']);
+    // Each fact carries its place per breakpoint; the classes read them from 0, sm and xl.
+    render(
+      <DescriptionList
+        testId="nine"
+        facts={Array.from({ length: 9 }, (_, i) => ({ term: `T${String(i)}`, detail: 'x' }))}
+      />,
+    );
+    const fourth = screen.getByTestId('nine').children[3] as HTMLElement;
+    expect(fourth.style.getPropertyValue('--c2')).toBe('2');
+    expect(fourth.style.getPropertyValue('--r2')).toBe('1');
+    expect(fourth.style.getPropertyValue('--c1')).toBe('1');
+    expect(fourth.style.getPropertyValue('--r1')).toBe('4');
+    expect(fourth.style.getPropertyValue('--r0')).toBe('4');
+    expect(classesOf(fourth)).toEqual(
+      expect.arrayContaining(['xl:[grid-column:var(--c2)]', 'sm:[grid-row:var(--r1)]']),
+    );
   });
 });

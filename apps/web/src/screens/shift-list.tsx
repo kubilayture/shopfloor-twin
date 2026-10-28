@@ -15,6 +15,7 @@ import { PageHeader } from '../components/ui/page-header.tsx';
 import { Skeleton } from '../components/ui/skeleton.tsx';
 import { instanceKey, isNewerShift, revisionText, shiftTestKey } from '../domain/shifts.ts';
 import { useLiveShifts, useShiftsTopic } from '../live/live-context.tsx';
+import { countOf } from '../domain/words.ts';
 
 /**
  * The instance of a shift key to show: the newest epoch's, as the API defaults to. The read one
@@ -187,7 +188,7 @@ export function ShiftList() {
         summary={
           loaded && rows.length > 0 ? (
             <span data-testid="shift-list-summary">
-              {rows.length} shift{rows.length === 1 ? '' : 's'}
+              {countOf(rows.length, 'shift')}
               {notFinal > 0 ? ` · ${String(notFinal)} not final yet` : ''}
             </span>
           ) : undefined

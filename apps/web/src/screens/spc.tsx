@@ -28,6 +28,7 @@ import { QueryError } from '../components/query-error.tsx';
 import {
   CommentInput,
   FailureMessage,
+  SIGNAL_LOOK,
   SignalStatusBadge,
   plantBeside,
   timeOf,
@@ -46,11 +47,7 @@ import { EmptyState } from '../components/ui/empty-state.tsx';
 import { Missing } from '../components/ui/format.tsx';
 import { Icon } from '../components/ui/icons.tsx';
 import { NotFound } from '../components/ui/not-found.tsx';
-import {
-  BACK_LINK_ACTIVE,
-  PageHeader,
-  type PageHeaderBack,
-} from '../components/ui/page-header.tsx';
+import { BackLink, PageHeader, type PageHeaderBack } from '../components/ui/page-header.tsx';
 import { PlantTimeInput, readPlantTime } from '../components/ui/plant-time-input.tsx';
 import { Section } from '../components/ui/section.tsx';
 import { SectionNav, type SectionNavItem } from '../components/ui/section-nav.tsx';
@@ -88,6 +85,7 @@ import {
 import { useLiveQuality, useQualityTopic } from '../live/live-context.tsx';
 import { upsertCharacteristic, upsertSignal } from '../live/live-quality.ts';
 import type { SpcChartSearch } from '../routes/quality.ts';
+import { countOf } from '../domain/words.ts';
 
 // `/quality/spc` and `/quality/spc/$characteristic` (#203, plan "Web", ADR-0032): the
 // characteristics, and one characteristic's I-MR and X̄-R charts with limits, zones, provisional
@@ -103,8 +101,6 @@ const CHARACTERISTIC_ID = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 export const SIGNALS_SHOWN = 100;
 
 const BACK: PageHeaderBack = { label: 'SPC charts', link: { to: '/quality/spc' } };
-
-const plural = (n: number, word: string): string => `${String(n)} ${word}${n === 1 ? '' : 's'}`;
 
 /**
  * Where the focus goes once a form has closed: the control named by its test id (the button that
@@ -277,7 +273,7 @@ export function SpcList() {
             </p>
           </Disclosure>
         }
-        summary={read.data ? plural(items.length, 'characteristic') : undefined}
+        summary={read.data ? countOf(items.length, 'characteristic') : undefined}
       />
       {read.isPending ? (
         <Skeleton shape="card" label="Loading the characteristics…" />
@@ -503,7 +499,8 @@ function pointColumns(
         </>
       ),
       numeric: true,
-      cell: (p) => <span className="font-mono">{spcValueText(p.value, precision, places)}</span>,
+      // Numbers in the sans font, tabular (2.7, G-15): monospace is for identifiers only.
+      cell: (p) => <span className="tabular-nums">{spcValueText(p.value, precision, places)}</span>,
     },
     {
       key: 'rules',
@@ -575,7 +572,7 @@ function ChartFigure({
     <EChart
       testId={`spc-chart-${chart}`}
       title={label}
-      description={`${label}: ${String(points.length)} points, ${String(firing.length)} firing a rule, ${String(provisional)} provisional; the values are in the tables below.`}
+      description={`${label}: ${countOf(points.length, 'point')}, ${String(firing.length)} firing a rule, ${String(provisional)} provisional; the values are in the tables below.`}
       option={option}
       height={CHART_SIZES.compact}
     >
@@ -587,7 +584,8 @@ function ChartFigure({
         />
       ) : null}
       <p className="mt-2 text-sm text-ink-secondary" data-testid={`spc-summary-${chart}`}>
-        {points.length} points ({provisional} provisional), {firing.length} firing a rule.
+        {countOf(points.length, 'point')} ({provisional} provisional), {firing.length} firing a
+        rule.
       </p>
       {firing.length > 0 ? (
         <div className="mt-2">
@@ -615,7 +613,13 @@ function ChartFigure({
               setShowAll((v) => !v);
             }}
           >
-            {showAll ? 'Hide the values' : `Show all ${String(points.length)} values`}
+            {points.length === 1
+              ? showAll
+                ? 'Hide the value'
+                : 'Show the value'
+              : showAll
+                ? 'Hide the values'
+                : `Show all ${countOf(points.length, 'value')}`}
           </Button>
           {showAll ? (
             <div id={valuesId} className="mt-2">
@@ -880,7 +884,7 @@ const SIGNAL_COLUMNS: readonly Column<SpcSignalDto>[] = [
         <span className="whitespace-nowrap">(part {s.first.partId})</span>
         <span className="block text-xs text-ink-secondary">
           {isOpenEpisode(s) ? 'open, last ' : 'closed, last '}
-          {timeOf(s.last.at)} · {plural(s.points, 'point')} · v{s.version}
+          {timeOf(s.last.at)} · {countOf(s.points, 'point')} · v{s.version}
         </span>
       </>
     ),
@@ -999,7 +1003,8 @@ function Signals({
           'data-row-version': String(s.rowVersion),
         })}
         // Not yet acknowledged is what needs a person: the bar, as the list's count badge.
-        rowTone={(s) => (canAcknowledgeSignal(s) ? 'warn' : undefined)}
+        // The bar in the episode's own tone, as its badge (2.6): provisional `warn`, final `alarm`.
+        rowTone={(s) => (canAcknowledgeSignal(s) ? SIGNAL_LOOK[s.status].tone : undefined)}
         {...(hasActions ? { actions: rowActions } : {})}
         narrow="stack"
         skipToDetails={hasActions && shown.length > 0 ? 'spc-limits-title' : undefined}
@@ -1261,7 +1266,7 @@ function LimitsForm({
 /** One column per value (C-07): the I and X̄ limits as lower, centre, upper; MR and R upper. */
 function limitColumns(precision: SpcPrecision): readonly Column<LimitVersionDto>[] {
   const stat = (v: LimitVersionDto['charts']['I']['centre']) => (
-    <span className="font-mono">{spcValueText(v, precision, precision.statistic)}</span>
+    <span className="tabular-nums">{spcValueText(v, precision, precision.statistic)}</span>
   );
   const value = (
     key: string,
@@ -1522,15 +1527,7 @@ function SpcChartScreen({ id, search }: { readonly id: string; readonly search: 
     // No `h1` until the chart is read: the heading takes the focus when it mounts.
     return (
       <div className="flex flex-col gap-6" data-testid="spc-chart-page" data-characteristic={id}>
-        <p className="text-sm">
-          <Link
-            {...BACK.link}
-            activeOptions={BACK_LINK_ACTIVE}
-            className="text-link underline-offset-4 hover:underline"
-          >
-            ‹ {BACK.label}
-          </Link>
-        </p>
+        <BackLink back={BACK} />
         <Skeleton shape="chart" label="Loading the charts…" />
       </div>
     );
@@ -1616,7 +1613,8 @@ function SpcChartScreen({ id, search }: { readonly id: string; readonly search: 
               data-testid="spc-retests"
               data-count={String(view.retests.length)}
             >
-              {view.retests.length} retests after rework are marked as triangles on the I chart and
+              {countOf(view.retests.length, 'retest')} after rework{' '}
+              {view.retests.length === 1 ? 'is' : 'are'} marked as triangles on the I chart and
               never charted as points (another population).
             </p>
           ) : null}

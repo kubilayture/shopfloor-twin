@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { kpiBucket } from '../test/alarm-fixtures.ts';
 import { EPOCH, problem } from '../test/fixtures.ts';
@@ -17,6 +17,7 @@ import { memoryStorage, shiftMes, shiftState } from '../test/shift-mes.ts';
 import { liveKeys, type LiveShifts } from '../live/live-cache.ts';
 import { expectDecimals } from '../test/decimals.ts';
 import { NA_REASON } from '../components/oee-ui.tsx';
+import type { CURRENT_SHIFT } from '../test/oee-fixtures.ts';
 
 vi.mock('../chart/echarts-view.tsx', () => ({ EChartsView: () => null }));
 
@@ -395,9 +396,11 @@ describe('shift report', () => {
     const missing = await screen.findByTestId('report-missing');
     expect(missing.textContent).toContain('No shift 2026-10-15/A');
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Shift 2026-10-15/A');
+    // The tab keeps the route's title; the not-found header sets none of its own (#393 F2).
+    expect(document.title).toBe('Shift report 2026-10-15 A · ShopFloor Twin');
     const page = missing.closest('section');
     expect(
-      page && within(page).getByRole('link', { name: 'Shift reports' }).getAttribute('href'),
+      page && within(page).getByRole('link', { name: '‹ Shift reports' }).getAttribute('href'),
     ).toBe('/shifts');
     view.unmount();
 
@@ -600,5 +603,50 @@ describe('shift report', () => {
     const empty = await screen.findByTestId('shift-list-empty');
     expect(empty.textContent).toContain('No shift yet');
     expect(screen.queryByRole('table')).toBeNull();
+  });
+
+  it('shows the list loading, not "No shift yet", while the shifts are on their way (#339)', async () => {
+    const server = shiftMes(shiftState());
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) =>
+      new URL(String(input instanceof Request ? input.url : input), 'http://localhost').pathname ===
+      '/api/v1/shifts'
+        ? new Promise<Response>(() => undefined)
+        : server.fetch(input, init),
+    );
+    await renderApp('/shifts');
+    expect(await screen.findByText('Loading shifts…')).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByTestId('shift-list-empty')).toBeNull();
+  });
+
+  it('keeps the table while a later plant hour reads the list again (#393 review F1)', async () => {
+    const server = shiftMes(shiftState());
+    let hold = false;
+    const reads: string[] = [];
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input instanceof Request ? input.url : input), 'http://localhost');
+      if (url.pathname === '/api/v1/shifts') {
+        reads.push(url.search);
+        if (hold) return new Promise<Response>(() => undefined);
+      }
+      return server.fetch(input, init);
+    });
+    const app = await renderApp('/shifts');
+    expect(await screen.findByTestId('shift-list')).toBeTruthy();
+    // The plant clock crosses the next full hour: the list's key moves and it is read again,
+    // held here; the table stays, with no skeleton in its place.
+    hold = true;
+    const now = app.queryClient.getQueryData<typeof CURRENT_SHIFT>(['shifts', 'current']);
+    const later = new Date(Date.parse(now?.clock.watermark ?? '') + 3_600_000).toISOString();
+    await act(async () => {
+      app.queryClient.setQueryData(['shifts', 'current'], {
+        ...now,
+        clock: { ...now?.clock, watermark: later },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(reads).toHaveLength(2);
+    expect(screen.getByTestId('shift-list')).toBeTruthy();
+    expect(screen.queryByText('Loading shifts…')).toBeNull();
   });
 });

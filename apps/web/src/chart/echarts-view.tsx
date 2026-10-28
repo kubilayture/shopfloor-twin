@@ -140,6 +140,15 @@ export const LIVE_UPDATE: SetOptionOpts = {
   replaceMerge: ['series', 'xAxis', 'yAxis'],
 };
 
+/**
+ * A live update of an option with `media` (the Pareto's narrow layout): a plain merge. ECharts
+ * (6.1) drops the replaced series and axes of such an option once a media query applies, so at
+ * 480 px or less the Pareto went blank on its first push (#339). Its shape is the same (the
+ * precondition of a merge), so every series and axis is there to be merged by index, each with
+ * its data given whole.
+ */
+export const MEDIA_UPDATE: SetOptionOpts = { notMerge: false };
+
 /** What the chart was last given: the option's shape and its category count. */
 export interface Applied {
   readonly shape: string;
@@ -159,7 +168,7 @@ export function applyOption(
   const applied = { shape: optionShape(option), categories: categoryCount(option) };
   if (applied.shape === previous?.shape) {
     if (applied.categories < previous.categories) instance.dispatchAction({ type: 'hideTip' });
-    instance.setOption(option, LIVE_UPDATE);
+    instance.setOption(option, 'media' in option ? MEDIA_UPDATE : LIVE_UPDATE);
   } else {
     instance.setOption(option, { notMerge: true });
   }

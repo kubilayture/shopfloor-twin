@@ -7,7 +7,14 @@ import {
 import { SVGRenderer } from 'echarts/renderers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ECHARTS_MODULES } from './echarts-modules.ts';
-import { LIVE_UPDATE, applyOption, categoryCount, optionShape } from './echarts-view.tsx';
+import {
+  LIVE_UPDATE,
+  MEDIA_UPDATE,
+  applyOption,
+  categoryCount,
+  optionShape,
+} from './echarts-view.tsx';
+import { paretoOption } from './oee-options.ts';
 
 // Live charts keep their hover tooltip across live updates (#356): a real ECharts instance on the
 // SVG renderer in jsdom (as spc-render.test.ts), given each option as EChartsView gives it.
@@ -154,6 +161,43 @@ describe('EChartsView updates (#356)', () => {
     expect(dispatchAction.mock.invocationCallOrder[0]).toBeLessThan(
       setOption.mock.invocationCallOrder.at(-1) ?? 0,
     );
+  });
+
+  it('keeps a narrow Pareto drawn across live updates (#339)', () => {
+    // At 480 px or less the Pareto's `media` option applies; ECharts drops replace-merged series
+    // and axes then, so the chart went blank on its first push. Rendered, not just the call.
+    const pareto = (minutes: number) =>
+      paretoOption({
+        reasons: [
+          {
+            code: 'STARVED',
+            name: 'Starved by the upstream station',
+            loss: 'external',
+            ms: minutes * 60_000,
+          },
+          { code: 'TOOL', name: 'Tool change', loss: 'own', ms: 6 * 60_000 },
+        ],
+      } as never).option;
+    for (const width of [300, 800]) {
+      host = document.createElement('div');
+      document.body.append(host);
+      const instance = init(host, null, { renderer: 'svg', width, height: 200 });
+      let applied = applyOption(instance, pareto(117), undefined);
+      applied = applyOption(instance, pareto(124), applied);
+      applyOption(instance, pareto(131), applied);
+      const svg = host.innerHTML;
+      expect(svg, `${String(width)} px`).toContain('Tool change');
+      expect(svg, `${String(width)} px`).toContain('External');
+      instance.dispose();
+      host.remove();
+    }
+    host = undefined;
+    const setOption = vi.fn();
+    const chart = { setOption, dispatchAction: vi.fn() };
+    const first = applyOption(chart, pareto(1), undefined);
+    applyOption(chart, pareto(2), first);
+    expect(setOption.mock.lastCall?.[1]).toBe(MEDIA_UPDATE);
+    expect(MEDIA_UPDATE).toEqual({ notMerge: false });
   });
 
   it('hides the tooltip when the categories shrink, rather than show it with dashes', () => {

@@ -589,7 +589,7 @@ export function HandoverNotes({
             onSaved={() => void onSaved()}
           />
         ) : (
-          <Callout tone="info" data-testid="notes-read-only" className="print:hidden">
+          <Callout tone="neutral" data-testid="notes-read-only" className="print:hidden">
             Your role cannot write handover notes: they are shown read-only.
           </Callout>
         )}

@@ -41,7 +41,7 @@ describe('NotFound', () => {
     const empty = screen.getByTestId('nf');
     expect(within(empty).getByRole('heading', { level: 2 }).textContent).toBe('No order PO-NOPE');
     expect(empty.textContent).toContain('The MES has no order with this id.');
-    expect(screen.getByRole('link', { name: 'All orders' }).getAttribute('href')).toBe('/orders');
+    expect(screen.getByRole('link', { name: '‹ All orders' }).getAttribute('href')).toBe('/orders');
   });
 
   it('never marks its way back as the current page, under the parent it links to', async () => {
@@ -49,7 +49,7 @@ describe('NotFound', () => {
       () => <NotFound kind="order" id="PO-NOPE" back={{ to: '/orders', label: 'All orders' }} />,
       '/orders/PO-NOPE',
     );
-    const back = screen.getByRole('link', { name: 'All orders' });
+    const back = screen.getByRole('link', { name: '‹ All orders' });
     expect(back.getAttribute('href')).toBe('/orders');
     expect(back.hasAttribute('aria-current')).toBe(false);
   });
@@ -74,7 +74,7 @@ describe('NotFound', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'Page not found' })).toBeTruthy();
     expect(screen.getByRole('heading', { level: 2, name: 'Nothing at this address' })).toBeTruthy();
     expect(screen.getByText('/nowhere').tagName).toBe('CODE');
-    expect(screen.getByRole('link', { name: 'Plant overview' }).getAttribute('href')).toBe('/');
+    expect(screen.getByRole('link', { name: '‹ Plant overview' }).getAttribute('href')).toBe('/');
   });
 });
 

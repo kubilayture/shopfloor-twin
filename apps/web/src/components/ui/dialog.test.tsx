@@ -245,6 +245,11 @@ describe('Dialog', () => {
     expect(css).toMatch(/html:has\(dialog:modal\)\s*\{\s*overflow: hidden;/);
   });
 
+  it("keeps the scrollbar's room while it holds the page still, so nothing shifts (#339)", () => {
+    const css = readFileSync(join(import.meta.dirname, '..', '..', 'index.css'), 'utf8');
+    expect(css).toMatch(/\nhtml \{[^}]*scrollbar-gutter: stable;/);
+  });
+
   it('Escape on a tooltip inside it hides the tooltip only (#352 L6)', () => {
     vi.useFakeTimers();
     const onClose = vi.fn();

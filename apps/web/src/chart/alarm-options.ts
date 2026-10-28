@@ -3,6 +3,10 @@ import { windowLabel } from '../domain/alarms.ts';
 import { formatClockTime, formatPlantTimeMinutes } from '../domain/time.ts';
 import { barLegend, CHART_COLORS } from './oee-options.ts';
 import { CHART_TOKENS } from './theme.ts';
+import { countOf } from '../domain/words.ts';
+
+/** A dashed line as a legend sample (three dashes, 16 px wide), for the flood threshold. */
+export const DASHED_LINE_ICON = 'path://M0,4h4v2h-4z M6,4h4v2h-4z M12,4h4v2h-4z';
 
 /**
  * One hour's bar: an MES hour bucket, or an hour the MES did not list because nothing happened in
@@ -30,11 +34,20 @@ export function alarmHourlyOption(
   const peak = `Peak per ${windowLabel(windowMs)}`;
   const colour = (hour: AlarmHourBar) =>
     hour.final === true ? CHART_COLORS.final : CHART_COLORS.provisional;
+  const threshold =
+    floodThreshold === undefined ? undefined : `Flood threshold (${String(floodThreshold)})`;
   const status = (hour: AlarmHourBar) =>
     hour.final === undefined ? 'no alarm activity' : hour.final ? 'final' : 'provisional';
   return {
     grid: { left: 8, right: 16, top: 36, bottom: 8, containLabel: true },
-    legend: barLegend(['Raises', peak]),
+    // The threshold is named in the legend, as a dashed sample, not by a label on its line: at a
+    // phone's width a label at the line's end lay over the bars (#339).
+    legend: {
+      ...barLegend(['Raises', peak]),
+      ...(threshold === undefined
+        ? {}
+        : { data: ['Raises', peak, { name: threshold, icon: DASHED_LINE_ICON }] }),
+    },
     tooltip: {
       trigger: 'item',
       formatter: (params: { seriesName?: string; dataIndex: number; value?: unknown }) => {
@@ -76,16 +89,26 @@ export function alarmHourlyOption(
                 silent: true,
                 symbol: 'none',
                 lineStyle: { color: CHART_TOKENS.limit, type: 'dashed', width: 1.5 },
-                // K-03: at the line's right end, above it, not mid-plot.
-                label: {
-                  position: 'insideEndTop',
-                  color: CHART_TOKENS.limit,
-                  formatter: `Flood threshold (${String(floodThreshold)})`,
-                },
+                // Named in the legend (K-03, #339), not on the plot.
+                label: { show: false },
                 data: [{ yAxis: floodThreshold }],
               },
             }),
       },
+      // The legend's entry for the threshold line: a series with no data, in the line's colour.
+      ...(threshold === undefined
+        ? []
+        : [
+            {
+              type: 'line',
+              name: threshold,
+              silent: true,
+              symbol: 'none',
+              data: [],
+              itemStyle: { color: CHART_TOKENS.limit },
+              lineStyle: { color: CHART_TOKENS.limit, type: 'dashed', width: 1.5 },
+            },
+          ]),
     ],
   };
 }
@@ -98,7 +121,7 @@ export function alarmHourlyReading(
 ): string {
   const total = hours.reduce((sum, hour) => sum + hour.raises, 0);
   const n = hours.length;
-  const span = `${String(n)} hour${n === 1 ? '' : 's'}`;
+  const span = countOf(n, 'hour');
   let busiest: AlarmHourBar | undefined;
   for (const hour of hours) if (!busiest || hour.raises > busiest.raises) busiest = hour;
   const most =

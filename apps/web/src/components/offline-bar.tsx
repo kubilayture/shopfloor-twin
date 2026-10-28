@@ -104,7 +104,7 @@ export function OfflineBar({ variant = 'shell' }: { readonly variant?: 'shell' |
           ) : (
             <>
               {words.what} stopped updating at{' '}
-              <time dateTime={at} className="font-mono tabular-nums">
+              <time dateTime={at} className="tabular-nums">
                 {formatClockSeconds(at)}
               </time>{' '}
               plant time.

@@ -19,6 +19,8 @@ describe('IdleWarning', () => {
     // Right of the side nav from xl (232 px); the countdown is not re-announced every second.
     expect(warning.className).toContain('xl:left-62');
     expect(warning.querySelector('.tabular-nums')?.getAttribute('aria-live')).toBe('off');
+    // Sans with tabular figures, as every number (2.7, G-15; #393 review F4).
+    expect(warning.querySelector('.tabular-nums')?.className.split(' ')).not.toContain('font-mono');
     expect(warning.textContent).toContain('You will be logged out soon');
     expect(warning.textContent).toContain('you will be logged out in 1:35');
     expect(warning.firstElementChild?.className).toContain('bg-warn-soft');

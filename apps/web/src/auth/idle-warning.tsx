@@ -24,7 +24,7 @@ export function IdleWarning({
 }) {
   const countdown = (
     // Not re-announced every second: the alert is read once, the countdown is there to look at.
-    <span aria-live="off" className="font-mono font-semibold tabular-nums">
+    <span aria-live="off" className="font-semibold tabular-nums">
       {countdownText(left)}
     </span>
   );

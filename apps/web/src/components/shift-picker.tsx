@@ -102,7 +102,9 @@ export function useShiftSelection(requested: string | undefined): ShiftSelection
     shifts,
     selected,
     isCurrent: selected !== undefined && selected === currentKey,
-    pending: current.isPending,
+    // Until the list is in too: with the current shift alone, a screen took the empty list for
+    // "no shift yet" and said so while the list was still on its way (#339).
+    pending: current.isPending || (to !== undefined && list.isPending),
     error: current.error ?? list.error,
     retry: () => {
       void current.refetch();

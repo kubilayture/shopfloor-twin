@@ -566,4 +566,18 @@ describe('shift report', () => {
     expect(empty.textContent).toContain('No shift yet');
     expect(screen.queryByRole('table')).toBeNull();
   });
+
+  it('shows the list loading, not "No shift yet", while the shifts are on their way (#339)', async () => {
+    const server = shiftMes(shiftState());
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) =>
+      new URL(String(input instanceof Request ? input.url : input), 'http://localhost').pathname ===
+      '/api/v1/shifts'
+        ? new Promise<Response>(() => undefined)
+        : server.fetch(input, init),
+    );
+    await renderApp('/shifts');
+    expect(await screen.findByText('Loading shifts…')).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByTestId('shift-list-empty')).toBeNull();
+  });
 });

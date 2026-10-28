@@ -73,6 +73,7 @@ import {
   useAlarmsTopic,
   useLiveSubscriptions,
 } from '../live/live-context.tsx';
+import { countOf } from '../domain/words.ts';
 
 /**
  * The alarm list (#145; UX-4a, #324): the four operator views as `Tabs`, each a `DataTable` with
@@ -177,9 +178,6 @@ const SORT_TEXT: Readonly<Record<AlarmSort, { label: string; caption: string }>>
   },
   raised: { label: 'Newest raise', caption: 'newest raise first' },
 };
-
-const plural = (count: number, word: string): string =>
-  `${String(count)} ${word}${count === 1 ? '' : 's'}`;
 
 /**
  * How a control names its alarm for a screen reader: the alarm's text, else its code, then the
@@ -927,7 +925,7 @@ function alarmColumns(
           <AlarmState occurrence={occurrence} beside={beside} />
           {occurrence.comments > 0 ? (
             <span className="block text-xs font-normal text-ink-secondary">
-              {plural(occurrence.comments, 'comment')}
+              {countOf(occurrence.comments, 'comment')}
             </span>
           ) : null}
         </>
@@ -1352,7 +1350,7 @@ export function AlarmList() {
                 actions={rowActions}
                 skipToDetails={panelOpen && wide ? PANEL_TITLE_ID : undefined}
                 announceRemoval={(left) =>
-                  `The alarm left the ${ALARM_VIEW_LABELS[view]} list; ${left === 0 ? 'no alarms remain' : `${plural(left, 'alarm')} ${left === 1 ? 'remains' : 'remain'}`}.`
+                  `The alarm left the ${ALARM_VIEW_LABELS[view]} list; ${left === 0 ? 'no alarms remain' : `${countOf(left, 'alarm')} ${left === 1 ? 'remains' : 'remain'}`}.`
                 }
                 narrow="stack"
                 loading={

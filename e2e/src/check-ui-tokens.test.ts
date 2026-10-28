@@ -3,7 +3,14 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { formatReport, rawColours, scan, withoutComments } from '../../scripts/check-ui-tokens.ts';
+import {
+  formatReport,
+  palettesFrom,
+  rawColours,
+  scan,
+  tailwindPalettes,
+  withoutComments,
+} from '../../scripts/check-ui-tokens.ts';
 
 /** `scripts/check-ui-tokens.ts` (UX-1a, #314): the raw-colour report of the web app. */
 
@@ -55,6 +62,40 @@ describe('rawColours', () => {
     expect(rawColours(source).hexes).toEqual(['#fff', '#b91c1cff', '#0f172a', '#abcd']);
   });
 
+  it('knows every palette of the installed Tailwind, its newest included (#393 review F3)', () => {
+    const palettes = tailwindPalettes(REPO);
+    expect(palettes).toEqual(
+      expect.arrayContaining(['slate', 'red', 'mauve', 'mist', 'olive', 'taupe']),
+    );
+    expect(
+      rawColours('"bg-mauve-500 border-olive-300 text-mist-50 ring-taupe-950"').classes,
+    ).toEqual(['bg-mauve-500', 'border-olive-300', 'text-mist-50', 'ring-taupe-950']);
+    // Read from the theme: a palette a release adds is caught without a change here.
+    expect(
+      palettesFrom('@theme { --color-plum-50: x; --color-plum-950: y; --color-ink: z; }'),
+    ).toEqual(['plum']);
+    expect(rawColours('"bg-plum-500"', ['plum']).classes).toEqual(['bg-plum-500']);
+  });
+
+  it('finds colour functions with literal arguments and literal colour property values', () => {
+    const source = [
+      `<p className="text-[rgb(15_23_42)] bg-[oklch(0.6_0.2_30)]" />`,
+      `const a = 'hsl(210 40% 98%)'; const b = \`rgba(\${r}, \${g}, 0, 1)\`;`,
+      `<div style={{ color: 'red', backgroundColor: "teal", fill: 'currentColor' }} />`,
+      `const ok = { color: 'transparent', stroke: 'none', background: 'var(--color-surface)' };`,
+      `const hex = { borderColor: '#fff' };`,
+    ].join('\n');
+    expect(rawColours(source).values).toEqual([
+      'rgb(1',
+      'oklch(0',
+      'hsl(2',
+      "color: 'red'",
+      'backgroundColor: "teal"',
+    ]);
+    // A hex value is counted once, as a hex.
+    expect(rawColours(source).hexes).toEqual(['#fff']);
+  });
+
   it('drops comments but keeps strings that hold comment markers', () => {
     expect(withoutComments(`a // b\nc /* d */ e '//f' "/*g*/"`)).toBe(`a \nc  e '//f' "/*g*/"`);
   });
@@ -72,20 +113,28 @@ describe('scan and formatReport', () => {
       'src/screens/a.test.tsx': `'bg-slate-50 #ffffff'`,
       'src/test/fixtures.ts': `'#ffffff'`,
       'src/notes.md': `bg-slate-50`,
+      'src/legacy.jsx': `<p style={{ color: 'red' }} />`,
     });
     const reports = scan(root);
     expect(reports).toEqual([
-      { file: 'src/screens/a.tsx', classes: ['bg-slate-50', 'text-white'], hexes: ['#ffffff'] },
-      { file: 'src/chart/c.ts', classes: [], hexes: ['#0369a1'] },
-      { file: 'src/screens/b.tsx', classes: ['bg-red-700'], hexes: [] },
+      {
+        file: 'src/screens/a.tsx',
+        classes: ['bg-slate-50', 'text-white'],
+        hexes: ['#ffffff'],
+        values: [],
+      },
+      { file: 'src/chart/c.ts', classes: [], hexes: ['#0369a1'], values: [] },
+      { file: 'src/legacy.jsx', classes: [], hexes: [], values: ["color: 'red'"] },
+      { file: 'src/screens/b.tsx', classes: ['bg-red-700'], hexes: [], values: [] },
     ]);
     expect(formatReport(reports).split('\n')).toEqual([
       'check-ui-tokens: raw colours in apps/web/src (none allowed; design system section 8)',
-      'classes   hex  file',
-      '      2     1  src/screens/a.tsx',
-      '      0     1  src/chart/c.ts',
-      '      1     0  src/screens/b.tsx',
-      '      3     2  total in 3 files',
+      'classes   hex values  file',
+      '      2     1      0  src/screens/a.tsx',
+      '      0     1      0  src/chart/c.ts',
+      '      0     0      1  src/legacy.jsx',
+      '      1     0      0  src/screens/b.tsx',
+      '      3     2      1  total in 4 files',
     ]);
   });
 
@@ -101,7 +150,7 @@ describe('scan and formatReport', () => {
       encoding: 'utf8',
     });
     expect(raw.status).toBe(1);
-    expect(raw.stderr).toContain('      1     1  src/a.tsx');
+    expect(raw.stderr).toContain('      1     1      0  src/a.tsx');
     expect(raw.stderr).toContain('use the semantic tokens');
     expect(raw.stdout).toBe('');
   });

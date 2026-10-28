@@ -9,41 +9,50 @@
  * Skipped: the token files themselves (`src/index.css` and `src/components/ui/tokens.ts`, where
  * the raw values belong) and tests (`*.test.ts(x)`, `src/test/`), whose fixtures may name colours.
  *
+ * Also counted (#393 review F3): colour functions with literal arguments (`rgb(15 23 42)`,
+ * `oklch(0.6 0.2 30)`, in an arbitrary value such as `text-[rgb(…)]` too) and colour properties
+ * given a literal value (`style={{ color: 'red' }}`, `fill: 'teal'`) other than `transparent`,
+ * `currentColor`, `none`, the CSS-wide keywords or a `var(…)`. The palettes are Tailwind's own,
+ * read from the installed `tailwindcss/theme.css`, so a palette a Tailwind release adds is caught.
+ *
  * Comments are left out (an issue number such as `#145` would read as a colour). Known limits (a
- * report, not a parser): a class is found wherever its text appears in the code, strings
+ * check, not a parser): a class is found wherever its text appears in the code, strings
  * included; one built at run time from pieces (`bg-${tone}-700`) is not; an apostrophe in JSX
- * text can hide a comment from the comment filter; `rgb()` and `oklch()` values are not counted.
+ * text can hide a comment from the comment filter.
  *
  * Usage: node scripts/check-ui-tokens.ts [repository root]
  */
 import { readFileSync, readdirSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { join, relative, resolve, sep } from 'node:path';
 
-/** Tailwind's colour palettes (v4), each with steps 50 to 950; `neutral` also has our `neutral-0`. */
-export const PALETTES = [
-  'slate',
-  'gray',
-  'zinc',
-  'neutral',
-  'stone',
-  'red',
-  'orange',
-  'amber',
-  'yellow',
-  'lime',
-  'green',
-  'emerald',
-  'teal',
-  'cyan',
-  'sky',
-  'blue',
-  'indigo',
-  'violet',
-  'purple',
-  'fuchsia',
-  'pink',
-  'rose',
-] as const;
+/**
+ * Tailwind's colour palettes as its installed theme defines them (`--color-<palette>-<step>`), so
+ * the list follows the Tailwind release (4.3 added mauve, mist, olive and taupe). `neutral` also
+ * has our `neutral-0`.
+ */
+export function palettesFrom(themeCss: string): string[] {
+  return [
+    ...new Set(
+      [...themeCss.matchAll(/--color-([a-z]+)-(?:50|[1-9]00|950)\s*:/g)].map((m) => m[1] ?? ''),
+    ),
+  ]
+    .filter(Boolean)
+    .sort();
+}
+
+/** The palettes of the Tailwind the web app installs. */
+export function tailwindPalettes(root: string): string[] {
+  const require = createRequire(join(root, 'apps/web/package.json'));
+  const palettes = palettesFrom(readFileSync(require.resolve('tailwindcss/theme.css'), 'utf8'));
+  if (palettes.length === 0)
+    throw new Error('check-ui-tokens: no palette in tailwindcss/theme.css');
+  return palettes;
+}
+
+const REPO = join(import.meta.dirname, '..');
+let defaultPalettes: string[] | undefined;
+const repoPalettes = (): string[] => (defaultPalettes ??= tailwindPalettes(REPO));
 
 /** The utilities that take a colour. */
 const COLOUR_UTILITIES = [
@@ -74,11 +83,23 @@ const COLOUR_UTILITIES = [
  * A palette class with any variants (`md:hover:`) and opacity (`/40`). `white` and `black` count
  * too: on the tokens they are `surface`, `ink-inverse`, `on-accent` …
  */
-const CLASS = new RegExp(
-  String.raw`(?<![\w-])(?:[\w-]+:)*(?:${COLOUR_UTILITIES.join('|')})-` +
-    String.raw`(?:(?:${PALETTES.join('|')})-(?:0|50|[1-9]00|950)|white|black)(?:\/[\w.]+)?(?![\w-])`,
-  'g',
-);
+function classPattern(palettes: readonly string[]): RegExp {
+  return new RegExp(
+    String.raw`(?<![\w-])(?:[\w-]+:)*(?:${COLOUR_UTILITIES.join('|')})-` +
+      String.raw`(?:(?:${palettes.join('|')})-(?:0|50|[1-9]00|950)|white|black)(?:\/[\w.]+)?(?![\w-])`,
+    'g',
+  );
+}
+
+/** A CSS colour function whose first argument is a literal (`rgb(15 23 42 / .5)`), not built. */
+const COLOUR_FUNCTION = /\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(\s*[\d.]/g;
+
+/** A colour property with a literal value (`color: 'red'`, `backgroundColor: "#fff"`). */
+const COLOUR_PROPERTY =
+  /\b(?:color|[a-zA-Z]+Color|background|fill|stroke)\s*:\s*(['"`])([^'"`\n]*)\1/g;
+
+/** Values a colour property may hold without naming a colour. */
+const NOT_A_COLOUR = /^(?:transparent|currentcolor|none|inherit|initial|unset|revert|var\(.*\))$/i;
 
 /** `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`; not an HTML entity (`&#123;`) or a longer word. */
 const HEX = /(?<![&\w])#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})(?![\w-])/g;
@@ -89,6 +110,8 @@ export const TOKEN_FILES = ['src/index.css', 'src/components/ui/tokens.ts'] as c
 export interface RawColours {
   readonly classes: readonly string[];
   readonly hexes: readonly string[];
+  /** Colour functions with literal arguments and literal colour property values. */
+  readonly values: readonly string[];
 }
 
 /** A string literal (kept) or a comment (dropped), in one pass so `//` in a URL stays. */
@@ -103,12 +126,23 @@ export function withoutComments(source: string): string {
   );
 }
 
-/** The raw palette classes and hex colours in one file's code, in order of appearance. */
-export function rawColours(source: string): RawColours {
+/** The raw palette classes, hex colours and colour values in one file's code, in order. */
+export function rawColours(
+  source: string,
+  palettes: readonly string[] = repoPalettes(),
+): RawColours {
   const code = withoutComments(source);
   return {
-    classes: [...code.matchAll(CLASS)].map((match) => match[0]),
+    classes: [...code.matchAll(classPattern(palettes))].map((match) => match[0]),
     hexes: [...code.matchAll(HEX)].map((match) => match[0]),
+    values: [
+      ...[...code.matchAll(COLOUR_FUNCTION)].map((match) => match[0]),
+      ...[...code.matchAll(COLOUR_PROPERTY)]
+        .filter(
+          (match) => !NOT_A_COLOUR.test((match[2] ?? '').trim()) && !(match[2] ?? '').includes('#'),
+        )
+        .map((match) => match[0]),
+    ],
   };
 }
 
@@ -118,13 +152,13 @@ export interface FileReport extends RawColours {
 }
 
 function isScanned(file: string): boolean {
-  if (!/\.(tsx?|css)$/.test(file)) return false;
-  if (/\.test\.tsx?$/.test(file) || file.startsWith('src/test/')) return false;
+  if (!/\.(?:[cm]?[jt]sx?|css)$/.test(file)) return false;
+  if (/\.test\.[cm]?[jt]sx?$/.test(file) || file.startsWith('src/test/')) return false;
   return !(TOKEN_FILES as readonly string[]).includes(file);
 }
 
 /** Every scanned file under `<root>/apps/web/src` with at least one raw colour, most first. */
-export function scan(root: string): FileReport[] {
+export function scan(root: string, palettes: readonly string[] = repoPalettes()): FileReport[] {
   const web = join(root, 'apps/web');
   const reports: FileReport[] = [];
   const walk = (dir: string): void => {
@@ -136,31 +170,42 @@ export function scan(root: string): FileReport[] {
       }
       const file = relative(web, path).split(sep).join('/');
       if (!entry.isFile() || !isScanned(file)) continue;
-      const found = rawColours(readFileSync(path, 'utf8'));
-      if (found.classes.length + found.hexes.length > 0) reports.push({ file, ...found });
+      const found = rawColours(readFileSync(path, 'utf8'), palettes);
+      if (found.classes.length + found.hexes.length + found.values.length > 0) {
+        reports.push({ file, ...found });
+      }
     }
   };
   walk(join(web, 'src'));
-  const total = (report: FileReport) => report.classes.length + report.hexes.length;
+  const total = (report: FileReport) =>
+    report.classes.length + report.hexes.length + report.values.length;
   return reports.sort((a, b) => total(b) - total(a) || a.file.localeCompare(b.file));
 }
 
-/** The report as printed: one line per file (classes, hex, file), then the totals. */
+/** The report as printed: one line per file (classes, hex, values, file), then the totals. */
 export function formatReport(reports: readonly FileReport[]): string {
-  const classes = reports.reduce((sum, report) => sum + report.classes.length, 0);
-  const hexes = reports.reduce((sum, report) => sum + report.hexes.length, 0);
-  const row = (a: number | string, b: number | string, file: string) =>
-    `${String(a).padStart(7)} ${String(b).padStart(5)}  ${file}`;
+  const sum = (pick: (report: FileReport) => readonly string[]) =>
+    reports.reduce((n, report) => n + pick(report).length, 0);
+  const row = (a: number | string, b: number | string, c: number | string, file: string) =>
+    `${String(a).padStart(7)} ${String(b).padStart(5)} ${String(c).padStart(6)}  ${file}`;
   return [
     'check-ui-tokens: raw colours in apps/web/src (none allowed; design system section 8)',
-    row('classes', 'hex', 'file'),
-    ...reports.map((report) => row(report.classes.length, report.hexes.length, report.file)),
-    row(classes, hexes, `total in ${String(reports.length)} files`),
+    row('classes', 'hex', 'values', 'file'),
+    ...reports.map((report) =>
+      row(report.classes.length, report.hexes.length, report.values.length, report.file),
+    ),
+    row(
+      sum((r) => r.classes),
+      sum((r) => r.hexes),
+      sum((r) => r.values),
+      `total in ${String(reports.length)} files`,
+    ),
   ].join('\n');
 }
 
 if (import.meta.main) {
-  const root = resolve(process.argv[2] ?? join(import.meta.dirname, '..'));
+  const root = resolve(process.argv[2] ?? REPO);
+  // The palettes of this repository's Tailwind, also for a tree given as an argument.
   const reports = scan(root);
   if (reports.length === 0) {
     console.log('check-ui-tokens: no raw colour in apps/web/src');

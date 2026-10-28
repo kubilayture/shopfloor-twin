@@ -33,8 +33,11 @@ export interface FieldFrameProps {
   readonly error?: string | undefined;
   /** Adds " (required)" to the label; an optional field says nothing. */
   readonly required?: boolean | undefined;
-  /** The label left of the control, as in a filter bar. */
-  readonly inline?: boolean | undefined;
+  /**
+   * The label left of the control, as in a filter bar; `'sm'` from 640 px only, above the control
+   * on a phone, so a long option (the shift picker's) keeps the row's whole width (#339).
+   */
+  readonly inline?: boolean | 'sm' | undefined;
   /** The control's id; a generated one when not given. */
   readonly id?: string | undefined;
   /** Extra ids for `aria-describedby` after the hint and the error (a character count). */
@@ -121,6 +124,12 @@ export function FieldError({
   );
 }
 
+const INLINE_ROW = {
+  true: 'flex min-w-0 items-center gap-2',
+  sm: 'flex min-w-0 flex-col items-start gap-1 sm:flex-row sm:items-center sm:gap-2',
+  false: 'contents',
+} as const;
+
 export function Field({
   label,
   hint,
@@ -137,10 +146,10 @@ export function Field({
   const ids = fieldIds(givenId ?? generated, { hint, error, describedBy, describedByFirst });
   return (
     <div className={`flex max-w-full min-w-0 flex-col gap-1${className ? ` ${className}` : ''}`}>
-      <div className={inline ? 'flex min-w-0 items-center gap-2' : 'contents'}>
+      <div className={INLINE_ROW[String(inline) as keyof typeof INLINE_ROW]}>
         <label
           htmlFor={ids.id}
-          className={`text-sm font-medium text-ink${inline ? ' whitespace-nowrap' : ''}`}
+          className={`text-sm font-medium text-ink${inline === false ? '' : ' whitespace-nowrap'}`}
         >
           <LabelText required={required}>{label}</LabelText>
         </label>

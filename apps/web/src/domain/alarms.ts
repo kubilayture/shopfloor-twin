@@ -12,6 +12,7 @@ import type { AlarmScopeRef, AlarmViewName } from '../api/client.ts';
 import type { LiveAlarms } from '../live/live-cache.ts';
 import { minutesText, NOT_APPLICABLE, parseFraction, type BucketFlag } from './oee.ts';
 import { writeFailure, type WriteFailure } from './writes.ts';
+import { countOf } from './words.ts';
 
 /**
  * Alarm lists and KPIs (#145, ADR-0024). The MES owns every value: the screen partitions the
@@ -405,7 +406,7 @@ export function alarmBucketFlags(bucket: AlarmKpiBucketDto): BucketFlag[] {
   if (bucket.incidents > 0) {
     flags.push({
       key: 'incidents',
-      text: `${String(bucket.incidents)} incident${bucket.incidents === 1 ? '' : 's'}`,
+      text: countOf(bucket.incidents, 'incident'),
       title: 'Sequence gaps reported over its hours',
     });
   }

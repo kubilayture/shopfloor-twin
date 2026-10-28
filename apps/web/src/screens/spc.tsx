@@ -85,6 +85,7 @@ import {
 import { useLiveQuality, useQualityTopic } from '../live/live-context.tsx';
 import { upsertCharacteristic, upsertSignal } from '../live/live-quality.ts';
 import type { SpcChartSearch } from '../routes/quality.ts';
+import { countOf } from '../domain/words.ts';
 
 // `/quality/spc` and `/quality/spc/$characteristic` (#203, plan "Web", ADR-0032): the
 // characteristics, and one characteristic's I-MR and X̄-R charts with limits, zones, provisional
@@ -100,8 +101,6 @@ const CHARACTERISTIC_ID = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 export const SIGNALS_SHOWN = 100;
 
 const BACK: PageHeaderBack = { label: 'SPC charts', link: { to: '/quality/spc' } };
-
-const plural = (n: number, word: string): string => `${String(n)} ${word}${n === 1 ? '' : 's'}`;
 
 /**
  * Where the focus goes once a form has closed: the control named by its test id (the button that
@@ -274,7 +273,7 @@ export function SpcList() {
             </p>
           </Disclosure>
         }
-        summary={read.data ? plural(items.length, 'characteristic') : undefined}
+        summary={read.data ? countOf(items.length, 'characteristic') : undefined}
       />
       {read.isPending ? (
         <Skeleton shape="card" label="Loading the characteristics…" />
@@ -573,7 +572,7 @@ function ChartFigure({
     <EChart
       testId={`spc-chart-${chart}`}
       title={label}
-      description={`${label}: ${String(points.length)} points, ${String(firing.length)} firing a rule, ${String(provisional)} provisional; the values are in the tables below.`}
+      description={`${label}: ${countOf(points.length, 'point')}, ${String(firing.length)} firing a rule, ${String(provisional)} provisional; the values are in the tables below.`}
       option={option}
       height={CHART_SIZES.compact}
     >
@@ -585,7 +584,8 @@ function ChartFigure({
         />
       ) : null}
       <p className="mt-2 text-sm text-ink-secondary" data-testid={`spc-summary-${chart}`}>
-        {points.length} points ({provisional} provisional), {firing.length} firing a rule.
+        {countOf(points.length, 'point')} ({provisional} provisional), {firing.length} firing a
+        rule.
       </p>
       {firing.length > 0 ? (
         <div className="mt-2">
@@ -613,7 +613,7 @@ function ChartFigure({
               setShowAll((v) => !v);
             }}
           >
-            {showAll ? 'Hide the values' : `Show all ${String(points.length)} values`}
+            {showAll ? 'Hide the values' : `Show all ${countOf(points.length, 'value')}`}
           </Button>
           {showAll ? (
             <div id={valuesId} className="mt-2">
@@ -878,7 +878,7 @@ const SIGNAL_COLUMNS: readonly Column<SpcSignalDto>[] = [
         <span className="whitespace-nowrap">(part {s.first.partId})</span>
         <span className="block text-xs text-ink-secondary">
           {isOpenEpisode(s) ? 'open, last ' : 'closed, last '}
-          {timeOf(s.last.at)} · {plural(s.points, 'point')} · v{s.version}
+          {timeOf(s.last.at)} · {countOf(s.points, 'point')} · v{s.version}
         </span>
       </>
     ),
@@ -1607,7 +1607,8 @@ function SpcChartScreen({ id, search }: { readonly id: string; readonly search: 
               data-testid="spc-retests"
               data-count={String(view.retests.length)}
             >
-              {view.retests.length} retests after rework are marked as triangles on the I chart and
+              {countOf(view.retests.length, 'retest')} after rework{' '}
+              {view.retests.length === 1 ? 'is' : 'are'} marked as triangles on the I chart and
               never charted as points (another population).
             </p>
           ) : null}

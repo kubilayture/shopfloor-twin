@@ -1,4 +1,5 @@
 import { Badge } from './ui/badge.tsx';
+import { countOf } from '../domain/words.ts';
 
 /**
  * The finality of a section's figures, shown once per scope in its header (design system 2.6,
@@ -22,7 +23,7 @@ export function FinalityBadge({
 }) {
   const parts = [final ? 'Final' : 'Provisional'];
   if (revision > 0) parts.push(`revision ${String(revision)}`);
-  if (incidents > 0) parts.push(`${String(incidents)} incident${incidents === 1 ? '' : 's'}`);
+  if (incidents > 0) parts.push(countOf(incidents, 'incident'));
   const revised = revision > 0;
   return (
     <Badge

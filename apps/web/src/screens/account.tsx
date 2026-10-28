@@ -11,6 +11,7 @@ import { PageHeader } from '../components/ui/page-header.tsx';
 import { permissionGroups, rolesText } from '../domain/identity.ts';
 import { ThemeRadioGroup } from '../theme/theme-switch.tsx';
 import { ChangePasswordForm } from './login.tsx';
+import { countOf } from '../domain/words.ts';
 
 /**
  * `/account` (#170): who is logged in, with which roles and what they allow, the session's times
@@ -63,7 +64,7 @@ export function Account() {
             ]}
           />
           <Disclosure
-            summary={`What your roles allow (${String(count)} permission${count === 1 ? '' : 's'})`}
+            summary={`What your roles allow (${countOf(count, 'permission')})`}
             className="mt-1 border-t border-line-subtle pt-3"
           >
             <div data-testid="account-permissions" className="flex flex-col gap-3">
@@ -103,7 +104,7 @@ export function Account() {
               username={user.username}
               onChanged={(ended) => {
                 setChanged(
-                  `Password changed.${ended > 0 ? ` ${String(ended)} other session${ended === 1 ? '' : 's'} ended.` : ''}`,
+                  `Password changed.${ended > 0 ? ` ${countOf(ended, 'other session')} ended.` : ''}`,
                 );
               }}
             />

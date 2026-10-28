@@ -1,6 +1,6 @@
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { ShiftSpan, shiftKeyLabel, shiftLabel } from './shift-picker.tsx';
+import { ShiftPicker, ShiftSpan, shiftKeyLabel, shiftLabel } from './shift-picker.tsx';
 
 describe('shift span and shift words (moved from the OEE dashboard, UX-4b)', () => {
   it('writes a one-day shift span with the date once, and a shift outside the list in words', () => {
@@ -25,6 +25,39 @@ describe('shift span and shift words (moved from the OEE dashboard, UX-4b)', () 
     expect(shiftLabel(shift)).toBe('Mon 05 Jan, shift C (22:00–06:00)');
     render(<ShiftSpan start={shift.start} end={shift.end} />);
     expect(document.body.textContent).toBe('Mon 05 Jan, 22:00 – Tue 06 Jan, 06:00');
+    cleanup();
+  });
+
+  it('keeps the whole option at 390 px: its label goes above the select below sm (#339)', () => {
+    const shift = {
+      key: '2026-10-14/B',
+      date: '2026-10-14',
+      shift: 'B',
+      start: '2026-10-14T11:00:00.000Z',
+      end: '2026-10-14T19:00:00.000Z',
+      breaks: [],
+    };
+    render(
+      <ShiftPicker
+        selection={{
+          current: { clock: null, shiftKey: shift.key, shift },
+          shifts: [shift],
+          selected: shift.key,
+          isCurrent: true,
+          pending: false,
+          error: null,
+          retry: () => undefined,
+        }}
+        onChange={() => undefined}
+      />,
+    );
+    const select = screen.getByRole('combobox', { name: 'Shift' });
+    expect(select.getAttribute('data-testid')).toBe('shift-select');
+    expect(select.closest('.sm\\:flex-row')).not.toBeNull();
+    expect(select.closest('.flex-col')).not.toBeNull();
+    expect(within(select).getAllByRole('option')[0]?.textContent).toBe(
+      'Wed 14 Oct, shift B (14:00–22:00) – current',
+    );
     cleanup();
   });
 });

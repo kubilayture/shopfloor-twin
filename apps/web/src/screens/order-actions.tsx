@@ -31,6 +31,7 @@ import {
   type OrderLevelAction,
 } from '../domain/orders.ts';
 import { upsertCommand, upsertOrder } from '../live/live-cache.ts';
+import { countOf } from '../domain/words.ts';
 
 /**
  * The look of a form's send button (design system 4.1 and 4.9): the inline form is the write's
@@ -65,9 +66,9 @@ function effectText(draft: ActionDraft, order: OrderDto): string {
     case 'release':
       return 'Releases the order for dispatch and tells the ERP it is released.';
     case 'dispatch':
-      return `Sends the whole order (${String(order.quantity)} blanks) as one job to a CNC. The command goes out through the MES's outbox; its state shows below.`;
+      return `Sends the whole order (${countOf(order.quantity, 'blank')}) as one job to a CNC. The command goes out through the MES's outbox; its state shows below.`;
     case 'redispatch':
-      return `Sends the remainder again as a new command: at most ${String(order.remaining)} blanks (the order quantity minus the blanks the device accepted).`;
+      return `Sends the remainder again as a new command: at most ${countOf(order.remaining, 'blank')} (the order quantity minus the blanks the device accepted).`;
     case 'cancel':
       return 'Cancels the order (not dispatched yet) and tells the ERP it is cancelled. This cannot be undone.';
     case 'close':

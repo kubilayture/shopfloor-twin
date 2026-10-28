@@ -84,6 +84,7 @@ import {
   useShiftsTopic,
 } from '../live/live-context.tsx';
 import { HandoverNotes } from './handover-notes.tsx';
+import { countOf } from '../domain/words.ts';
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const SHIFT = /^[A-Za-z0-9_-]{1,16}$/;
@@ -289,11 +290,11 @@ function RevisedNote({ report }: { readonly report: ShiftReportDto }) {
     >
       <p>
         {changes.inputs > 0
-          ? `${String(changes.inputs)} input revision${changes.inputs === 1 ? '' : 's'} (late OEE or alarm data)`
+          ? `${countOf(changes.inputs, 'input revision')} (late OEE or alarm data)`
           : 'No input revision'}
         {'; '}
         {changes.content > 0
-          ? `${String(changes.content)} content change${changes.content === 1 ? '' : 's'} (handover notes, downtime recodes or acknowledgements)`
+          ? `${countOf(changes.content, 'content change')} (handover notes, downtime recodes or acknowledgements)`
           : 'no content change'}
         .
       </p>
@@ -1304,7 +1305,7 @@ function ReportPage({
         description={
           <span data-testid="report-span">
             <ShiftSpan start={report.start} end={report.end} />
-            {breaks > 0 ? ` · ${String(breaks)} break${breaks === 1 ? '' : 's'}` : ''}
+            {breaks > 0 ? ` · ${countOf(breaks, 'break')}` : ''}
           </span>
         }
         meta={<ReportFacts report={report} />}

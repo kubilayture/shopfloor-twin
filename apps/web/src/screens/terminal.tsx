@@ -63,6 +63,7 @@ import { CHART_TEXT, SIGNAL_STATUS_TEXT, isOpenEpisode, subjectText } from '../d
 import { formatPlantTime } from '../domain/time.ts';
 import { liveKeys } from '../live/live-cache.ts';
 import { useLiveStates, useLiveTerminal } from '../live/live-context.tsx';
+import { countOf } from '../domain/words.ts';
 
 // The operator terminal (#177, plan "Operator terminal"; tablet first since UX-7, #330):
 // `/terminal` picks a work center (a desk page in the shell), `/terminal/$workCenter` is the
@@ -839,8 +840,8 @@ function QualityBanners({
           >
             <Callout tone="alarm" size="touch" title={`Quality hold: ${subjectText(hold.subject)}`}>
               <p>
-                {hold.reason} · orders here: {orders.join(', ')} · {hold.scope.units} unit
-                {hold.scope.units === 1 ? '' : 's'} held so far · opened by {hold.openedBy}{' '}
+                {hold.reason} · orders here: {orders.join(', ')} ·{' '}
+                {countOf(hold.scope.units, 'unit')} held so far · opened by {hold.openedBy}{' '}
                 {hold.openedPlantAt === null ? (
                   <WallTime at={hold.openedAt} />
                 ) : (

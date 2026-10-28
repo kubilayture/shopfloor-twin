@@ -77,6 +77,10 @@ describe('SPC chart page', () => {
     expect(screen.getByTestId('spc-signal-points-I').dataset.count).toBe('1');
     expect(screen.getByTestId('spc-no-points-Xbar')).toBeTruthy();
     expect(screen.getByTestId('spc-retests').dataset.count).toBe('1');
+    // One retest in the singular (#393 review F6).
+    expect(screen.getByTestId('spc-retests').textContent).toMatch(
+      /^1 retest after rework is marked/,
+    );
     // Every value on request.
     fireEvent.click(screen.getByTestId('spc-values-toggle-I'));
     expect(screen.getByTestId('spc-values-I').dataset.count).toBe('2');

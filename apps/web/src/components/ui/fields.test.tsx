@@ -70,6 +70,22 @@ describe('Field', () => {
       expect.arrayContaining(['flex', 'items-center']),
     );
   });
+
+  it('puts the label above the control on a phone and left of it from sm (#339)', () => {
+    render(
+      <Field label="Shift" inline="sm">
+        {({ id }) => <select id={id} name="shift" />}
+      </Field>,
+    );
+    const select = screen.getByRole('combobox', { name: 'Shift' });
+    const row = classesOf(select.parentElement as Element);
+    expect(row).toEqual(
+      expect.arrayContaining(['flex', 'flex-col', 'items-start', 'sm:flex-row', 'sm:items-center']),
+    );
+    expect(classesOf(screen.getByText('Shift').closest('label') as Element)).toContain(
+      'whitespace-nowrap',
+    );
+  });
 });
 
 describe('the controls', () => {

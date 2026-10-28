@@ -3,6 +3,7 @@ import { windowLabel } from '../domain/alarms.ts';
 import { formatClockTime, formatPlantTimeMinutes } from '../domain/time.ts';
 import { barLegend, CHART_COLORS } from './oee-options.ts';
 import { CHART_TOKENS } from './theme.ts';
+import { countOf } from '../domain/words.ts';
 
 /** A dashed line as a legend sample (three dashes, 16 px wide), for the flood threshold. */
 export const DASHED_LINE_ICON = 'path://M0,4h4v2h-4z M6,4h4v2h-4z M12,4h4v2h-4z';
@@ -120,7 +121,7 @@ export function alarmHourlyReading(
 ): string {
   const total = hours.reduce((sum, hour) => sum + hour.raises, 0);
   const n = hours.length;
-  const span = `${String(n)} hour${n === 1 ? '' : 's'}`;
+  const span = countOf(n, 'hour');
   let busiest: AlarmHourBar | undefined;
   for (const hour of hours) if (!busiest || hour.raises > busiest.raises) busiest = hour;
   const most =

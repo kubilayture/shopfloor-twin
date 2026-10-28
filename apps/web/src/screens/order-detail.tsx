@@ -70,6 +70,7 @@ import {
 import { HoldTable } from './holds.tsx';
 import { OrderOee } from './order-oee.tsx';
 import { ActionForm, offeredActions, useOrderPermissions, type Done } from './order-actions.tsx';
+import { countOf } from '../domain/words.ts';
 
 /** The MES's order id rule (`orderParams`): anything else is no order. */
 const ORDER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/;
@@ -172,7 +173,8 @@ function OrderFacts({ order }: { readonly order: OrderDto }) {
   ];
   return (
     <div data-testid="order-summary" data-version={String(order.version)} className="mt-2">
-      <DescriptionList facts={facts} columns="compact" label="Order facts" />
+      {/* Key facts in 1 / 2 / 4 columns (design system 3.4, #339). */}
+      <DescriptionList facts={facts} label="Order facts" />
     </div>
   );
 }
@@ -489,7 +491,7 @@ function Operations({
       {detail.bom.length > 0 ? (
         <Disclosure
           className="mt-4"
-          summary={`Bill of materials (${String(detail.bom.length)} lines)`}
+          summary={`Bill of materials (${countOf(detail.bom.length, 'line')})`}
         >
           <ul className="flex flex-col gap-0.5">
             {detail.bom.map((line) => (

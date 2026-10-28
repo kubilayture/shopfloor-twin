@@ -24,12 +24,10 @@ export interface BackLink {
 function MissingPage({
   back,
   heading,
-  documentTitle,
   children,
 }: {
   readonly back: BackLink;
   readonly heading: ReactNode;
-  readonly documentTitle: string;
   readonly children: ReactNode;
 }) {
   // The same header as every other page (3.3): "‹ <parent>", the `h1` focused after a navigation.
@@ -38,7 +36,8 @@ function MissingPage({
     <section>
       <PageHeader
         title={heading}
-        documentTitle={documentTitle}
+        // No title of its own: the route's stays ("Shift report 2026-10-12 B", "Order PO-NOPE"),
+        // as before the header (#393 review F2).
         back={{ label: back.label, link: { to: back.to } }}
       />
       <div className="rounded-lg border border-line bg-surface">{children}</div>
@@ -62,7 +61,6 @@ export function NotFound({ kind, id, back, detail, testId }: NotFoundProps) {
   return (
     <MissingPage
       back={back}
-      documentTitle={`${capitalised(kind)} ${id}`}
       heading={
         <>
           {capitalised(kind)} <Code>{id}</Code>
@@ -89,7 +87,7 @@ export function PageNotFound() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const back: BackLink = { to: '/', label: 'Plant overview' };
   return (
-    <MissingPage back={back} heading="Page not found" documentTitle="Page not found">
+    <MissingPage back={back} heading="Page not found">
       <EmptyState
         size="page"
         icon="search"

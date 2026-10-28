@@ -26,11 +26,12 @@ import {
   type OrderFilter,
 } from '../domain/orders.ts';
 import { useLiveOrders, useOrdersTopic } from '../live/live-context.tsx';
+import { countOf } from '../domain/words.ts';
 
 const FILTER_TEXT = (filter: OrderFilter): string =>
   filter === 'open' ? 'Open (not closed, cancelled or rejected)' : ORDER_STATUS_TEXT[filter];
 
-const countText = (count: number): string => `${String(count)} order${count === 1 ? '' : 's'}`;
+const countText = (count: number): string => countOf(count, 'order');
 
 function columns(clockMs: number | undefined): readonly Column<OrderDto>[] {
   return [

@@ -24,6 +24,7 @@ import {
   OrderLink,
   UnitStatusBadge,
 } from './trace-common.tsx';
+import { countOf } from '../domain/words.ts';
 
 type Result = TraceSearchDto['results'][number];
 type Kind = Result['kind'];
@@ -127,7 +128,7 @@ function summaryText(results: readonly Result[]): string {
     return [`${String(n)} ${n === 1 ? KIND_TEXT[kind].one.toLowerCase() : KIND_TEXT[kind].many}`];
   });
   const total = results.length;
-  return `${String(total)} result${total === 1 ? '' : 's'}: ${parts.join(', ')}`;
+  return `${countOf(total, 'result')}: ${parts.join(', ')}`;
 }
 
 function Results({ q }: { readonly q: string }) {

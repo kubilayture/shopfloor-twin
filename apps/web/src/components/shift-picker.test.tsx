@@ -48,7 +48,7 @@ describe('shift span and shift words (moved from the OEE dashboard, UX-4b)', () 
           error: null,
           retrying: false,
           failedAt: 0,
-          fetching: false,
+          answeredAt: 0,
           retry: () => undefined,
         }}
         onChange={() => undefined}

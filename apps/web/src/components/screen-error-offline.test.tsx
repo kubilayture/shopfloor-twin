@@ -25,7 +25,7 @@ const failed = (key: string, error: unknown): ScreenRead => ({
   loading: false,
   retrying: false,
   failedAt: 1,
-  busy: false,
+  answeredAt: 1,
   retry: () => undefined,
 });
 

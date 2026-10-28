@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuietErrors } from './query-error.tsx';
 import { ErrorState } from './ui/error-state.tsx';
 
@@ -54,8 +54,11 @@ export interface ScreenRead {
    * another shift) has its own, so a kept failure is never shown for the next one (#394 review).
    */
   readonly failedAt: number;
-  /** A request of it is on its way now: its "Try again" shows as busy. */
-  readonly busy: boolean;
+  /**
+   * When it last answered, with data or a failure (0: never): "Try again" is busy from its press
+   * until this moves for each read it named (#394 review).
+   */
+  readonly answeredAt: number;
   readonly retry: () => void;
 }
 
@@ -69,6 +72,8 @@ export interface QueryLike {
   readonly errorUpdateCount: number;
   /** When it last failed (0: never). */
   readonly errorUpdatedAt: number;
+  /** When it last answered with data (0: never). */
+  readonly dataUpdatedAt: number;
   readonly refetch: () => unknown;
 }
 
@@ -90,7 +95,7 @@ export function queryRead(
     loading: fetching && query.errorUpdateCount === 0,
     retrying: fetching && query.errorUpdateCount > 0,
     failedAt: query.errorUpdatedAt,
-    busy: query.fetchStatus === 'fetching',
+    answeredAt: Math.max(query.dataUpdatedAt, query.errorUpdatedAt),
     retry: () => {
       void query.refetch();
     },
@@ -106,8 +111,8 @@ export function selectionRead(selection: {
   readonly retrying: boolean;
   /** When one of its reads last failed (0: never). */
   readonly failedAt: number;
-  /** One of its reads is on its way now. */
-  readonly fetching: boolean;
+  /** When one of its reads last answered, with data or a failure (0: never). */
+  readonly answeredAt: number;
   readonly retry: () => void;
 }): ScreenRead {
   const failed = selection.error !== null && selection.error !== undefined;
@@ -122,7 +127,7 @@ export function selectionRead(selection: {
     loading: selection.pending && !failed && !retrying,
     retrying,
     failedAt: selection.failedAt,
-    busy: selection.fetching,
+    answeredAt: selection.answeredAt,
     retry: selection.retry,
   };
 }
@@ -210,19 +215,37 @@ export function screenErrors(reads: readonly ScreenRead[]): ScreenErrors {
   };
 }
 
+/** The longest "Try again" stays busy without an answer: a backstop, never the rule. */
+export const TRY_AGAIN_BUSY_MAX_MS = 30_000;
+
 /**
- * Whether "Try again" shows as busy: from the press until the reads it asked for have answered
- * (been on their way and are no longer). A poll of a failed read does not make it busy, so the
- * button does not spin on every poll (#394 review).
+ * Whether "Try again" shows as busy (#394 review): from its press until each read it named has
+ * answered, with data or a failure (its `answeredAt` moved), or has left the error. The answer is
+ * what ends it, not a fetch seen on the way: TanStack Query batches its notifications, so a read
+ * that fails at once may never be seen fetching. A poll does not make it busy; a press that is
+ * never answered lets go after `TRY_AGAIN_BUSY_MAX_MS`.
  */
-function useTrying(fetching: boolean): { readonly busy: boolean; readonly pressed: () => void } {
-  const [phase, setPhase] = useState<'idle' | 'pressed' | 'on-its-way'>('idle');
-  if (phase === 'pressed' && fetching) setPhase('on-its-way');
-  if (phase === 'on-its-way' && !fetching) setPhase('idle');
+function useTrying(reads: readonly ScreenRead[]): {
+  readonly busy: boolean;
+  readonly pressed: () => void;
+} {
+  const [asked, setAsked] = useState<ReadonlyMap<string, number> | undefined>(undefined);
+  const waiting =
+    asked !== undefined && reads.some((read) => asked.get(read.key) === read.answeredAt);
+  if (asked !== undefined && !waiting) setAsked(undefined);
+  useEffect(() => {
+    if (asked === undefined) return undefined;
+    const backstop = setTimeout(() => {
+      setAsked(undefined);
+    }, TRY_AGAIN_BUSY_MAX_MS);
+    return () => {
+      clearTimeout(backstop);
+    };
+  }, [asked]);
   return {
-    busy: phase === 'pressed' || (phase === 'on-its-way' && fetching),
+    busy: waiting,
     pressed: () => {
-      setPhase('pressed');
+      setAsked(new Map(reads.map((read) => [read.key, read.answeredAt])));
     },
   };
 }
@@ -253,7 +276,7 @@ export function ScreenError({
 }) {
   const failed = errors.summary;
   const quiet = useQuietErrors(failed.map((read) => read.error));
-  const trying = useTrying(failed.some((read) => read.busy));
+  const trying = useTrying(failed);
   const first = failed[0];
   if (first === undefined) return null;
   const error = (
@@ -287,7 +310,7 @@ export function SectionError({
 }) {
   const shown = errors.section(readKey);
   const quiet = useQuietErrors(shown ? [shown.read.error] : []);
-  const trying = useTrying(shown?.read.busy ?? false);
+  const trying = useTrying(shown ? [shown.read] : []);
   if (!shown) return null;
   const { read, own } = shown;
   return (

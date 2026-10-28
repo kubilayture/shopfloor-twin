@@ -79,8 +79,8 @@ export interface ShiftSelection {
   readonly retrying: boolean;
   /** When one of its reads last failed (0: never): which failure the screen's error keeps. */
   readonly failedAt: number;
-  /** One of its reads is on its way now ("Try again" busy). */
-  readonly fetching: boolean;
+  /** When one of its reads last answered, with data or a failure ("Try again" busy until it moves). */
+  readonly answeredAt: number;
   readonly retry: () => void;
 }
 
@@ -123,7 +123,12 @@ export function useShiftSelection(requested: string | undefined): ShiftSelection
       (read) => read.isPending && read.fetchStatus !== 'idle' && read.errorUpdateCount > 0,
     ),
     failedAt: Math.max(current.errorUpdatedAt, list.errorUpdatedAt),
-    fetching: current.fetchStatus === 'fetching' || list.fetchStatus === 'fetching',
+    answeredAt: Math.max(
+      current.dataUpdatedAt,
+      current.errorUpdatedAt,
+      list.dataUpdatedAt,
+      list.errorUpdatedAt,
+    ),
     retry: () => {
       void current.refetch();
       void list.refetch();

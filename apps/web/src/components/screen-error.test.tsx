@@ -1,9 +1,19 @@
-import { fireEvent, render, renderHook, screen, within } from '@testing-library/react';
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import {
+  act,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../api/client.ts';
 import {
   ScreenError,
   SectionError,
+  TRY_AGAIN_BUSY_MAX_MS,
   namesText,
   queryRead,
   screenErrors,
@@ -34,7 +44,7 @@ function read(
     loading: state === 'loading',
     retrying: false,
     failedAt: state === 'failed' || state === 'stale' ? 1 : 0,
-    busy: false,
+    answeredAt: state === 'idle' || state === 'loading' ? 0 : 1,
     retry: vi.fn(),
   };
 }
@@ -142,6 +152,7 @@ describe('queryRead and selectionRead', () => {
     error: null,
     errorUpdateCount: 0,
     errorUpdatedAt: 0,
+    dataUpdatedAt: 0,
     refetch: vi.fn(),
     ...over,
   });
@@ -192,7 +203,7 @@ describe('queryRead and selectionRead', () => {
         current: undefined,
         retrying: false,
         failedAt: 0,
-        fetching: false,
+        answeredAt: 0,
         retry,
       }),
     ).toMatchObject({
@@ -210,7 +221,7 @@ describe('queryRead and selectionRead', () => {
       current: undefined,
       retrying: false,
       failedAt: 0,
-      fetching: false,
+      answeredAt: 0,
       retry,
     });
     expect(failed).toMatchObject({ failed: true, error, loading: false });
@@ -223,7 +234,7 @@ describe('queryRead and selectionRead', () => {
         current: { shift: null },
         retrying: false,
         failedAt: 0,
-        fetching: false,
+        answeredAt: 0,
         retry,
       }),
     ).toMatchObject({ failed: false, hasData: true });
@@ -234,7 +245,7 @@ describe('queryRead and selectionRead', () => {
         current: undefined,
         retrying: true,
         failedAt: 0,
-        fetching: false,
+        answeredAt: 0,
         retry,
       }),
     ).toMatchObject({ failed: false, loading: false, retrying: true });
@@ -246,7 +257,7 @@ describe('queryRead and selectionRead', () => {
         current: undefined,
         retrying: false,
         failedAt: 0,
-        fetching: false,
+        answeredAt: 0,
         retry,
       }).loading,
     ).toBe(false);
@@ -258,7 +269,6 @@ describe('useScreenErrors', () => {
     ...read(key, kind, 'idle'),
     retrying: true,
     failedAt: 1,
-    busy: true,
   });
 
   it('keeps a failure while its read is read again, until it answers', () => {
@@ -365,50 +375,140 @@ describe('ScreenError', () => {
     for (const r of reads) expect(r.retry).toHaveBeenCalledTimes(1);
   });
 
-  it('shows "Try again" busy from the press until the reads it asked for answered (#394)', () => {
-    const view = (busy: boolean) => (
+  it('shows "Try again" busy from the press until each read it named answered (#394)', () => {
+    const view = (a: number, b: number) => (
       <ScreenError
         errors={screenErrors([
-          read('a', 'main', 'failed'),
-          { ...read('b', 'main', 'failed'), busy },
+          { ...read('a', 'main', 'failed'), answeredAt: a },
+          { ...read('b', 'main', 'failed'), answeredAt: b },
         ])}
       />
     );
     const button = () => screen.getByRole('button', { name: 'Try again' });
-    const { rerender } = render(view(true));
-    // A poll on its way: not busy, the button stays as it is.
+    const { rerender } = render(view(1, 1));
     expect(button().getAttribute('aria-busy')).toBeNull();
-    rerender(view(false));
     fireEvent.click(button());
     expect(button().getAttribute('aria-busy')).toBe('true');
     expect(button().getAttribute('aria-disabled')).toBe('true');
-    rerender(view(true));
+    // One of the two answered: still busy.
+    rerender(view(2, 1));
     expect(button().getAttribute('aria-busy')).toBe('true');
-    // Answered (failed again): ready for another try, and a later poll does not make it busy.
-    rerender(view(false));
+    // Both answered (failed again): ready for another try.
+    rerender(view(2, 2));
     expect(button().getAttribute('aria-busy')).toBeNull();
-    rerender(view(true));
+    // A later answer (a poll) does not make it busy.
+    rerender(view(3, 3));
     expect(button().getAttribute('aria-busy')).toBeNull();
   });
 
-  it('shows a section’s own "Try again" busy after its press', () => {
-    const view = (busy: boolean) => (
+  it('lets go of a press that is never answered after the backstop', () => {
+    vi.useFakeTimers();
+    try {
+      render(<ScreenError errors={screenErrors([read('a', 'main', 'failed')])} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+      expect(screen.getByRole('button', { name: 'Try again' }).getAttribute('aria-busy')).toBe(
+        'true',
+      );
+      act(() => {
+        vi.advanceTimersByTime(TRY_AGAIN_BUSY_MAX_MS - 1);
+      });
+      expect(screen.getByRole('button', { name: 'Try again' }).getAttribute('aria-busy')).toBe(
+        'true',
+      );
+      act(() => {
+        vi.advanceTimersByTime(1);
+      });
+      expect(
+        screen.getByRole('button', { name: 'Try again' }).getAttribute('aria-busy'),
+      ).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('drops the press and its backstop once the reads answered', () => {
+    vi.useFakeTimers();
+    try {
+      const view = (answeredAt: number) => (
+        <ScreenError errors={screenErrors([{ ...read('a', 'main', 'failed'), answeredAt }])} />
+      );
+      const { rerender } = render(view(1));
+      fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+      expect(vi.getTimerCount()).toBe(1);
+      rerender(view(2));
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows a section’s own "Try again" busy after its press, until it answered', () => {
+    const view = (answeredAt: number) => (
       <SectionError
         errors={screenErrors([
           read('oee', 'main', 'loaded'),
-          { ...read('hours', 'section', 'failed'), busy },
+          { ...read('hours', 'section', 'failed'), answeredAt },
         ])}
         readKey="hours"
       />
     );
-    const { rerender } = render(view(false));
+    const { rerender } = render(view(1));
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
-    rerender(view(true));
     expect(screen.getByRole('button', { name: 'Try again' }).getAttribute('aria-busy')).toBe(
       'true',
     );
-    rerender(view(false));
+    rerender(view(2));
     expect(screen.getByRole('button', { name: 'Try again' }).getAttribute('aria-busy')).toBeNull();
+  });
+
+  it('recovers when real reads fail again at once, and a second press reads them again', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const calls = { a: 0, b: 0 };
+    function Screen() {
+      const a = useQuery({
+        queryKey: ['a'],
+        queryFn: () => {
+          calls.a += 1;
+          throw new ApiError('Service Unavailable: a', 503);
+        },
+      });
+      const b = useQuery({
+        queryKey: ['b'],
+        queryFn: () => {
+          calls.b += 1;
+          throw new ApiError('Service Unavailable: b', 503);
+        },
+      });
+      const errors = useScreenErrors([
+        queryRead('the a', a, 'main'),
+        queryRead('the b', b, 'main'),
+      ]);
+      return <ScreenError errors={errors} />;
+    }
+    render(
+      <QueryClientProvider client={client}>
+        <Screen />
+      </QueryClientProvider>,
+    );
+    const button = await screen.findByRole('button', { name: 'Try again' });
+    fireEvent.click(button);
+    await waitFor(() => {
+      expect(calls).toEqual({ a: 2, b: 2 });
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: 'Try again' }).getAttribute('aria-busy'),
+      ).toBeNull();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => {
+      expect(calls).toEqual({ a: 3, b: 3 });
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: 'Try again' }).getAttribute('aria-busy'),
+      ).toBeNull();
+    });
   });
 
   it('offers a retry when a later read can be helped, the first one refused', () => {

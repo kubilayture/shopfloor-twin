@@ -28,6 +28,13 @@ import {
   OverdueBadge,
 } from '../components/order-badges.tsx';
 import { QueryError } from '../components/query-error.tsx';
+import {
+  ScreenError,
+  SectionError,
+  queryRead,
+  useScreenErrors,
+  type ScreenErrors,
+} from '../components/screen-error.tsx';
 import { Badge } from '../components/ui/badge.tsx';
 import { Button, buttonClass, type ButtonVariant } from '../components/ui/button.tsx';
 import { Callout } from '../components/ui/callout.tsx';
@@ -62,13 +69,14 @@ import { codeWords } from '../domain/plant.ts';
 import { formatPlantTime, formatPlantTimeMinutes, wallTimeText } from '../domain/time.ts';
 import { mergeHolds } from '../domain/quality.ts';
 import {
+  useLiveOrderOee,
   useLiveOrders,
   useLiveQuality,
   useOrdersTopic,
   useQualityTopic,
 } from '../live/live-context.tsx';
 import { HoldTable } from './holds.tsx';
-import { OrderOee } from './order-oee.tsx';
+import { ORDER_OEE_READ, OrderOee, noOrderOee, useOrderOeeRead } from './order-oee.tsx';
 import { ActionForm, offeredActions, useOrderPermissions, type Done } from './order-actions.tsx';
 
 /** The MES's order id rule (`orderParams`): anything else is no order. */
@@ -454,12 +462,20 @@ const OPERATION_COLUMNS: readonly Column<OperationRow>[] = [
   },
 ];
 
+/** The order's section reads as its errors name them (#394). */
+const EXECUTION_READ = "the order's execution";
+const INCIDENTS_READ = "the order's routing incidents";
+const HOLDS_READ = 'the holds';
+const SCRAP_READ = 'the scrap records';
+
 function Operations({
   detail,
   execution,
+  errors,
 }: {
   readonly detail: OrderDetailDto;
-  readonly execution: { data?: OrderExecutionDto; error: unknown; refetch: () => void };
+  readonly execution: { data?: OrderExecutionDto };
+  readonly errors: ScreenErrors;
 }) {
   return (
     <Section
@@ -468,12 +484,8 @@ function Operations({
       title="Operations and quantities"
       description="Per operation of the routing: units in, good, scrapped and reworked."
     >
-      {execution.error ? (
-        <QueryError
-          what="the order's execution"
-          error={execution.error}
-          onRetry={execution.refetch}
-        />
+      {errors.inSection(EXECUTION_READ) ? (
+        <SectionError errors={errors} readKey={EXECUTION_READ} />
       ) : (
         <DataTable
           caption="Operations and quantities"
@@ -552,14 +564,15 @@ interface IncidentRow {
 function Incidents({
   detail,
   execution,
+  errors,
 }: {
   readonly detail: OrderDetailDto;
   readonly execution: {
     readonly incidents: readonly (Omit<IncidentRow, 'key' | 'type'> & { readonly id: number })[];
-    readonly error: unknown;
-    readonly refetch: () => void;
   };
+  readonly errors: ScreenErrors;
 }) {
+  const failed = errors.inSection(INCIDENTS_READ);
   const rows: IncidentRow[] = [
     ...detail.incidents.map((incident) => ({ ...incident, key: `o${String(incident.id)}` })),
     ...execution.incidents.map((incident) => ({
@@ -575,16 +588,12 @@ function Incidents({
       title="Incidents"
       description="What went wrong on the order's path, newest first; open ones need a person."
     >
-      {execution.error ? (
+      {failed ? (
         <div className="mb-3">
-          <QueryError
-            what="the order's routing incidents"
-            error={execution.error}
-            onRetry={execution.refetch}
-          />
+          <SectionError errors={errors} readKey={INCIDENTS_READ} />
         </div>
       ) : null}
-      {rows.length === 0 && execution.error ? null : rows.length === 0 ? (
+      {rows.length === 0 && failed ? null : rows.length === 0 ? (
         <EmptyBlock testId="incidents-empty" title="No incident for this order" />
       ) : (
         <ul className="flex flex-col gap-2 text-sm" aria-label="Incidents">
@@ -756,12 +765,13 @@ const SCRAP_COLUMNS: readonly Column<ScrapRecordDto>[] = [
   },
 ];
 
-function Scrap({ id }: { readonly id: string }) {
-  const read = useQuery({
-    queryKey: queryKeys.orderScrap(id),
-    queryFn: ({ signal }) => getOrderScrap(id, signal),
-    refetchInterval: EXECUTION_POLL_MS,
-  });
+function Scrap({
+  read,
+  errors,
+}: {
+  readonly read: { readonly data?: Awaited<ReturnType<typeof getOrderScrap>> | undefined };
+  readonly errors: ScreenErrors;
+}) {
   return (
     <Section
       id="order-scrap-title"
@@ -769,12 +779,8 @@ function Scrap({ id }: { readonly id: string }) {
       title="Scrap records"
       description="Machine scrap of the order; operators and quality code it on the terminal."
     >
-      {read.isError ? (
-        <QueryError
-          what="the scrap records"
-          error={read.error}
-          onRetry={() => void read.refetch()}
-        />
+      {errors.inSection(SCRAP_READ) ? (
+        <SectionError errors={errors} readKey={SCRAP_READ} />
       ) : (
         <DataTable
           caption="Scrap records"
@@ -783,7 +789,7 @@ function Scrap({ id }: { readonly id: string }) {
           rows={read.data?.records ?? []}
           rowKey={(record) => String(record.id)}
           rowTestId={() => 'scrap-record'}
-          loading={read.isPending ? 'Loading the scrap records…' : undefined}
+          loading={read.data === undefined ? 'Loading the scrap records…' : undefined}
           empty={<EmptyBlockInner testId="scrap-empty" title="No scrap" />}
         />
       )}
@@ -916,12 +922,21 @@ function History({ detail }: { readonly detail: OrderDetailDto }) {
  * units of the order are named when a close is refused for them. The way to open one is the
  * header's "Hold this order".
  */
-function OrderHolds({ id }: { readonly id: string }) {
-  const filter: HoldFilter = { states: [], subject: { kind: 'order', id } };
-  const read = useQuery({
-    queryKey: qualityKeys.holds(holdFilterKey(filter)),
-    queryFn: ({ signal }) => getHolds(filter, signal),
-  });
+/** The holds on the order as a subject: read by the order's screen (#394), once it is read. */
+function orderHoldFilter(id: string): HoldFilter {
+  return { states: [], subject: { kind: 'order', id } };
+}
+
+function OrderHolds({
+  id,
+  read,
+  errors,
+}: {
+  readonly id: string;
+  readonly read: { readonly data?: Awaited<ReturnType<typeof getHolds>> | undefined };
+  readonly errors: ScreenErrors;
+}) {
+  const filter = orderHoldFilter(id);
   const live = useLiveQuality();
   const holds = read.data ? mergeHolds(read.data.holds, live, filter) : [];
   return (
@@ -931,9 +946,9 @@ function OrderHolds({ id }: { readonly id: string }) {
       title="Quality holds"
       description="An open hold on the order, or on a lot, serial or carton with units in it, stops its close."
     >
-      {read.isError ? (
-        <QueryError what="the holds" error={read.error} onRetry={() => void read.refetch()} />
-      ) : read.isPending ? (
+      {errors.inSection(HOLDS_READ) ? (
+        <SectionError errors={errors} readKey={HOLDS_READ} />
+      ) : read.data === undefined ? (
         <Skeleton shape="text" rows={1} label="Loading the holds…" />
       ) : holds.length === 0 ? (
         <EmptyBlock
@@ -1001,6 +1016,33 @@ function OrderDetail({ id }: { readonly id: string }) {
     queryKey: queryKeys.equipmentList,
     queryFn: ({ signal }) => listEquipment(signal),
   });
+  // The sections' reads, here so that several failures are one error (#394); asked once the order
+  // is read, as when each section read its own.
+  const holdFilter = orderHoldFilter(id);
+  const holdsRead = useQuery({
+    queryKey: qualityKeys.holds(holdFilterKey(holdFilter)),
+    queryFn: ({ signal }) => getHolds(holdFilter, signal),
+    enabled: read.data !== undefined,
+  });
+  const scrapRead = useQuery({
+    queryKey: queryKeys.orderScrap(id),
+    queryFn: ({ signal }) => getOrderScrap(id, signal),
+    refetchInterval: EXECUTION_POLL_MS,
+    enabled: read.data !== undefined,
+  });
+  const oeeRead = useOrderOeeRead(id, read.data !== undefined);
+  const oeePushed = useLiveOrderOee(id);
+  const errors = useScreenErrors([
+    queryRead('the order', read, 'main'),
+    queryRead(EXECUTION_READ, execution, 'section'),
+    queryRead(INCIDENTS_READ, executionIncidents, 'section'),
+    // No OEE yet (404) is an answer, and a pushed OEE stands in for a failed read.
+    ...(noOrderOee(oeeRead.error) || oeePushed
+      ? []
+      : [queryRead(ORDER_OEE_READ, oeeRead, 'section')]),
+    queryRead(HOLDS_READ, holdsRead, 'section'),
+    queryRead(SCRAP_READ, scrapRead, 'section'),
+  ]);
   const live = useLiveOrders();
   const { clock } = usePlantClock();
   const allowed = useOrderPermissions();
@@ -1139,17 +1181,15 @@ function OrderDetail({ id }: { readonly id: string }) {
           />
         </div>
       ) : null}
+      <ScreenError errors={errors} className="mb-6" />
       <SectionNav items={SECTIONS} testId="order-section-nav" />
       <div className="mt-6">
         <Operations
           detail={detail}
-          execution={{
-            ...(execution.data ? { data: execution.data } : {}),
-            error: execution.error,
-            refetch: () => void execution.refetch(),
-          }}
+          execution={execution.data ? { data: execution.data } : {}}
+          errors={errors}
         />
-        <OrderOee id={id} />
+        <OrderOee read={oeeRead} pushed={oeePushed} errors={errors} />
         <Commands
           order={order}
           commands={commands}
@@ -1158,17 +1198,14 @@ function OrderDetail({ id }: { readonly id: string }) {
             startAction(draftFor('abandon', order, commandId));
           }}
         />
-        <OrderHolds id={id} />
+        <OrderHolds id={id} read={holdsRead} errors={errors} />
         <Incidents
           detail={detail}
-          execution={{
-            incidents: executionIncidents.data?.incidents ?? [],
-            error: executionIncidents.error,
-            refetch: () => void executionIncidents.refetch(),
-          }}
+          execution={{ incidents: executionIncidents.data?.incidents ?? [] }}
+          errors={errors}
         />
         <Confirmations confirmations={detail.confirmations} />
-        <Scrap id={id} />
+        <Scrap read={scrapRead} errors={errors} />
         <ErpMessages detail={detail} />
         <History detail={detail} />
       </div>

@@ -878,6 +878,45 @@ describe('orders on the design system (UX-6a, #328)', () => {
     });
     expect(within(section).queryByTestId('incidents-empty')).toBeNull();
   });
+
+  it('names several failed sections in one error under the header, each quietly (#394)', async () => {
+    const server = orderMes(orderState([order('PO-1001')]));
+    vi.stubGlobal('fetch', (input: string, init?: RequestInit) =>
+      input.includes('/api/v1/scrap-records') || input.includes('/api/v1/quality/holds')
+        ? Promise.resolve(problem(500, 'Internal Server Error', 'down', '/x'))
+        : server.fetch(input, init),
+    );
+    await renderApp('/orders/PO-1001');
+    const alert = await screen.findByRole('alert', {}, { timeout: 5_000 });
+    await waitFor(() => {
+      expect(alert.textContent).toContain('Could not load the holds and the scrap records.');
+    });
+    expect(screen.getAllByRole('alert')).toEqual([alert]);
+    // Under the page header, before the section nav; the sections still drawn.
+    expect(
+      alert.compareDocumentPosition(screen.getByTestId('order-section-nav')) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    for (const id of ['order-holds', 'order-scrap']) {
+      const quiet = screen.getByTestId(id).querySelector('[data-error]');
+      expect(quiet?.getAttribute('data-error')).toBe('quiet');
+    }
+    expect(await screen.findByTestId('operation-OP10')).toBeTruthy();
+  });
+
+  it('says one failed section of the order in that section (#394)', async () => {
+    const server = orderMes(orderState([order('PO-1001')]));
+    vi.stubGlobal('fetch', (input: string, init?: RequestInit) =>
+      input.includes('/api/v1/scrap-records')
+        ? Promise.resolve(problem(500, 'Internal Server Error', 'down', '/x'))
+        : server.fetch(input, init),
+    );
+    await renderApp('/orders/PO-1001');
+    const scrap = await screen.findByTestId('order-scrap');
+    const own = await within(scrap).findByRole('alert', {}, { timeout: 5_000 });
+    expect(own.textContent).toContain('Could not load the scrap records.');
+    expect(screen.getAllByRole('alert')).toEqual([own]);
+  });
 });
 
 describe('order actions on the design system (UX-6b, #329)', () => {

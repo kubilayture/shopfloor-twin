@@ -32,6 +32,12 @@ import {
 } from '../components/oee-ui.tsx';
 import { QueryError } from '../components/query-error.tsx';
 import {
+  ScreenError,
+  queryRead,
+  useScreenErrors,
+  type ScreenErrors,
+} from '../components/screen-error.tsx';
+import {
   ShiftPicker,
   ShiftSpan,
   shiftKeyLabel,
@@ -83,7 +89,7 @@ import {
   useLiveSubscriptions,
   useShiftsTopic,
 } from '../live/live-context.tsx';
-import { HandoverNotes } from './handover-notes.tsx';
+import { HandoverNotes, NOTES_READ, useShiftNotesRead } from './handover-notes.tsx';
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const SHIFT = /^[A-Za-z0-9_-]{1,16}$/;
@@ -1233,11 +1239,15 @@ function ReportPage({
   shift,
   selection,
   onPick,
+  notes,
+  errors,
 }: {
   readonly report: ShiftReportDto;
   readonly shift: ShiftRef;
   readonly selection: ShiftSelection;
   readonly onPick: (key: string) => void;
+  readonly notes: ReturnType<typeof useShiftNotesRead>;
+  readonly errors: ScreenErrors;
 }) {
   const queryClient = useQueryClient();
   const equipment = useQuery({
@@ -1327,7 +1337,12 @@ function ReportPage({
         <DowntimeSection report={report} reasons={reasons.data} names={order.names} />
         <AlarmSection report={report} pushed={pushedAlarms} names={order.names} />
         <CrewSection report={report} names={order.names} />
-        <HandoverNotes report={report} shift={{ ...shift, epoch: report.epoch }} />
+        <HandoverNotes
+          report={report}
+          shift={{ ...shift, epoch: report.epoch }}
+          read={notes}
+          errors={errors}
+        />
       </div>
     </>
   );
@@ -1356,6 +1371,12 @@ export function ShiftReport() {
     enabled: valid,
   });
   const data = report.data;
+  // The notes, read here so that the report's and the notes' failures are one error (#394).
+  const notes = useShiftNotesRead(data, shift);
+  const errors = useScreenErrors([
+    queryRead('the shift report', report, 'main'),
+    queryRead(NOTES_READ, notes, 'section'),
+  ]);
   // Read the report again when its instance's status or revision moves (the `shifts` topic).
   const pushed = useLiveShifts()?.instances[instanceKey(data?.epoch ?? -1, data?.key ?? '')];
   const behind = data !== undefined && pushed !== undefined && isNewerShift(pushed, data);
@@ -1429,13 +1450,9 @@ export function ShiftReport() {
           </div>
         </>
       ) : null}
-      {report.isError && data ? (
+      {data && errors.summary.length > 0 ? (
         <div data-testid="report-error" className="mb-4 print:hidden">
-          <QueryError
-            what="the shift report"
-            error={report.error}
-            onRetry={() => void report.refetch()}
-          />
+          <ScreenError errors={errors} />
         </div>
       ) : null}
       {data ? (
@@ -1456,6 +1473,8 @@ export function ShiftReport() {
             shift={shift}
             selection={selection}
             onPick={onPick}
+            notes={notes}
+            errors={errors}
           />
         </div>
       ) : null}

@@ -1467,6 +1467,7 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
             await readFile(a11yReport, 'utf8').catch(() => undefined),
             exitCode,
             launchedAt,
+            A11Y_ROUTES,
           );
           report.a11y = { exitCode, report: a11yReport, outcome: outcome.message };
           log(`accessibility: ${outcome.message} (${join(A11Y_RESULTS, 'summary.md')})`);

@@ -2,7 +2,9 @@ import { AxeBuilder } from '@axe-core/playwright';
 import type { Locator, Page } from '@playwright/test';
 import {
   fromAxe,
+  keyboardCapError,
   skipTableOf,
+  TAB_PRESS_CAP,
   tableRuns,
   type SkipFacts,
   TABLE_RUN_LIMIT,
@@ -202,7 +204,7 @@ function focusedNow():
  */
 export async function sampleKeyboard(
   page: Page,
-  presses = 40,
+  presses = TAB_PRESS_CAP,
 ): Promise<{
   stops: FocusStop[];
   longestTableRun: number;
@@ -211,6 +213,7 @@ export async function sampleKeyboard(
   offScreen: string[];
   covered: string[];
   findings: string[];
+  error?: string;
 }> {
   await page.evaluate(() => {
     (document.activeElement as HTMLElement | null)?.blur();
@@ -222,17 +225,23 @@ export async function sampleKeyboard(
   const offScreen: string[] = [];
   const covered: string[] = [];
   let bodies = 0;
-  for (let i = 0; i < presses; i += 1) {
+  // The whole page (UX-F1 review): until the focus wraps round or leaves the page twice, so no
+  // table's run is cut short; a page still going at `presses` is a sample not taken.
+  let ended = false;
+  let pressed = 0;
+  for (; pressed < presses && !ended; pressed += 1) {
     await page.keyboard.press('Tab');
     const stop = await page.evaluate(focusedNow);
     if (stop === null) {
       bodies += 1;
-      if (bodies > 1) break;
+      ended = bodies > 1;
       continue;
     }
     // Wrapped round to the first stop: the page's whole order was seen.
-    if (stops.length > 0 && stop.element === stops[0]?.element && stop.region === stops[0].region)
-      break;
+    if (stops.length > 0 && stop.element === stops[0]?.element && stop.region === stops[0].region) {
+      ended = true;
+      continue;
+    }
     const { onScreen, covered: isCovered, skip, ...rest } = stop;
     const kept: FocusStop = { ...rest, skipsTable: skipTableOf(skip) };
     stops.push(kept);
@@ -254,7 +263,9 @@ export async function sampleKeyboard(
   const runs = tableRuns(stops);
   if (runs.longest >= TABLE_RUN_LIMIT)
     findings.push(`${String(runs.longest)} stops inside one table before leaving it (G-33)`);
+  const error = keyboardCapError(pressed, presses, ended);
   return {
+    ...(error === undefined ? {} : { error }),
     stops,
     longestTableRun: runs.longest,
     skippedByLinkRun: runs.skippedByLink,

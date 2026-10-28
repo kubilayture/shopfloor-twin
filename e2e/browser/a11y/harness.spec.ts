@@ -186,7 +186,7 @@ test('visual and accessibility harness (gate)', async ({ browser }) => {
       writes,
     };
     await writeFile(join(RESULTS, 'report.json'), `${JSON.stringify(report, null, 1)}\n`);
-    await writeFile(join(RESULTS, 'summary.md'), summarize(report));
+    await writeFile(join(RESULTS, 'summary.md'), summarize(report, ROUTES));
     return report;
   };
 
@@ -523,7 +523,7 @@ test('visual and accessibility harness (gate)', async ({ browser }) => {
     throw new Error('the report holds a page twice');
   }
   // The gate (UX-F1): the report and summary are written first, so a red run has them.
-  const { failures } = gateVerdict(report);
+  const { failures } = gateVerdict(report, ROUTES);
   if (failures.length > 0) {
     throw new Error(
       `the accessibility gate failed (${String(failures.length)}; ${join(RESULTS, 'summary.md')}):\n- ${failures.join('\n- ')}`,

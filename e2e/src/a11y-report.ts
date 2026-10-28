@@ -393,6 +393,22 @@ export const longestTableRun = (stops: readonly Pick<FocusStop, 'inTable' | 'ski
 /** A run of this many stops inside one table is a G-33 finding. */
 export const TABLE_RUN_LIMIT = 10;
 
+/**
+ * The most Tab presses a keyboard sample takes (UX-F1 review): it samples the whole page, so this
+ * is far above any page's order (the largest seen: under 100 stops, a lot's 50-unit table).
+ */
+export const TAB_PRESS_CAP = 400;
+
+/** A sample that reached the cap before the focus wrapped round or left the page: not taken. */
+export const keyboardCapError = (
+  pressed: number,
+  cap: number,
+  ended: boolean,
+): string | undefined =>
+  !ended && pressed >= cap
+    ? `the Tab order did not end within ${String(cap)} presses: the sample is cut off`
+    : undefined;
+
 /** Keyboard sampling widths: the desktop and the phone (the drawer layout). */
 export const KEYBOARD_WIDTHS = [1440, 390] as const;
 /** The width each page's own overlays are checked at. */
@@ -473,26 +489,34 @@ export function a11yOutcome(
   reportText: string | undefined,
   exitCode: number,
   launchedAt: number,
+  catalogue: readonly CatalogueRoute[],
 ): { ok: boolean; message: string } {
-  let report: A11yReport;
+  let parsed: unknown;
   try {
     if (reportText === undefined) throw new Error('no report.json');
-    report = JSON.parse(reportText) as A11yReport;
-    if (typeof report.startedAt !== 'string' || !Array.isArray(report.entries))
-      throw new Error('report.json is not a harness report');
+    parsed = JSON.parse(reportText);
   } catch (error) {
     return {
       ok: false,
       message: `the accessibility harness wrote no readable report (Playwright exit ${String(exitCode)}: ${error instanceof Error ? error.message : String(error)})`,
     };
   }
+  const bad = malformedFields(parsed);
+  if (bad.length > 0) {
+    return {
+      ok: false,
+      message: `malformed report.json (Playwright exit ${String(exitCode)}): missing or wrong ${bad.join(', ')}`,
+    };
+  }
+  const report = parsed as A11yReport;
+  // `startedAt` is a date here: `malformedFields` refused one that does not parse (re-review).
   if (Date.parse(report.startedAt) < launchedAt - 1000) {
     return {
       ok: false,
       message: `report.json is from an earlier run (started ${report.startedAt}; Playwright exit ${String(exitCode)})`,
     };
   }
-  const verdict = gateVerdict(report);
+  const verdict = gateVerdict(report, catalogue);
   if (verdict.failures.length > 0) {
     return {
       ok: false,
@@ -534,11 +558,11 @@ const cell = (text: string) => text.replaceAll('|', '\\|').replaceAll('\n', ' ')
  * The human summary (markdown): coverage, totals by impact, each route's worst page, the rules seen
  * most, titles, keyboard, overlays and the touch-scroll check.
  */
-export function summarize(report: A11yReport): string {
+export function summarize(report: A11yReport, catalogue?: readonly CatalogueRoute[]): string {
   const measured = report.entries.filter((e) => e.error === undefined);
   const total = measured.reduce((acc, e) => sum(acc, e.counts), zeroCounts());
   const out: string[] = [];
-  const verdict = gateVerdict(report);
+  const verdict = gateVerdict(report, catalogue);
   out.push('# Visual and accessibility harness (UX-1g, gate UX-F1)', '');
   out.push(
     verdict.partial.length > 0
@@ -841,6 +865,47 @@ export interface GateVerdict {
   readonly partial: readonly string[];
 }
 
+/** A route of the catalogue (`e2e/browser/a11y/routes.ts`), as far as the verdict needs it. */
+export interface CatalogueRoute {
+  readonly id: string;
+  readonly states: Partial<Record<PageState, unknown>>;
+  readonly signedOutOnly?: boolean;
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * The fields of a report the gate reads that are missing or of the wrong kind (UX-F1
+ * re-review): a malformed report is named as such, never a TypeError. Empty for a sound one.
+ */
+export function malformedFields(value: unknown): string[] {
+  if (!isObject(value)) return ['the report itself'];
+  const bad: string[] = [];
+  if (typeof value.startedAt !== 'string' || Number.isNaN(Date.parse(value.startedAt)))
+    bad.push('startedAt');
+  for (const key of ['entries', 'keyboard', 'overlays', 'overlayScans', 'touchScroll', 'writes'])
+    if (!Array.isArray(value[key])) bad.push(key);
+  if (typeof value.budgetMs !== 'number') bad.push('budgetMs');
+  const coverage = value.coverage;
+  if (!isObject(coverage)) bad.push('coverage');
+  else {
+    for (const key of ['planned', 'measured', 'failed', 'notReachedPages', 'loginFailedPages'])
+      if (typeof coverage[key] !== 'number') bad.push(`coverage.${key}`);
+    for (const key of ['skipped', 'notReached', 'loginFailed'])
+      if (!Array.isArray(coverage[key])) bad.push(`coverage.${key}`);
+  }
+  const filter = value.filter;
+  if (!isObject(filter)) bad.push('filter');
+  else {
+    for (const key of ['routes', 'roles', 'widths', 'states'])
+      if (!Array.isArray(filter[key])) bad.push(`filter.${key}`);
+  }
+  if (!isObject(value.titles) || !Array.isArray(value.titles.duplicates))
+    bad.push('titles.duplicates');
+  return bad;
+}
+
 /** The keyboard findings that fail the gate, from a sample's structured lists. */
 function keyboardFailures(k: KeyboardSample): string[] {
   const where = `${k.route} at ${String(k.width)}`;
@@ -879,7 +944,10 @@ function keyboardFailures(k: KeyboardSample): string[] {
  * Moderate and minor rules and sideways scrolling are listed. A run narrowed by any filter is
  * `partial`: not the gate, whatever its failures.
  */
-export function gateVerdict(report: A11yReport): GateVerdict {
+export function gateVerdict(
+  report: A11yReport,
+  catalogue?: readonly CatalogueRoute[],
+): GateVerdict {
   const failures: string[] = [];
   const listed: string[] = [];
   const partial = narrowedBy(report.filter);
@@ -947,6 +1015,28 @@ export function gateVerdict(report: A11yReport): GateVerdict {
     failures.push(`the title "${d.title}" is shared by ${d.routes.join(', ')} (G-05)`);
   }
 
+  // An unfiltered run covers the catalogue (`routes.ts`): every route, and the supervisor's data
+  // page of each that has one, so the required checks below cannot vanish with a page left out
+  // of the plan (UX-F1 re-review).
+  if (catalogue !== undefined && partial.length === 0) {
+    const absent = catalogue.filter((r) => !report.entries.some((e) => e.route === r.id));
+    if (absent.length > 0)
+      failures.push(`routes left out of the run: ${examples(absent.map((r) => r.id))}`);
+    const noData = catalogue
+      .filter((r) => r.states.data !== undefined && r.signedOutOnly !== true)
+      .filter(
+        (r) =>
+          !absent.includes(r) &&
+          !report.entries.some(
+            (e) => e.route === r.id && e.role === 'supervisor' && e.state === 'data',
+          ),
+      );
+    if (noData.length > 0)
+      failures.push(
+        `supervisor data pages left out of the run: ${examples(noData.map((r) => r.id))}`,
+      );
+  }
+
   // The checks the plan includes, each required (the verdict does not trust the spec's flow).
   const widths = report.filter.widths.length > 0 ? report.filter.widths : WIDTHS;
   const supervisorRoutes = [
@@ -958,7 +1048,12 @@ export function gateVerdict(report: A11yReport): GateVerdict {
   ].sort();
   const missingKeyboard = supervisorRoutes.flatMap((route) =>
     KEYBOARD_WIDTHS.filter((w) => widths.includes(w))
-      .filter((w) => !report.keyboard.some((k) => k.route === route && k.width === w))
+      .filter(
+        (w) =>
+          !report.keyboard.some(
+            (k) => k.route === route && k.width === w && k.role === 'supervisor',
+          ),
+      )
       .map((w) => `${route} at ${String(w)}`),
   );
   if (missingKeyboard.length > 0)

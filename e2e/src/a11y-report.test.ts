@@ -19,6 +19,9 @@ import {
   TOUCH_ENGINES,
   a11yOutcome,
   a11yPreflight,
+  keyboardCapError,
+  malformedFields,
+  TAB_PRESS_CAP,
   narrowedBy,
   skipTableOf,
   routeSelected,
@@ -880,40 +883,168 @@ describe('a11yPreflight', () => {
   });
 });
 
+/** A catalogue of one route with a data state (the `green` run's orders page). */
+const CAT = [{ id: 'orders', states: { data: () => '/orders' } }];
+
 describe('a11yOutcome', () => {
   const launched = Date.parse('2026-10-24T00:00:00.000Z');
   const text = (r: A11yReport) => JSON.stringify(r);
+  const outcome = (t: string | undefined, exit = 0, at = launched) => a11yOutcome(t, exit, at, CAT);
 
   it('passes a green report of this run, and says when it is partial', () => {
-    expect(a11yOutcome(text(green()), 0, launched)).toEqual({ ok: true, message: 'gate passed' });
+    expect(outcome(text(green()))).toEqual({ ok: true, message: 'gate passed' });
     expect(
-      a11yOutcome(
+      outcome(
         text(
           green({ filter: { routes: [], roles: [], widths: [], states: [], themes: ['dark'] } }),
         ),
-        0,
-        launched,
       ),
     ).toEqual({ ok: true, message: 'partial run, not the gate (narrowed: A11Y_THEMES=dark)' });
   });
 
   it('fails without a readable report of this run, on a red verdict, or a failed Playwright', () => {
-    expect(a11yOutcome(undefined, 0, launched)).toEqual({
+    expect(outcome(undefined)).toEqual({
       ok: false,
       message:
         'the accessibility harness wrote no readable report (Playwright exit 0: no report.json)',
     });
-    expect(a11yOutcome('{', 0, launched).ok).toBe(false);
-    expect(a11yOutcome('{}', 0, launched).message).toMatch(/not a harness report/);
-    expect(a11yOutcome(text(green()), 0, launched + 60_000).message).toMatch(/from an earlier run/);
-    expect(a11yOutcome(text(green({ writes: ['POST /x'] })), 0, launched)).toEqual({
+    expect(outcome('{').message).toMatch(/no readable report/);
+    expect(outcome(text(green()), 0, launched + 60_000).message).toMatch(/from an earlier run/);
+    expect(outcome(text(green({ writes: ['POST /x'] })))).toEqual({
       ok: false,
       message: 'the accessibility gate failed: the harness caused 1 writes: POST /x',
     });
-    expect(a11yOutcome(text(green()), 1, launched)).toEqual({
+    expect(outcome(text(green()), 1)).toEqual({
       ok: false,
       message: 'the accessibility harness failed (Playwright exit 1)',
     });
+    // The catalogue: an unfiltered run that left a route out is red.
+    expect(
+      a11yOutcome(text(green()), 0, launched, [...CAT, { id: 'oee', states: {} }]).message,
+    ).toBe('the accessibility gate failed: routes left out of the run: oee');
+  });
+
+  it('names a malformed report, and fails a start that is missing or not a date (re-review)', () => {
+    for (const startedAt of ['', 'yesterday']) {
+      expect(outcome(text(green({ startedAt })))).toEqual({
+        ok: false,
+        message: 'malformed report.json (Playwright exit 0): missing or wrong startedAt',
+      });
+    }
+    expect(outcome('[]').message).toBe(
+      'malformed report.json (Playwright exit 0): missing or wrong the report itself',
+    );
+    const rest: Record<string, unknown> = { ...green() };
+    delete rest.overlayScans;
+    delete rest.filter;
+    delete rest.coverage;
+    expect(outcome(JSON.stringify(rest)).message).toBe(
+      'malformed report.json (Playwright exit 0): missing or wrong overlayScans, coverage, filter',
+    );
+  });
+});
+
+describe('malformedFields', () => {
+  it('is empty for a sound report and names each bad field', () => {
+    expect(malformedFields(green())).toEqual([]);
+    const r = green();
+    expect(
+      malformedFields({
+        ...r,
+        startedAt: 5,
+        entries: {},
+        keyboard: null,
+        overlays: 'x',
+        touchScroll: undefined,
+        writes: 1,
+        budgetMs: '9',
+        coverage: {
+          ...r.coverage,
+          planned: '1',
+          measured: null,
+          failed: undefined,
+          skipped: {},
+          notReached: 0,
+          loginFailed: '',
+          notReachedPages: [],
+          loginFailedPages: true,
+        },
+        filter: { routes: '', roles: 0, widths: {}, states: null },
+        titles: { duplicates: {} },
+      }),
+    ).toEqual([
+      'startedAt',
+      'entries',
+      'keyboard',
+      'overlays',
+      'touchScroll',
+      'writes',
+      'budgetMs',
+      'coverage.planned',
+      'coverage.measured',
+      'coverage.failed',
+      'coverage.notReachedPages',
+      'coverage.loginFailedPages',
+      'coverage.skipped',
+      'coverage.notReached',
+      'coverage.loginFailed',
+      'filter.routes',
+      'filter.roles',
+      'filter.widths',
+      'filter.states',
+      'titles.duplicates',
+    ]);
+    expect(malformedFields({ ...r, titles: null })).toEqual(['titles.duplicates']);
+    expect(malformedFields(null)).toEqual(['the report itself']);
+  });
+});
+
+describe('gateVerdict, the catalogue (re-review)', () => {
+  it('requires an unfiltered run to cover every route and each supervisor data page', () => {
+    const cat = [
+      ...CAT,
+      { id: 'login', states: { data: () => '/login' }, signedOutOnly: true },
+      { id: 'oee', states: { data: () => '/oee' } },
+      { id: 'lost', states: { 'not-found': () => '/x' } },
+      { id: 'blank', states: { empty: () => '/blank' } },
+    ];
+    const run = green({}, [
+      entry(),
+      entry({ width: 390 }),
+      entry({ route: 'login', role: 'signed-out' }),
+      entry({ route: 'oee', role: 'operator' }),
+      // A route without a data state needs no supervisor data page.
+      entry({ route: 'blank', state: 'empty' }),
+    ]);
+    expect(gateVerdict(run, cat).failures).toEqual([
+      'routes left out of the run: lost',
+      'supervisor data pages left out of the run: oee',
+    ]);
+    // A partial run is not held to the catalogue.
+    expect(
+      gateVerdict({ ...run, filter: { ...run.filter, routes: ['orders'] } }, cat).failures,
+    ).toEqual([]);
+    expect(gateVerdict(run).failures).toEqual([]);
+  });
+
+  it("takes only the supervisor's keyboard samples", () => {
+    expect(
+      gateVerdict(
+        green({ keyboard: [sample('orders', 1440), sample('orders', 390, { role: 'operator' })] }),
+      ).failures,
+    ).toEqual(['keyboard samples missing: orders at 390']);
+  });
+});
+
+describe('keyboardCapError (re-review)', () => {
+  it('is an error only when the cap was reached before the Tab order ended', () => {
+    expect(TAB_PRESS_CAP).toBeGreaterThanOrEqual(200);
+    expect(keyboardCapError(400, 400, false)).toBe(
+      'the Tab order did not end within 400 presses: the sample is cut off',
+    );
+    expect(keyboardCapError(400, 400, true)).toBeUndefined();
+    expect(keyboardCapError(57, 400, true)).toBeUndefined();
+    expect(keyboardCapError(399, 400, false)).toBeUndefined();
   });
 });
 

@@ -1,6 +1,7 @@
 import { AxeBuilder } from '@axe-core/playwright';
 import type { Locator, Page } from '@playwright/test';
 import {
+  followsSkip,
   fromAxe,
   keyboardCapError,
   skipTableOf,
@@ -108,6 +109,21 @@ export async function screenshot(page: Page, path: string, width: number): Promi
   });
 }
 
+/**
+ * Activates the focused skip link the way the keyboard would: DataTable's (`data-skip-link`) by
+ * its own handler, which focuses the target; any other by focusing its target, so the browser's
+ * hash navigation (and the router) is left alone.
+ */
+function followSkipLink(): void {
+  const link = document.activeElement;
+  if (!(link instanceof HTMLAnchorElement)) return;
+  const target = document.getElementById(
+    decodeURIComponent((link.getAttribute('href') ?? '').slice(1)),
+  );
+  if (link.hasAttribute('data-skip-link')) link.click();
+  if (target instanceof HTMLElement && document.activeElement !== target) target.focus();
+}
+
 /** The focused element as the report shows it, with the facts of a skip link; `null` on the body. */
 function focusedNow():
   | (Omit<FocusStop, 'skipsTable'> & { onScreen: boolean; covered: boolean; skip: SkipFacts })
@@ -158,6 +174,25 @@ function focusedNow():
             (t.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0 &&
             !t.contains(target),
         );
+  // The Tab stops a skip link passes over: tabbable, rendered, between it and its target.
+  const targetAfter =
+    target !== null &&
+    (el.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+  const between = targetAfter
+    ? [
+        ...document.querySelectorAll<HTMLElement>(
+          'a[href], button, input, select, textarea, summary, [tabindex]',
+        ),
+      ].filter(
+        (c) =>
+          (el.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0 &&
+          (c.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0 &&
+          c.tabIndex >= 0 &&
+          !(c as HTMLButtonElement).disabled &&
+          c.closest('[inert]') === null &&
+          c.getClientRects().length > 0,
+      ).length
+    : 0;
   const label =
     el instanceof HTMLInputElement ||
     el instanceof HTMLSelectElement ||
@@ -191,6 +226,9 @@ function focusedNow():
         (target.hasAttribute('tabindex') ||
           (target instanceof HTMLElement && target.tabIndex >= 0) ||
           el.hasAttribute('data-skip-link')),
+      marked: el.hasAttribute('data-skip-link'),
+      targetAfter,
+      between,
     },
     onScreen,
     covered,
@@ -225,6 +263,8 @@ export async function sampleKeyboard(
   const offScreen: string[] = [];
   const covered: string[] = [];
   let bodies = 0;
+  /** The most stops one followed skip link passed over. */
+  let followed = 0;
   // The whole page (UX-F1 review): until the focus wraps round or leaves the page twice, so no
   // table's run is cut short; a page still going at `presses` is a sample not taken.
   let ended = false;
@@ -248,6 +288,11 @@ export async function sampleKeyboard(
     if (!kept.visible) hidden.push(kept.element);
     if (!onScreen) offScreen.push(kept.element);
     else if (isCovered) covered.push(kept.element);
+    // A skip link: follow it, as a keyboard user would, and go on from its target (UX-F1).
+    if (followsSkip(skip)) {
+      followed = Math.max(followed, skip.between ?? 0);
+      await page.evaluate(followSkipLink);
+    }
   }
   if (hidden.length > 0)
     findings.push(
@@ -268,7 +313,7 @@ export async function sampleKeyboard(
     ...(error === undefined ? {} : { error }),
     stops,
     longestTableRun: runs.longest,
-    skippedByLinkRun: runs.skippedByLink,
+    skippedByLinkRun: Math.max(runs.skippedByLink, followed),
     hidden,
     offScreen,
     covered,

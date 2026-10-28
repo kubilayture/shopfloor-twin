@@ -19,6 +19,7 @@ import {
   TOUCH_ENGINES,
   a11yOutcome,
   a11yPreflight,
+  followsSkip,
   keyboardCapError,
   malformedFields,
   TAB_PRESS_CAP,
@@ -852,6 +853,32 @@ describe('skipTableOf (G-33)', () => {
     expect(skipTableOf({ ...facts, targetRendered: false })).toBeNull();
     expect(skipTableOf({ ...facts, targetFocusable: false })).toBeNull();
     expect(skipTableOf({ ...facts, table: 0 })).toBe(0);
+  });
+});
+
+describe('followsSkip (the keyboard sample follows a skip link)', () => {
+  const facts = {
+    table: 1,
+    targetRendered: true,
+    targetFocusable: true,
+    marked: false,
+    targetAfter: true,
+    between: 380,
+  };
+
+  it('follows a skip link forward past a table, or a marked one past a card list', () => {
+    expect(followsSkip(facts)).toBe(true);
+    expect(followsSkip({ ...facts, table: -1, marked: true })).toBe(true);
+    expect(followsSkip({ ...facts, table: 0 })).toBe(true);
+  });
+
+  it('does not follow a link backwards, to a hidden or unfocusable target, or a plain one', () => {
+    expect(followsSkip({ ...facts, targetAfter: false })).toBe(false);
+    expect(followsSkip({ ...facts, targetAfter: undefined })).toBe(false);
+    expect(followsSkip({ ...facts, targetRendered: false })).toBe(false);
+    expect(followsSkip({ ...facts, targetFocusable: false })).toBe(false);
+    expect(followsSkip({ ...facts, table: -1 })).toBe(false);
+    expect(followsSkip({ ...facts, table: -1, marked: undefined })).toBe(false);
   });
 });
 

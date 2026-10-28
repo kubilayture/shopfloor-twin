@@ -426,7 +426,26 @@ export interface SkipFacts {
   readonly targetRendered: boolean;
   /** The target takes the focus: focusable itself, or the link moves the focus to it. */
   readonly targetFocusable: boolean;
+  /** The link is marked as a skip link (`data-skip-link`, DataTable's, in table or card mode). */
+  readonly marked?: boolean;
+  /** The target lies after the link in the document (following it moves forward). */
+  readonly targetAfter?: boolean;
+  /** The Tab stops between the link and its target: what following the link passes over. */
+  readonly between?: number;
 }
+
+/**
+ * Whether the keyboard sample follows the focused link to its target, as a keyboard user would
+ * (UX-F1): a skip link forward, to a rendered target that takes the focus, past a table (the
+ * G-33 exemption's rule) or marked as DataTable's (its card list on a phone). The sample then
+ * goes on from the target, bounded by the page's structure rather than its data; what it passed
+ * over is the run "skipped by link".
+ */
+export const followsSkip = (facts: SkipFacts): boolean =>
+  facts.targetRendered &&
+  facts.targetFocusable &&
+  facts.targetAfter === true &&
+  (facts.table >= 0 || facts.marked === true);
 
 /**
  * The table a focused link skips past (G-33), or `null`: only a link whose target lies past a

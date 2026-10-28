@@ -27,7 +27,7 @@ export const plantOrWall = (plantAt: string | null, wallAt: string): ReactNode =
   plantAt === null ? wallTimeOf(wallAt) : timeOf(plantAt);
 
 /** An SPC signal episode (design system 2.6): the tone, not the word, says it is a signal. */
-const SIGNAL_LOOK: Readonly<
+export const SIGNAL_LOOK: Readonly<
   Record<SpcSignalDto['status'], { readonly tone: Tone; readonly variant: BadgeVariant }>
 > = {
   provisional: { tone: 'warn', variant: 'soft' },

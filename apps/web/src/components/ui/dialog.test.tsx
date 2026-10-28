@@ -326,11 +326,13 @@ describe('Dialog', () => {
 function Confirm({
   tone,
   pending,
+  size,
   onConfirm,
   onCancel,
 }: {
   readonly tone?: 'danger' | 'default';
   readonly pending?: boolean;
+  readonly size?: 'md' | 'touch';
   readonly onConfirm: () => void | Promise<void>;
   readonly onCancel: () => void;
 }) {
@@ -342,6 +344,7 @@ function Confirm({
       confirmLabel="Close order"
       tone={tone}
       pending={pending}
+      size={size}
       onConfirm={onConfirm}
       onCancel={onCancel}
       testId="confirm"
@@ -372,6 +375,38 @@ describe('ConfirmDialog', () => {
     const confirm = screen.getByRole('button', { name: 'Close order' });
     expect(document.activeElement).toBe(confirm);
     expect(confirm.className).toContain('bg-accent');
+  });
+
+  it('has no empty body between its description and its buttons (UX-7 iPad check)', () => {
+    render(<Confirm onConfirm={() => undefined} onCancel={() => undefined} />);
+    const dialog = screen.getByRole('dialog', { name: 'Close order PO-2610-303?' });
+    expect(dialog.querySelector('.overflow-y-auto')).toBeNull();
+    expect(dialog.querySelector('footer')).not.toBeNull();
+  });
+
+  it('has 56 px buttons, a 56 px close button and larger text at the touch size (UX-7)', () => {
+    const { unmount } = render(<Confirm onConfirm={() => undefined} onCancel={() => undefined} />);
+    const heights = () =>
+      ['Cancel', 'Close order', 'Close'].map((name) =>
+        screen
+          .getByRole('button', { name })
+          .className.split(/\s+/)
+          .find((c) => c.startsWith('min-h-')),
+      );
+    expect(heights()).toEqual(['min-h-9', 'min-h-9', 'min-h-7']);
+    expect(screen.getByRole('heading', { name: 'Close order PO-2610-303?' }).className).toContain(
+      'text-lg',
+    );
+    unmount();
+    render(<Confirm size="touch" onConfirm={() => undefined} onCancel={() => undefined} />);
+    expect(heights()).toEqual(['min-h-14', 'min-h-14', 'min-h-14']);
+    expect(screen.getByRole('heading', { name: 'Close order PO-2610-303?' }).className).toContain(
+      'text-xl',
+    );
+    const dialog = screen.getByRole('dialog');
+    expect(
+      document.getElementById(dialog.getAttribute('aria-describedby') ?? '')?.className,
+    ).toContain('text-base');
   });
 
   it('while pending: busy confirm, and neither Escape nor Cancel closes it', () => {

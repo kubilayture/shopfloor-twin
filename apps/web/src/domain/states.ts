@@ -193,6 +193,23 @@ export function stateCounts(states: readonly (string | undefined)[]): StateCount
 }
 
 /**
+ * The tone of a state that costs output (design system 2.4: Starved, Blocked, Stopped, Down), from
+ * `stateStyle`, for a group's worst machine (the terminal's picker); undefined for the normal
+ * states and for no data.
+ */
+export function abnormalTone(state: string | undefined): Tone | undefined {
+  if (state === undefined) return undefined;
+  const style = stateStyle(state);
+  return style.abnormal ? style.tone : undefined;
+}
+
+/** The most urgent of some tones (alarm, then caution, then warn), for a group of machines. */
+export function worstTone(tones: readonly (Tone | undefined)[]): Tone | undefined {
+  for (const tone of ['alarm', 'caution', 'warn'] as const) if (tones.includes(tone)) return tone;
+  return undefined;
+}
+
+/**
  * Whether `incoming` is at least as new as `known`: a newer device epoch wins, then the later
  * fact (`seq`; an anchor has none), then the later start. Pushed deltas and REST answers race,
  * so the cache keeps whichever is newer.

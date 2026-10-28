@@ -82,7 +82,11 @@ test('the terminal shows the order counts within 2 s of the cycles; an operator 
   await expect(page.getByTestId('connection-status')).toHaveText('Live');
   // The current order, in progress here, with its Line A1 operations.
   await expect(page.getByTestId(`terminal-order-${orderId}`)).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByTestId(`terminal-order-status-${orderId}`)).toHaveText('in-progress');
+  // The raw status in `data-status` (#295); the badge shows the word, "In progress" (UX-7).
+  await expect(page.getByTestId(`terminal-order-status-${orderId}`)).toHaveAttribute(
+    'data-status',
+    'in-progress',
+  );
   const view = await mes.terminal(WORK_CENTER);
   expect(view.crew.map((c) => c.username)).toContain(operator.username);
   const operations = [

@@ -4,6 +4,7 @@ import {
   type CrewMemberDto,
   type PauseReason,
   type TerminalOperationDto,
+  type TerminalOrderDto,
   type TerminalViewDto,
   type scrapReasonListSchema,
 } from '@shopfloor/contracts/mes-api';
@@ -132,4 +133,25 @@ export function terminalFailure(error: unknown, not: string): WriteFailure {
     };
   }
   return writeFailure(error, { not, conflict: 'try again.', what: 'this' });
+}
+
+/**
+ * The orders of a terminal view in the operator's order (UX-7 review): the active ones first, in
+ * progress before the rest (the MES's order kept within each), and apart the finished ones, a
+ * completed or closed order whose operations are all signed off, to collapse into one line, so
+ * the first Start stays in view on a shift with older orders. An order in `keep` (seen active on
+ * this screen) stays with the active ones: the operator who signs off its last operation sees it.
+ */
+export function splitOrders<O extends Pick<TerminalOrderDto, 'order' | 'operations'>>(
+  orders: readonly O[],
+  keep: ReadonlySet<string> = new Set(),
+): { readonly active: O[]; readonly done: O[] } {
+  const finished = (o: O) =>
+    (o.order.status === 'completed' || o.order.status === 'closed') &&
+    o.operations.length > 0 &&
+    o.operations.every((op) => op.signedOff !== null);
+  const active = orders.filter((o) => !finished(o) || keep.has(o.order.id));
+  const done = orders.filter((o) => finished(o) && !keep.has(o.order.id));
+  const rank = (o: O) => (o.order.status === 'in-progress' ? 0 : 1);
+  return { active: [...active].sort((a, b) => rank(a) - rank(b)), done };
 }

@@ -46,6 +46,11 @@ test('operators sign off a completed order at both terminals, a second operator 
     const id = `${closeOrder}-${operation}`;
     await expect(tablet.getByTestId(`terminal-op-state-${id}`)).toContainText('Complete');
     await tablet.getByTestId(`terminal-sign-off-${id}`).click();
+    // Signing off an operation asks first (UX-7): it cannot be undone at the terminal.
+    await tablet
+      .getByTestId(`terminal-confirm-sign-off-${id}`)
+      .getByRole('button', { name: 'Sign off operation' })
+      .click();
     await expect(tablet.getByTestId(`terminal-op-state-${id}`)).toContainText(
       `Signed off by ${first.username}`,
     );
@@ -116,6 +121,11 @@ test('operators sign off a completed order at both terminals, a second operator 
     const id = `${closeOrder}-${operation}`;
     await expect(tablet.getByTestId(`terminal-op-state-${id}`)).toContainText('Complete');
     await tablet.getByTestId(`terminal-sign-off-${id}`).click();
+    // Signing off an operation asks first (UX-7): it cannot be undone at the terminal.
+    await tablet
+      .getByTestId(`terminal-confirm-sign-off-${id}`)
+      .getByRole('button', { name: 'Sign off operation' })
+      .click();
     await expect(tablet.getByTestId(`terminal-op-state-${id}`)).toContainText(
       `Signed off by ${second.username}`,
     );

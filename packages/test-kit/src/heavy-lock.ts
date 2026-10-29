@@ -431,8 +431,11 @@ export function tryTakeLock(lockPath: string, holder: HeavyLockHolder): boolean 
       if (isCode(error, 'ENOENT')) return false;
       throw error;
     }
-    // A complete directory was renamed into place, so it is ours; checked all the same (#350).
-    return readHolder(lockPath)?.token === holder.token;
+    // A complete directory was renamed into place, so it is ours; checked all the same (#350):
+    // false only when it names another holder, never because it could not be read (that would
+    // make this process wait on its own live lock).
+    const seen = readHolder(lockPath);
+    return seen === undefined || seen.token === holder.token;
   } finally {
     rmSync(staging, { recursive: true, force: true });
   }
@@ -1094,7 +1097,10 @@ export async function acquireHeavyLock(options: AcquireOptions): Promise<HeavyLo
     const ticketName = own;
     setTimeout(() => {
       try {
-        removeTicket(queue, ticketName, holder.token);
+        // Only our own ticket: a newcomer may hold the name by now, and is never moved aside.
+        if (readTicket(queue, ticketName)?.token === holder.token) {
+          removeTicket(queue, ticketName, holder.token);
+        }
       } catch {
         // the queue is gone, or unreadable: nothing to remove
       }

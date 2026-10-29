@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  GHOST_RECHECK_MS,
   HeavyLockTimeoutError,
   acquireHeavyLock,
   queuePath,
@@ -211,6 +212,42 @@ describe('removeTicket races (#350)', () => {
   });
 });
 
+describe('the ghost recheck after a waiter leaves (#350)', () => {
+  it('never touches a newcomer’s ticket under the name it left', async () => {
+    tryTakeLock(lockPath, holder(process.pid, 't-holder'));
+    const waiting = acquireHeavyLock({
+      lockPath,
+      command: 'x',
+      env: {},
+      timeoutMs: 100,
+      pollMs: 5,
+      log,
+    });
+    await expect(waiting).rejects.toBeInstanceOf(HeavyLockTimeoutError);
+    expect(readQueue(queue())).toEqual([]);
+    // A newcomer draws the same sequence before the recheck fires.
+    const name = takeTicket(queue(), ticket(process.pid, 'newcomer'));
+    expect(name).toBe('ticket-000000000001');
+    const path = join(queue(), name);
+    let moved = false;
+    hooks.armed.push({
+      op: 'renameSync',
+      at: 'before',
+      when: (args) => args[0] === path,
+      run: () => {
+        moved = true;
+      },
+    });
+    const before = fs.statSync(path);
+    await new Promise((done) => setTimeout(done, GHOST_RECHECK_MS + 300));
+    expect(moved).toBe(false); // never moved aside, not even for a moment
+    hooks.armed.length = 0;
+    const after = fs.statSync(path);
+    expect(readTicket(queue(), name)?.token).toBe('newcomer');
+    expect(after.ino).toBe(before.ino);
+  });
+});
+
 describe('the staging sweep against a stopped tryTakeLock (#350)', () => {
   const later = () => Date.now() + 61_000; // the owner stood still for over a minute
 
@@ -269,6 +306,18 @@ describe('the staging sweep against a stopped tryTakeLock (#350)', () => {
     expect(ownerRename).toBe('ENOENT');
     expect(fs.existsSync(lockPath)).toBe(false);
     expect(fs.readdirSync(join(dir, 'cache'))).toEqual([]);
+  });
+
+  it('says true when the lock it renamed into place has a holder.json it cannot read', () => {
+    hooks.armed.push({
+      op: 'renameSync',
+      at: 'after',
+      when: (args) => args[1] === lockPath,
+      run: () => {
+        fs.writeFileSync(join(lockPath, 'holder.json'), '{"pid": 3'); // e.g. EMFILE on the read
+      },
+    });
+    expect(tryTakeLock(lockPath, holder(process.pid, 't-a'))).toBe(true);
   });
 
   it('says false when the lock it renamed into place names another token', () => {

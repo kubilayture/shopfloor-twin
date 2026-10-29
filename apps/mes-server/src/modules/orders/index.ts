@@ -20,7 +20,8 @@
  *   notification into the ERP outbox in the caller's transaction (no `#serial`, no order row).
  * - The operator terminal (#177): `operations(filter)`, `activities(filter)`; `startWork`,
  *   `pauseWork`, `resumeWork`, `signOff` (a version per order operation, 409 `operation-stale`,
- *   audited); `endActivities(who)` and `endOrphanedActivities(signedOn)` when crew rows end.
+ *   audited); `endActivities(who)` and `endOrphanedActivities(signedOn, before, crew)` when crew rows end
+ *   (by crew row since #383).
  * - `importNow()`, `postNow()`, `tick()`: one round of the ERP feed, the ERP outbox and the
  *   commands (the timers call them; tests call them directly).
  * - `readCommand` (pure): ADR-0029's reading of a command; `chooseCnc`/`estimateFinish` (pure):
@@ -65,6 +66,7 @@ export { OPERATION_AUDIT_ENTITY } from './operations.ts';
 export type {
   ActivityRecord,
   OperationRecord,
+  SweepCrew,
   TerminalAction,
   TerminalRequest,
   TerminalWriteContext,

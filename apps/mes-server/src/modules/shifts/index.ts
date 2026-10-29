@@ -17,7 +17,8 @@
  * - Crews (#177): `currentInstance()`, `crew(query)`, `signOn(workCenter, user, sessionId)`
  *   (409 `no-shift` outside a shift), `signOff(workCenter, user)` (409 `not-signed-on`),
  *   `endCrewForSessions(ids)`; the tick ends rows at their shift's end and, with `sessions`, when
- *   their terminal session is no longer live. The report has a crew section.
+ *   their terminal session is no longer live. The report has a crew section. `crewCheck()` and
+ *   `crewEnds(keys)`: the open rows, and when ended rows stopped holding (#383, the orphan sweep).
  * - The shift calendar's functions (`shiftInstances`, `shiftBuckets`, …) are in the pure
  *   `@shopfloor/shift-calendar`, shared with `oee` (no module cycle).
  */
@@ -42,6 +43,7 @@ export type {
   NoteRequest,
   ReportAlarmScope,
   ReportRevision,
+  CrewRows,
   ShiftChange,
   ShiftErrorKind,
   ShiftRecord,
@@ -51,7 +53,7 @@ export type {
   ShiftsSources,
 } from './shifts.ts';
 export { CREW_AUDIT_ENTITY } from './crew.ts';
-export type { CrewQuery, CrewRecord } from './crew.ts';
+export type { CrewEnd, CrewKey, CrewQuery, CrewRecord } from './crew.ts';
 export { SHIFTS_COLUMNS } from './tables.ts';
 export type {
   CrewEndReason,

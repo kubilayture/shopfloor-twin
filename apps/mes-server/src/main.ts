@@ -352,10 +352,11 @@ try {
     shiftPattern: await masterData.shiftPattern(),
     // Crew rows end with their terminal session (#177): idle and absolute expiry.
     sessions: identity,
-    // After each crew check, intervals whose operator holds no crew row any more are closed (the
-    // orders module exists from further down; until then there is nothing to close).
-    afterCrewCheck: (signedOn, readAt) =>
-      orders ? orders.endOrphanedActivities(signedOn, readAt) : Promise.resolve(),
+    // After each crew check, intervals that hold no crew row any more are closed, by crew row
+    // where they carry one (#383) (the orders module exists from further down; until then there
+    // is nothing to close).
+    afterCrewCheck: (signedOn, readAt, crew) =>
+      orders ? orders.endOrphanedActivities(signedOn, readAt, crew) : Promise.resolve(),
     log: log.child({ module: 'shifts' }),
   });
   shifts = shiftsModule;
@@ -522,12 +523,8 @@ try {
         terminalLog.error({ err: error }, 'closing the activities of an ended crew row failed');
       });
   });
-  const startedAt = new Date();
-  const signedOn = await shiftsModule.crew({ open: true });
-  await ordersModule.endOrphanedActivities(
-    new Set(signedOn.map((row) => `${String(row.userId)}|${row.workCenter}`)),
-    startedAt,
-  );
+  const check = await shiftsModule.crewCheck();
+  await ordersModule.endOrphanedActivities(check.signedOn, check.readAt, check.crew);
   // The API and push follow the modules from here; until then they answer 503.
   await realtime.attach({
     masterData: apiMasterData,

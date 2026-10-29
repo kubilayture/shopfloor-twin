@@ -224,6 +224,8 @@ interface Harness {
   /** Session ids `live` answers false for. */
   readonly dead: Set<string>;
   readonly crewChanges: ShiftChange[];
+  /** While `lost`, a crew row's end reaches no one (the notice lost: the MES was down, #383). */
+  readonly notices: { lost: boolean };
   readonly sam: SessionUser;
   readonly olga: SessionUser;
   readonly omar: SessionUser;
@@ -298,16 +300,18 @@ async function harness(name: string): Promise<Harness> {
     tickMs: 3_600_000,
     sessions: { live: (id) => Promise.resolve(!dead.has(id)) },
     crewCheckMs: 0,
-    afterCrewCheck: (signedOn, readAt) => orders.endOrphanedActivities(signedOn, readAt),
+    afterCrewCheck: (signedOn, readAt, crew) =>
+      orders.endOrphanedActivities(signedOn, readAt, crew),
   });
   await shifts.start();
   cleanups.push(() => shifts.stop());
   const crewChanges: ShiftChange[] = [];
+  const notices = { lost: false };
   // As main.ts wires them: an ended crew row closes its operator's activities there.
   shifts.onChange((change) => {
     if (change.type !== 'crew') return;
     crewChanges.push(change);
-    if (change.event === 'ended') {
+    if (change.event === 'ended' && !notices.lost) {
       void orders.endActivities({
         userId: change.crew.userId,
         workCenter: change.crew.workCenter,
@@ -331,6 +335,7 @@ async function harness(name: string): Promise<Harness> {
     clock,
     dead,
     crewChanges,
+    notices,
     sam,
     olga,
     omar,
@@ -848,6 +853,248 @@ describe('crew ends close the intervals of their crew row (#366)', () => {
         crewId: 999_999,
       }),
     ).toBe(1);
+  });
+});
+
+describe('the orphan sweep closes intervals by crew row (#383)', () => {
+  /** Olga signed on at Line A1 with a session; her writes lock that crew row. */
+  const signedOn = async (h: Harness, session: string) => {
+    const crew = await h.shifts.signOn('line-a1', h.olga, session);
+    const lockCrew = (trx: Transaction<Database>, workCenter: string) =>
+      h.shifts.lockCrew(trx, { userId: h.olga.userId, workCenter, sessionId: session });
+    return { crew, olga: { by: h.olga, requestId: 'r', lockCrew } };
+  };
+  const interval = (h: Harness, order: string, operation: string) =>
+    h.db
+      .selectFrom('orders.operation_activity')
+      .select(['id', 'crew_id', 'from_at', 'from_plant_at', 'to_at', 'to_plant_at', 'end_reason'])
+      .where('order_id', '=', order)
+      .where('operation', '=', operation)
+      .orderBy('id', 'desc')
+      .executeTakeFirstOrThrow();
+  const crewRow = (h: Harness, id: number) =>
+    h.db
+      .selectFrom('shifts.crew_assignment')
+      .select(['from_at', 'from_plant_at', 'to_at', 'to_plant_at', 'end_reason'])
+      .where('id', '=', id)
+      .executeTakeFirstOrThrow();
+  /** One crew check delivered to the orders module, as `afterCrewCheck` does. */
+  const sweep = (h: Harness, check: Awaited<ReturnType<Shifts['crewCheck']>>) =>
+    h.orders.endOrphanedActivities(check.signedOn, check.readAt, check.crew);
+  /** Moves the plant clock on, so a closure at the sweep's plant time would show. */
+  const later = (h: Harness, ms: number) => {
+    h.clock.at = (h.clock.at ?? PLANT_T0) + ms;
+  };
+
+  it('closes an interval whose crew end was lost at that end, after the operator signed on again, and leaves the new work open', async () => {
+    const h = await harness('sweep_lost');
+    await started(h, 'L-1');
+    await h.shifts.tick();
+    const first = await signedOn(h, 'a'.repeat(64));
+    await h.orders.startWork('L-1', 'OP30', { activity: null }, first.olga);
+    // She signs on at Cell M1 too: a row at another work center is no successor of this one.
+    later(h, 30_000);
+    await h.shifts.signOn('cell-m1', h.olga, 'a'.repeat(64));
+    // Olga signs off at Line A1; the notice is lost (the MES went down before it closed her work).
+    h.notices.lost = true;
+    later(h, 60_000);
+    await h.shifts.signOff('line-a1', h.olga, 'a'.repeat(64));
+    h.notices.lost = false;
+    expect((await interval(h, 'L-1', 'OP30')).end_reason).toBeNull();
+    // She signs on again (a new row) and starts other work under it.
+    later(h, 60_000);
+    const second = await signedOn(h, 'b'.repeat(64));
+    await h.orders.startWork('L-1', 'OP40', { activity: null }, second.olga);
+    later(h, 60_000);
+    const pushed: string[] = [];
+    h.orders.onChange((change) => {
+      if (change.type === 'operation') {
+        const { orderId, operation, activities } = change.operation;
+        pushed.push(`${orderId}/${operation}:${String(activities.length)}`);
+      }
+    });
+    // The crew check: she is signed on at Line A1, but not with the row the old work began under.
+    await h.shifts.tick();
+    const ended = await crewRow(h, first.crew.id);
+    expect(ended.end_reason).toBe('sign-off');
+    // Closed at the row's end in wall and plant time, not at the sweep.
+    expect(await interval(h, 'L-1', 'OP30')).toMatchObject({
+      crew_id: first.crew.id,
+      end_reason: 'crew-ended',
+      to_at: ended.to_at,
+      to_plant_at: ended.to_plant_at,
+    });
+    // The work under the live row stays open.
+    expect(await interval(h, 'L-1', 'OP40')).toMatchObject({
+      crew_id: second.crew.id,
+      end_reason: null,
+    });
+    // Pushed like every closure: the operation, now with no open interval.
+    expect(pushed).toEqual(['L-1/OP30:0']);
+  });
+
+  it('closes an interval of a superseded crew row at its successor’s start when that is earlier than the row’s end', async () => {
+    const h = await harness('sweep_superseded');
+    await started(h, 'M-1');
+    await h.shifts.tick();
+    const first = await signedOn(h, 'a'.repeat(64));
+    await h.orders.startWork('M-1', 'OP30', { activity: null }, first.olga);
+    await new Promise((r) => setTimeout(r, 20));
+    await h.orders.startWork('M-1', 'OP40', { activity: null }, first.olga);
+    // Signed on from another tablet: the first row ends `replaced`; the notice is lost.
+    h.notices.lost = true;
+    later(h, 60_000);
+    const second = await signedOn(h, 'b'.repeat(64));
+    h.notices.lost = false;
+    const replaced = await crewRow(h, first.crew.id);
+    expect(replaced.end_reason).toBe('replaced');
+    // The successor started before the first row's end by the clocks (a clock step between the
+    // two writes): the interval ends at the successor's start, in whole milliseconds, so the two
+    // rows' work never overlaps.
+    const work = await interval(h, 'M-1', 'OP30');
+    const successorFrom = new Date(work.from_at.getTime() + 1);
+    const successorPlant = new Date(work.from_plant_at.getTime() + 1_000);
+    expect(successorFrom.getTime()).toBeLessThan(replaced.to_at?.getTime() ?? 0);
+    expect(successorPlant.getTime()).toBeLessThan(replaced.to_plant_at?.getTime() ?? 0);
+    // The second interval began after that start: it ends at its own start, never before it.
+    const late = await interval(h, 'M-1', 'OP40');
+    expect(late.from_at.getTime()).toBeGreaterThan(successorFrom.getTime());
+    await h.db
+      .updateTable('shifts.crew_assignment')
+      .set({ from_at: successorFrom, from_plant_at: successorPlant })
+      .where('id', '=', second.crew.id)
+      .execute();
+    expect(await sweep(h, await h.shifts.crewCheck())).toBe(2);
+    expect(await interval(h, 'M-1', 'OP30')).toMatchObject({
+      end_reason: 'crew-ended',
+      to_at: successorFrom,
+      to_plant_at: successorPlant,
+    });
+    expect(await interval(h, 'M-1', 'OP40')).toMatchObject({
+      end_reason: 'crew-ended',
+      to_at: late.from_at,
+      to_plant_at: successorPlant,
+    });
+  });
+
+  it('never closes an interval whose crew row is still open, and closes nothing more when run again', async () => {
+    const h = await harness('sweep_live');
+    await started(h, 'N-1');
+    await h.shifts.tick();
+    const olga = await signedOn(h, 'a'.repeat(64));
+    await h.orders.startWork('N-1', 'OP30', { activity: null }, olga.olga);
+    const omarSession = 'c'.repeat(64);
+    await h.shifts.signOn('line-a1', h.omar, omarSession);
+    const omar = {
+      by: h.omar,
+      requestId: 'r',
+      lockCrew: (trx: Transaction<Database>, workCenter: string) =>
+        h.shifts.lockCrew(trx, { userId: h.omar.userId, workCenter, sessionId: omarSession }),
+    };
+    await h.orders.startWork('N-1', 'OP40', { activity: null }, omar);
+    // Omar's row ends unheard; Olga's stays open.
+    h.notices.lost = true;
+    later(h, 60_000);
+    await h.shifts.signOff('line-a1', h.omar, omarSession);
+    h.notices.lost = false;
+    const check = await h.shifts.crewCheck();
+    expect(check.crew.open).toEqual(new Set([olga.crew.id]));
+    later(h, 60_000);
+    expect(await sweep(h, check)).toBe(1);
+    // Judged by its row, which is open, even by a check that doesn't name her (signed on by
+    // user and work center).
+    expect(await h.orders.endOrphanedActivities(new Set(), check.readAt, check.crew)).toBe(0);
+    expect(await interval(h, 'N-1', 'OP30')).toMatchObject({ end_reason: null, to_at: null });
+    const closed = await interval(h, 'N-1', 'OP40');
+    expect(closed.end_reason).toBe('crew-ended');
+    // Run again, by a new check and the same one: nothing more closes, the end stays.
+    expect(await sweep(h, await h.shifts.crewCheck())).toBe(0);
+    expect(await sweep(h, check)).toBe(0);
+    await h.shifts.tick();
+    expect(await interval(h, 'N-1', 'OP40')).toEqual(closed);
+    expect(await interval(h, 'N-1', 'OP30')).toMatchObject({ end_reason: null });
+  });
+
+  it('ends the same way whatever order the checks and the late crew-end notice arrive in', async () => {
+    const h = await harness('sweep_order');
+    await started(h, 'P-1');
+    await h.shifts.tick();
+    // A check read before she signed on at all, and one while the first row was open, both
+    // delivered late.
+    const early = await h.shifts.crewCheck();
+    const first = await signedOn(h, 'a'.repeat(64));
+    await h.orders.startWork('P-1', 'OP30', { activity: null }, first.olga);
+    const stale = await h.shifts.crewCheck();
+    h.notices.lost = true;
+    later(h, 60_000);
+    await h.shifts.signOff('line-a1', h.olga, 'a'.repeat(64));
+    h.notices.lost = false;
+    later(h, 60_000);
+    const second = await signedOn(h, 'b'.repeat(64));
+    await h.orders.startWork('P-1', 'OP40', { activity: null }, second.olga);
+    const fresh = await h.shifts.crewCheck();
+    const ended = await crewRow(h, first.crew.id);
+    // The early check first: the work began after it was read, so it is not judged. Then the
+    // stale one: it saw the row open, so nothing closes.
+    expect(await sweep(h, early)).toBe(0);
+    expect(await sweep(h, stale)).toBe(0);
+    expect((await interval(h, 'P-1', 'OP30')).end_reason).toBeNull();
+    // The fresh one, twice, the stale one again, and the lost notice turning up at last: the
+    // interval closes once, at the row's end, and keeps that end.
+    later(h, 60_000);
+    expect(await sweep(h, fresh)).toBe(1);
+    const closed = await interval(h, 'P-1', 'OP30');
+    expect(closed).toMatchObject({
+      end_reason: 'crew-ended',
+      to_at: ended.to_at,
+      to_plant_at: ended.to_plant_at,
+    });
+    expect(await sweep(h, fresh)).toBe(0);
+    expect(await sweep(h, stale)).toBe(0);
+    expect(await sweep(h, early)).toBe(0);
+    expect(
+      await h.orders.endActivities({
+        userId: h.olga.userId,
+        workCenter: 'line-a1',
+        until: ended.to_at ?? new Date(),
+        crewId: first.crew.id,
+      }),
+    ).toBe(0);
+    expect(await interval(h, 'P-1', 'OP30')).toEqual(closed);
+    // Delivered concurrently and twice over: still the one closure.
+    expect(await Promise.all([sweep(h, fresh), sweep(h, stale), sweep(h, fresh)])).toEqual([
+      0, 0, 0,
+    ]);
+    // The new work, begun after the stale check was read, is never judged by it nor closed.
+    expect(await interval(h, 'P-1', 'OP40')).toMatchObject({
+      crew_id: second.crew.id,
+      end_reason: null,
+    });
+  });
+
+  it('closes concurrently delivered checks once, at the row’s end', async () => {
+    const h = await harness('sweep_race');
+    await started(h, 'Q-1');
+    await h.shifts.tick();
+    const first = await signedOn(h, 'a'.repeat(64));
+    await h.orders.startWork('Q-1', 'OP30', { activity: null }, first.olga);
+    await h.orders.startWork('Q-1', 'OP40', { activity: null }, first.olga);
+    h.notices.lost = true;
+    later(h, 60_000);
+    await h.shifts.signOff('line-a1', h.olga, 'a'.repeat(64));
+    h.notices.lost = false;
+    const check = await h.shifts.crewCheck();
+    later(h, 60_000);
+    const counts = await Promise.all([sweep(h, check), sweep(h, check), sweep(h, check)]);
+    expect(counts.reduce((a, b) => a + b, 0)).toBe(2);
+    const ended = await crewRow(h, first.crew.id);
+    for (const operation of ['OP30', 'OP40']) {
+      expect(await interval(h, 'Q-1', operation)).toMatchObject({
+        end_reason: 'crew-ended',
+        to_at: ended.to_at,
+        to_plant_at: ended.to_plant_at,
+      });
+    }
   });
 });
 

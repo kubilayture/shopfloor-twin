@@ -54,6 +54,7 @@ import {
   terminalWrite,
   type ActivityRecord,
   type OperationRecord,
+  type SweepCrew,
   type TerminalAction,
   type TerminalRequest,
   type TerminalWriteContext,
@@ -1127,12 +1128,18 @@ export class Orders {
   }
 
   /**
-   * Closes every open interval whose operator has no open crew row at its work center
-   * (`{userId}|{workCenter}` in `signedOn`, read after `before`, database time) and started before
-   * it: crew rows that ended while the MES was down, or whose notice was lost.
+   * Closes every open interval started before `before` (database time, read before the crew rows)
+   * that holds no crew row any more: crew rows that ended while the MES was down, or whose notice
+   * was lost. With `crew` (#383), an interval started under a crew row is judged by that row and
+   * closed when it stopped holding, even after a new sign-on of its operator there; any other when
+   * its operator has no open crew row at its work center (`{userId}|{workCenter}` in `signedOn`).
    */
-  async endOrphanedActivities(signedOn: ReadonlySet<string>, before: Date): Promise<number> {
-    const touched = await endOrphanedActivities(this.#db, signedOn, before, this.#plantNow());
+  async endOrphanedActivities(
+    signedOn: ReadonlySet<string>,
+    before: Date,
+    crew?: SweepCrew,
+  ): Promise<number> {
+    const touched = await endOrphanedActivities(this.#db, signedOn, before, this.#plantNow(), crew);
     await this.#emitOperations(touched);
     return touched.length;
   }

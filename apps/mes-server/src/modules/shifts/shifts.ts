@@ -42,11 +42,14 @@ import {
   type Pareto,
 } from '../oee/index.ts';
 import {
+  crewEnds,
   endCrew,
   lockCrew,
   readCrew,
   signOff as crewSignOff,
   signOn as crewSignOn,
+  type CrewEnd,
+  type CrewKey,
   type CrewQuery,
   type CrewRecord,
 } from './crew.ts';
@@ -107,10 +110,24 @@ export interface ShiftsOptions extends ShiftsSources {
   /**
    * Runs after each crew check (#177 review, MEDIUM-1): the open crew rows as `{userId}|{workCenter}`
    * and the database time they were read at, so a module can close what holds no crew row any
-   * more (operator activity intervals started before that time).
+   * more (operator activity intervals started before that time); and, since #383, those rows' ids
+   * and when ended rows stopped holding (`CrewRows`), so it can close by crew row too.
    */
-  readonly afterCrewCheck?: (signedOn: ReadonlySet<string>, readAt: Date) => Promise<unknown>;
+  readonly afterCrewCheck?: (
+    signedOn: ReadonlySet<string>,
+    readAt: Date,
+    crew: CrewRows,
+  ) => Promise<unknown>;
   readonly log?: ShiftsLog;
+}
+
+/**
+ * The crew rows of a crew check (#383): the ids of those open when it read them, and when others
+ * stopped holding (`crewEnds`: a row's end, or its successor's start if earlier).
+ */
+export interface CrewRows {
+  readonly open: ReadonlySet<number>;
+  ends(keys: readonly CrewKey[]): Promise<CrewEnd[]>;
 }
 
 /** The composite revision of a report (ADR-0025). */
@@ -838,17 +855,41 @@ export class Shifts {
   async #crewChecked(): Promise<void> {
     const after = this.#afterCrewCheck;
     if (!after) return;
-    // The time first, then the rows: an interval started before it had its crew row open then,
-    // so it is in the set unless that row ended since (and then closing the interval is right).
+    const { signedOn, readAt, crew } = await this.crewCheck();
+    await after(signedOn, readAt, crew);
+  }
+
+  /**
+   * The open crew rows as `{userId}|{workCenter}` and by id, and the database time they were read
+   * at (`afterCrewCheck`, and the orphan closure at start-up). The time first, then the rows: an
+   * interval started before it had its crew row open then, so that row is in the sets unless it
+   * ended since (and then closing the interval is right).
+   */
+  async crewCheck(): Promise<{
+    signedOn: ReadonlySet<string>;
+    readAt: Date;
+    crew: CrewRows;
+  }> {
     const { rows: now } = await sql<{ at: Date }>`SELECT clock_timestamp() AS at`.execute(this.#db);
     const readAt = now[0]?.at ?? new Date();
     const open = await this.#db
       .selectFrom('shifts.crew_assignment')
-      .select(['user_id', 'work_center'])
+      .select(['id', 'user_id', 'work_center'])
       .where('to_at', 'is', null)
       .execute();
-    const signedOn = new Set(open.map((r) => `${String(r.user_id)}|${r.work_center}`));
-    await after(signedOn, readAt);
+    return {
+      signedOn: new Set(open.map((r) => `${String(r.user_id)}|${r.work_center}`)),
+      readAt,
+      crew: { open: new Set(open.map((r) => r.id)), ends: (keys) => this.crewEnds(keys) },
+    };
+  }
+
+  /**
+   * When each of these crew rows stopped holding (#383): its end, or its successor's start (the
+   * next row of the user at the work center) if earlier; rows still holding are left out.
+   */
+  async crewEnds(keys: readonly CrewKey[]): Promise<CrewEnd[]> {
+    return crewEnds(this.#db, keys);
   }
 
   /** The notes of an instance, by creation, each with its history (newest first) if asked. */

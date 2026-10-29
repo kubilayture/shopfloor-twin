@@ -146,12 +146,12 @@ The #238 budget test sat at its edge: the final gate on `87fa763` measured **add
 - **Unchanged:** the copy's contents and the incidents (the budget test's end-of-replay equality of every copy with its scope, the `quality-holds` suite, and the reconciliation in the gate check them), the scheduling on change, the close guard and the histograms.
 - **Measured** locally (Apple M3, Colima, the target test alone under the heavy lock), before and after on the same host:
 
-  |                    | round p95 no hold | round p95, 200 holds | scope rebuild p50 / p95 | added |
-  | ------------------ | ----------------- | -------------------- | ----------------------- | ----- |
-  | before (`87fa763`) | MEAS_BEFORE       |
-  | after, run 1       | MEAS_1            |
-  | after, run 2       | MEAS_2            |
-  | after, run 3       | MEAS_3            |
+  |                            | round p95, no hold | round p95, 200 holds | scope rebuild p50 / p95 | added                 |
+  | -------------------------- | ------------------ | -------------------- | ----------------------- | --------------------- |
+  | before (`main`, `87fa763`) | 28.3 ms            | 27.5 ms              | 41.9 / 52.6 ms          | **51.8 ms** (failing) |
+  | after, run 1               | 25.6 ms            | 27.2 ms              | 19.6 / 25.5 ms          | **27.1 ms**           |
+  | after, run 2               | 27.6 ms            | 26.5 ms              | 19.6 / 25.1 ms          | **23.9 ms**           |
+  | after, run 3               | 29.4 ms            | 26.5 ms              | 19.6 / 25.7 ms          | **22.8 ms**           |
 
   The gate run's figures follow in the PR.
 

@@ -54,6 +54,7 @@ import {
   type ShiftsSources,
 } from './modules/shifts/index.ts';
 import { timed } from '@shopfloor/test-kit/timing';
+import { closeOrphansAtStart, wireTerminal } from './terminal-wiring.ts';
 import { backendPid, blockedBy, startDatabase } from './testing.ts';
 
 const T0 = Date.parse('2026-10-17T10:00:00.000Z');
@@ -224,8 +225,11 @@ interface Harness {
   /** Session ids `live` answers false for. */
   readonly dead: Set<string>;
   readonly crewChanges: ShiftChange[];
-  /** While `lost`, a crew row's end reaches no one (the notice lost: the MES was down, #383). */
-  readonly notices: { lost: boolean };
+  /**
+   * While `lost`, a crew row's end reaches no one (the notice lost: the MES was down, #383); while
+   * `noSweep`, the crew check's orphan sweep doesn't run. `settled()` waits for the notices sent.
+   */
+  readonly notices: { lost: boolean; noSweep: boolean; settled: () => Promise<unknown> };
   readonly sam: SessionUser;
   readonly olga: SessionUser;
   readonly omar: SessionUser;
@@ -293,6 +297,12 @@ async function harness(name: string): Promise<Harness> {
   cleanups.push(() => execution.stop());
   orders.useBlankCounter(execution);
   const dead = new Set<string>();
+  const sent: Promise<unknown>[] = [];
+  const notices = {
+    lost: false,
+    noSweep: false,
+    settled: () => Promise.all(sent),
+  };
   const shifts = new Shifts({
     ...shiftSources(clock),
     db,
@@ -300,28 +310,33 @@ async function harness(name: string): Promise<Harness> {
     tickMs: 3_600_000,
     sessions: { live: (id) => Promise.resolve(!dead.has(id)) },
     crewCheckMs: 0,
-    afterCrewCheck: (signedOn, readAt, crew) =>
-      orders.endOrphanedActivities(signedOn, readAt, crew),
+    afterCrewCheck: (check) =>
+      notices.noSweep ? Promise.resolve() : orders.endOrphanedActivities(check),
   });
   await shifts.start();
   cleanups.push(() => shifts.stop());
   const crewChanges: ShiftChange[] = [];
-  const notices = { lost: false };
-  // As main.ts wires them: an ended crew row closes its operator's activities there.
   shifts.onChange((change) => {
-    if (change.type !== 'crew') return;
-    crewChanges.push(change);
-    if (change.event === 'ended' && !notices.lost) {
-      void orders.endActivities({
-        userId: change.crew.userId,
-        workCenter: change.crew.workCenter,
-        until: change.crew.to ?? new Date(),
-        crewId: change.crew.id,
-      });
-    }
+    if (change.type === 'crew') crewChanges.push(change);
   });
-  identity.onSessionsEnded((ended) => {
-    void shifts.endCrewForSessions(ended.ids);
+  // As main.ts wires them (the same function): a session's end ends its crew rows, an ended crew
+  // row closes the activities started under it.
+  wireTerminal({
+    identity,
+    shifts,
+    orders: {
+      endCrewActivities: (crew) => {
+        if (notices.lost) return Promise.resolve(0);
+        const closing = orders.endCrewActivities(crew);
+        sent.push(closing);
+        return closing;
+      },
+    },
+    log: {
+      error: (object, message) => {
+        throw new Error(`${message}: ${JSON.stringify(object)}`);
+      },
+    },
   });
   return {
     db,
@@ -577,14 +592,17 @@ describe('operator activity and operation sign-off (#177)', () => {
     expect(await mine(h, 'B-1', 'OP30', h.olga)).not.toBeNull();
     // Orphans: only intervals started before the crew rows were read. Read at `now`, omar's
     // (begun before) is judged and closed; olga's new work (begun after) is not.
-    expect(await h.orders.endOrphanedActivities(new Set(), now)).toBe(1);
+    expect(await h.orders.endOrphanedActivities({ signedOn: new Set(), readAt: now })).toBe(1);
     expect(
       (await h.orders.activities({ orderId: 'B-1', open: true })).map((a) => a.username),
     ).toEqual(['olga']);
     // Read later with olga signed on: nothing is an orphan.
     const later = await dbNow(h);
     expect(
-      await h.orders.endOrphanedActivities(new Set([`${String(h.olga.userId)}|line-a1`]), later),
+      await h.orders.endOrphanedActivities({
+        signedOn: new Set([`${String(h.olga.userId)}|line-a1`]),
+        readAt: later,
+      }),
     ).toBe(0);
   });
 
@@ -858,10 +876,10 @@ describe('crew ends close the intervals of their crew row (#366)', () => {
 
 describe('the orphan sweep closes intervals by crew row (#383)', () => {
   /** Olga signed on at Line A1 with a session; her writes lock that crew row. */
-  const signedOn = async (h: Harness, session: string) => {
-    const crew = await h.shifts.signOn('line-a1', h.olga, session);
-    const lockCrew = (trx: Transaction<Database>, workCenter: string) =>
-      h.shifts.lockCrew(trx, { userId: h.olga.userId, workCenter, sessionId: session });
+  const signedOn = async (h: Harness, session: string, workCenter = 'line-a1') => {
+    const crew = await h.shifts.signOn(workCenter, h.olga, session);
+    const lockCrew = (trx: Transaction<Database>, at: string) =>
+      h.shifts.lockCrew(trx, { userId: h.olga.userId, workCenter: at, sessionId: session });
     return { crew, olga: { by: h.olga, requestId: 'r', lockCrew } };
   };
   const interval = (h: Harness, order: string, operation: string) =>
@@ -880,7 +898,7 @@ describe('the orphan sweep closes intervals by crew row (#383)', () => {
       .executeTakeFirstOrThrow();
   /** One crew check delivered to the orders module, as `afterCrewCheck` does. */
   const sweep = (h: Harness, check: Awaited<ReturnType<Shifts['crewCheck']>>) =>
-    h.orders.endOrphanedActivities(check.signedOn, check.readAt, check.crew);
+    h.orders.endOrphanedActivities(check);
   /** Moves the plant clock on, so a closure at the sweep's plant time would show. */
   const later = (h: Harness, ms: number) => {
     h.clock.at = (h.clock.at ?? PLANT_T0) + ms;
@@ -892,10 +910,7 @@ describe('the orphan sweep closes intervals by crew row (#383)', () => {
     await h.shifts.tick();
     const first = await signedOn(h, 'a'.repeat(64));
     await h.orders.startWork('L-1', 'OP30', { activity: null }, first.olga);
-    // She signs on at Cell M1 too: a row at another work center is no successor of this one.
-    later(h, 30_000);
-    await h.shifts.signOn('cell-m1', h.olga, 'a'.repeat(64));
-    // Olga signs off at Line A1; the notice is lost (the MES went down before it closed her work).
+    // Olga signs off; the notice is lost (the MES went down before it closed her work).
     h.notices.lost = true;
     later(h, 60_000);
     await h.shifts.signOff('line-a1', h.olga, 'a'.repeat(64));
@@ -933,48 +948,79 @@ describe('the orphan sweep closes intervals by crew row (#383)', () => {
     expect(pushed).toEqual(['L-1/OP30:0']);
   });
 
-  it('closes an interval of a superseded crew row at its successor’s start when that is earlier than the row’s end', async () => {
-    const h = await harness('sweep_superseded');
+  it('closes at start-up the intervals of a row replaced while the MES was down, at its end and never before their start', async () => {
+    const h = await harness('sweep_replaced');
     await started(h, 'M-1');
     await h.shifts.tick();
     const first = await signedOn(h, 'a'.repeat(64));
     await h.orders.startWork('M-1', 'OP30', { activity: null }, first.olga);
-    await new Promise((r) => setTimeout(r, 20));
     await h.orders.startWork('M-1', 'OP40', { activity: null }, first.olga);
     // Signed on from another tablet: the first row ends `replaced`; the notice is lost.
     h.notices.lost = true;
     later(h, 60_000);
-    const second = await signedOn(h, 'b'.repeat(64));
+    await signedOn(h, 'b'.repeat(64));
     h.notices.lost = false;
     const replaced = await crewRow(h, first.crew.id);
     expect(replaced.end_reason).toBe('replaced');
-    // The successor started before the first row's end by the clocks (a clock step between the
-    // two writes): the interval ends at the successor's start, in whole milliseconds, so the two
-    // rows' work never overlaps.
-    const work = await interval(h, 'M-1', 'OP30');
-    const successorFrom = new Date(work.from_at.getTime() + 1);
-    const successorPlant = new Date(work.from_plant_at.getTime() + 1_000);
-    expect(successorFrom.getTime()).toBeLessThan(replaced.to_at?.getTime() ?? 0);
-    expect(successorPlant.getTime()).toBeLessThan(replaced.to_plant_at?.getTime() ?? 0);
-    // The second interval began after that start: it ends at its own start, never before it.
-    const late = await interval(h, 'M-1', 'OP40');
-    expect(late.from_at.getTime()).toBeGreaterThan(successorFrom.getTime());
-    await h.db
-      .updateTable('shifts.crew_assignment')
-      .set({ from_at: successorFrom, from_plant_at: successorPlant })
-      .where('id', '=', second.crew.id)
-      .execute();
-    expect(await sweep(h, await h.shifts.crewCheck())).toBe(2);
+    // The clock stepped back before the row's end: OP40's start, by the clock, lies after it.
+    const { rows } = await sql<{ from_at: Date }>`
+      UPDATE orders.operation_activity
+      SET from_at = (SELECT to_at FROM shifts.crew_assignment WHERE id = ${first.crew.id})
+        + interval '1 millisecond'
+      WHERE order_id = 'M-1' AND operation = 'OP40'
+      RETURNING from_at`.execute(h.db);
+    const stepped = rows[0]?.from_at ?? new Date(0);
+    later(h, 60_000);
+    // The MES starts again (a moment later: the stepped start lies before the check's read): the
+    // start-up sweep, main.ts's path.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(await closeOrphansAtStart(h.shifts, h.orders)).toBe(2);
     expect(await interval(h, 'M-1', 'OP30')).toMatchObject({
       end_reason: 'crew-ended',
-      to_at: successorFrom,
-      to_plant_at: successorPlant,
+      to_at: replaced.to_at,
+      to_plant_at: replaced.to_plant_at,
     });
     expect(await interval(h, 'M-1', 'OP40')).toMatchObject({
       end_reason: 'crew-ended',
-      to_at: late.from_at,
-      to_plant_at: successorPlant,
+      to_at: stepped,
+      to_plant_at: replaced.to_plant_at,
     });
+    expect(await closeOrphansAtStart(h.shifts, h.orders)).toBe(0);
+  });
+
+  it('gives an interval the same end at a shift’s end whether the crew-end notice or the sweep closes it', async () => {
+    const SHIFT_END = new Date('2026-10-12T11:00:00.000Z');
+    const AFTER = Date.parse('2026-10-12T11:30:00.000Z');
+    const run = async (path: 'notice' | 'sweep') => {
+      const h = await harness(`sweep_shift_${path}`);
+      await started(h, 'S-1');
+      await h.shifts.tick();
+      const { crew, olga } = await signedOn(h, 'a'.repeat(64));
+      await h.orders.startWork('S-1', 'OP30', { activity: null }, olga);
+      // The plant clock passes the shift's end before the tick sees it: work begun now starts
+      // after the end the row will get.
+      h.clock.at = AFTER;
+      await h.orders.startWork('S-1', 'OP40', { activity: null }, olga);
+      h.notices.noSweep = path === 'notice';
+      h.notices.lost = path === 'sweep';
+      await h.shifts.tick();
+      await h.notices.settled();
+      const row = await crewRow(h, crew.id);
+      expect(row).toMatchObject({ end_reason: 'shift-ended', to_plant_at: SHIFT_END });
+      const ends = [];
+      for (const operation of ['OP30', 'OP40']) {
+        const a = await interval(h, 'S-1', operation);
+        expect(a.end_reason).toBe('crew-ended');
+        // The row's end in wall time (the work began before it).
+        expect(a.to_at).toEqual(row.to_at);
+        ends.push(a.to_plant_at?.toISOString());
+      }
+      return ends;
+    };
+    // OP30 at the shift's end; OP40, begun after it, at its own start.
+    const expected = [SHIFT_END.toISOString(), new Date(AFTER).toISOString()];
+    expect(await run('notice')).toEqual(expected);
+    expect(await run('sweep')).toEqual(expected);
   });
 
   it('never closes an interval whose crew row is still open, and closes nothing more when run again', async () => {
@@ -1003,7 +1049,7 @@ describe('the orphan sweep closes intervals by crew row (#383)', () => {
     expect(await sweep(h, check)).toBe(1);
     // Judged by its row, which is open, even by a check that doesn't name her (signed on by
     // user and work center).
-    expect(await h.orders.endOrphanedActivities(new Set(), check.readAt, check.crew)).toBe(0);
+    expect(await h.orders.endOrphanedActivities({ ...check, signedOn: new Set() })).toBe(0);
     expect(await interval(h, 'N-1', 'OP30')).toMatchObject({ end_reason: null, to_at: null });
     const closed = await interval(h, 'N-1', 'OP40');
     expect(closed.end_reason).toBe('crew-ended');
@@ -1013,6 +1059,49 @@ describe('the orphan sweep closes intervals by crew row (#383)', () => {
     await h.shifts.tick();
     expect(await interval(h, 'N-1', 'OP40')).toEqual(closed);
     expect(await interval(h, 'N-1', 'OP30')).toMatchObject({ end_reason: null });
+  });
+
+  it('judges an interval whose crew row it can’t find by its operator’s sign-on, closed now', async () => {
+    const h = await harness('sweep_unknown');
+    await started(h, 'U-1');
+    await h.shifts.tick();
+    const olga = await signedOn(h, 'a'.repeat(64));
+    await h.orders.startWork('U-1', 'OP30', { activity: null }, olga.olga);
+    const omarSession = 'c'.repeat(64);
+    const omarRow = await h.shifts.signOn('line-a1', h.omar, omarSession);
+    await h.orders.startWork(
+      'U-1',
+      'OP40',
+      { activity: null },
+      {
+        by: h.omar,
+        requestId: 'r',
+        lockCrew: (trx: Transaction<Database>, workCenter: string) =>
+          h.shifts.lockCrew(trx, { userId: h.omar.userId, workCenter, sessionId: omarSession }),
+      },
+    );
+    h.notices.lost = true;
+    await h.shifts.signOff('line-a1', h.omar, omarSession);
+    h.notices.lost = false;
+    // Olga's interval names Omar's ended row (another user's: not hers), Omar's a row that
+    // doesn't exist. Neither is answered: Olga is signed on there (kept), Omar is not (closed
+    // at the sweep).
+    const rename = (operation: string, crewId: number) =>
+      h.db
+        .updateTable('orders.operation_activity')
+        .set({ crew_id: crewId })
+        .where('order_id', '=', 'U-1')
+        .where('operation', '=', operation)
+        .execute();
+    await rename('OP30', omarRow.id);
+    await rename('OP40', 999_999);
+    later(h, 60_000);
+    expect(await sweep(h, await h.shifts.crewCheck())).toBe(1);
+    expect(await interval(h, 'U-1', 'OP30')).toMatchObject({ end_reason: null });
+    expect(await interval(h, 'U-1', 'OP40')).toMatchObject({
+      end_reason: 'crew-ended',
+      to_plant_at: new Date(h.clock.at ?? 0),
+    });
   });
 
   it('ends the same way whatever order the checks and the late crew-end notice arrive in', async () => {
@@ -1027,7 +1116,7 @@ describe('the orphan sweep closes intervals by crew row (#383)', () => {
     const stale = await h.shifts.crewCheck();
     h.notices.lost = true;
     later(h, 60_000);
-    await h.shifts.signOff('line-a1', h.olga, 'a'.repeat(64));
+    const signedOff = await h.shifts.signOff('line-a1', h.olga, 'a'.repeat(64));
     h.notices.lost = false;
     later(h, 60_000);
     const second = await signedOn(h, 'b'.repeat(64));
@@ -1039,7 +1128,7 @@ describe('the orphan sweep closes intervals by crew row (#383)', () => {
     expect(await sweep(h, early)).toBe(0);
     expect(await sweep(h, stale)).toBe(0);
     expect((await interval(h, 'P-1', 'OP30')).end_reason).toBeNull();
-    // The fresh one, twice, the stale one again, and the lost notice turning up at last: the
+    // The fresh one, twice, the older ones again, and the lost notice turning up at last: the
     // interval closes once, at the row's end, and keeps that end.
     later(h, 60_000);
     expect(await sweep(h, fresh)).toBe(1);
@@ -1052,14 +1141,7 @@ describe('the orphan sweep closes intervals by crew row (#383)', () => {
     expect(await sweep(h, fresh)).toBe(0);
     expect(await sweep(h, stale)).toBe(0);
     expect(await sweep(h, early)).toBe(0);
-    expect(
-      await h.orders.endActivities({
-        userId: h.olga.userId,
-        workCenter: 'line-a1',
-        until: ended.to_at ?? new Date(),
-        crewId: first.crew.id,
-      }),
-    ).toBe(0);
+    expect(await h.orders.endCrewActivities(signedOff)).toBe(0);
     expect(await interval(h, 'P-1', 'OP30')).toEqual(closed);
     // Delivered concurrently and twice over: still the one closure.
     expect(await Promise.all([sweep(h, fresh), sweep(h, stale), sweep(h, fresh)])).toEqual([
@@ -1072,7 +1154,7 @@ describe('the orphan sweep closes intervals by crew row (#383)', () => {
     });
   });
 
-  it('closes concurrently delivered checks once, at the row’s end', async () => {
+  it('closes concurrently delivered checks and the notice once, at the row’s end', async () => {
     const h = await harness('sweep_race');
     await started(h, 'Q-1');
     await h.shifts.tick();
@@ -1081,11 +1163,16 @@ describe('the orphan sweep closes intervals by crew row (#383)', () => {
     await h.orders.startWork('Q-1', 'OP40', { activity: null }, first.olga);
     h.notices.lost = true;
     later(h, 60_000);
-    await h.shifts.signOff('line-a1', h.olga, 'a'.repeat(64));
+    const signedOff = await h.shifts.signOff('line-a1', h.olga, 'a'.repeat(64));
     h.notices.lost = false;
     const check = await h.shifts.crewCheck();
     later(h, 60_000);
-    const counts = await Promise.all([sweep(h, check), sweep(h, check), sweep(h, check)]);
+    const counts = await Promise.all([
+      sweep(h, check),
+      h.orders.endCrewActivities(signedOff),
+      sweep(h, check),
+      sweep(h, check),
+    ]);
     expect(counts.reduce((a, b) => a + b, 0)).toBe(2);
     const ended = await crewRow(h, first.crew.id);
     for (const operation of ['OP30', 'OP40']) {

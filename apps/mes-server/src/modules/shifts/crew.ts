@@ -289,7 +289,7 @@ export interface CrewKey {
   readonly workCenter: string;
 }
 
-/** When a crew row stopped holding (#383), in wall time and plant time. */
+/** A crew row's end (#383), in wall time and plant time. */
 export interface CrewEnd {
   readonly id: number;
   readonly at: Date;
@@ -297,34 +297,30 @@ export interface CrewEnd {
 }
 
 /**
- * When each of these crew rows stopped holding (#383): its own end, or the start of the next row of
- * the same user at the same work center (its successor), whichever is earlier, in wall time and in
- * plant time each. A row still open without a successor, or unknown without one, is left out. The
- * orphan sweep closes the activity intervals started under a row at this time.
+ * The ends of these crew rows (#383), each only if it is the user's row at that work center and has
+ * ended (rows are never deleted, so a row not open has an end). The orphan sweep closes the activity
+ * intervals started under a row at its end, as the row's notice does.
  */
 export async function crewEnds(db: Kysely<Database>, keys: readonly CrewKey[]): Promise<CrewEnd[]> {
   if (keys.length === 0) return [];
-  // `least` ignores nulls: an open (or unknown) row ends at its successor's start, if any.
-  const { rows } = await sql<{ id: number; at: Date | null; plant_at: Date | null }>`
-    SELECT k.id, least(c.to_at, s.from_at) AS at, least(c.to_plant_at, s.from_plant_at) AS plant_at
-    FROM unnest(
-      ${keys.map((k) => k.id)}::bigint[],
-      ${keys.map((k) => k.userId)}::bigint[],
-      ${keys.map((k) => k.workCenter)}::text[]
-    ) AS k(id, user_id, work_center)
-    LEFT JOIN shifts.crew_assignment c
-      ON c.id = k.id AND c.user_id = k.user_id AND c.work_center = k.work_center
-    LEFT JOIN LATERAL (
-      SELECT n.from_at, n.from_plant_at
-      FROM shifts.crew_assignment n
-      WHERE n.user_id = k.user_id AND n.work_center = k.work_center AND n.id > k.id
-      ORDER BY n.id
-      LIMIT 1
-    ) s ON true
-    ORDER BY k.id`.execute(db);
-  return rows.flatMap((r) =>
-    r.at === null || r.plant_at === null ? [] : [{ id: r.id, at: r.at, plantAt: r.plant_at }],
-  );
+  const rows = await db
+    .selectFrom('shifts.crew_assignment')
+    .select(['id', 'user_id', 'work_center', 'to_at', 'to_plant_at'])
+    .where(
+      'id',
+      'in',
+      keys.map((k) => k.id),
+    )
+    .where('to_at', 'is not', null)
+    .orderBy('id')
+    .execute();
+  const named = new Map(keys.map((k) => [k.id, k]));
+  return rows.flatMap((r) => {
+    const key = named.get(r.id);
+    if (key?.userId !== r.user_id || key.workCenter !== r.work_center) return [];
+    if (r.to_at === null || r.to_plant_at === null) return [];
+    return [{ id: r.id, at: r.to_at, plantAt: r.to_plant_at }];
+  });
 }
 
 async function close(

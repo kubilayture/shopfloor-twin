@@ -18,7 +18,7 @@
  *   (409 `no-shift` outside a shift), `signOff(workCenter, user)` (409 `not-signed-on`),
  *   `endCrewForSessions(ids)`; the tick ends rows at their shift's end and, with `sessions`, when
  *   their terminal session is no longer live. The report has a crew section. `crewCheck()` and
- *   `crewEnds(keys)`: the open rows, and when ended rows stopped holding (#383, the orphan sweep).
+ *   `crewEnds(keys)`: the open rows, and the ends of ended rows (#383, the orphan sweep).
  * - The shift calendar's functions (`shiftInstances`, `shiftBuckets`, …) are in the pure
  *   `@shopfloor/shift-calendar`, shared with `oee` (no module cycle).
  */
@@ -43,7 +43,7 @@ export type {
   NoteRequest,
   ReportAlarmScope,
   ReportRevision,
-  CrewRows,
+  CrewCheck,
   ShiftChange,
   ShiftErrorKind,
   ShiftRecord,

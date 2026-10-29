@@ -111,23 +111,24 @@ export interface ShiftsOptions extends ShiftsSources {
    * Runs after each crew check (#177 review, MEDIUM-1): the open crew rows as `{userId}|{workCenter}`
    * and the database time they were read at, so a module can close what holds no crew row any
    * more (operator activity intervals started before that time); and, since #383, those rows' ids
-   * and when ended rows stopped holding (`CrewRows`), so it can close by crew row too.
+   * and the ends of others (`CrewCheck`), so it can close by crew row too.
    */
-  readonly afterCrewCheck?: (
-    signedOn: ReadonlySet<string>,
-    readAt: Date,
-    crew: CrewRows,
-  ) => Promise<unknown>;
+  readonly afterCrewCheck?: (check: CrewCheck) => Promise<unknown>;
   readonly log?: ShiftsLog;
 }
 
 /**
- * The crew rows of a crew check (#383): the ids of those open when it read them, and when others
- * stopped holding (`crewEnds`: a row's end, or its successor's start if earlier).
+ * A crew check (#383): the open crew rows as `{userId}|{workCenter}` (`signedOn`) and by id
+ * (`crew.open`), the database time read before them (`readAt`), and the ends of other rows
+ * (`crew.ends`, `crewEnds`).
  */
-export interface CrewRows {
-  readonly open: ReadonlySet<number>;
-  ends(keys: readonly CrewKey[]): Promise<CrewEnd[]>;
+export interface CrewCheck {
+  readonly signedOn: ReadonlySet<string>;
+  readonly readAt: Date;
+  readonly crew: {
+    readonly open: ReadonlySet<number>;
+    ends(keys: readonly CrewKey[]): Promise<CrewEnd[]>;
+  };
 }
 
 /** The composite revision of a report (ADR-0025). */
@@ -855,8 +856,7 @@ export class Shifts {
   async #crewChecked(): Promise<void> {
     const after = this.#afterCrewCheck;
     if (!after) return;
-    const { signedOn, readAt, crew } = await this.crewCheck();
-    await after(signedOn, readAt, crew);
+    await after(await this.crewCheck());
   }
 
   /**
@@ -865,11 +865,7 @@ export class Shifts {
    * interval started before it had its crew row open then, so that row is in the sets unless it
    * ended since (and then closing the interval is right).
    */
-  async crewCheck(): Promise<{
-    signedOn: ReadonlySet<string>;
-    readAt: Date;
-    crew: CrewRows;
-  }> {
+  async crewCheck(): Promise<CrewCheck> {
     const { rows: now } = await sql<{ at: Date }>`SELECT clock_timestamp() AS at`.execute(this.#db);
     const readAt = now[0]?.at ?? new Date();
     const open = await this.#db
@@ -884,10 +880,7 @@ export class Shifts {
     };
   }
 
-  /**
-   * When each of these crew rows stopped holding (#383): its end, or its successor's start (the
-   * next row of the user at the work center) if earlier; rows still holding are left out.
-   */
+  /** The ends of these crew rows, those that ended (#383, the orphan sweep). */
   async crewEnds(keys: readonly CrewKey[]): Promise<CrewEnd[]> {
     return crewEnds(this.#db, keys);
   }

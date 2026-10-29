@@ -24,7 +24,7 @@ import { operationDto, terminalView, type TerminalViewSources } from './terminal
 /** What the terminal routes use of the modules (#177). */
 export interface TerminalApi extends TerminalViewSources {
   readonly orders: TerminalViewSources['orders'] &
-    Pick<Orders, 'startWork' | 'pauseWork' | 'resumeWork' | 'signOff' | 'endActivities'>;
+    Pick<Orders, 'startWork' | 'pauseWork' | 'resumeWork' | 'signOff' | 'endCrewActivities'>;
   readonly shifts: NonNullable<TerminalViewSources['shifts']> &
     Pick<Shifts, 'signOn' | 'signOff' | 'lockCrew'>;
   /** Master data's machines by id. */
@@ -168,12 +168,8 @@ export function terminalRoutes(
       const crew = await sources.shifts
         .signOff(params.workCenter, principal, principal.session.id, requestId)
         .catch(mapped);
-      await sources.orders.endActivities({
-        userId: principal.userId,
-        workCenter: params.workCenter,
-        until: crew.to ?? new Date(),
-        crewId: crew.id,
-      });
+      // At the row's end (#383), as the shifts module's notice and the orphan sweep close them.
+      await sources.orders.endCrewActivities(crew);
       return { crew: crewDto(crew) };
     },
   );

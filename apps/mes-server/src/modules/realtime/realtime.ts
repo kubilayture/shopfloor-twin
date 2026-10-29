@@ -265,7 +265,7 @@ export interface ApiSources {
         | 'pauseWork'
         | 'resumeWork'
         | 'signOff'
-        | 'endActivities'
+        | 'endCrewActivities'
       >
     >;
   /** Units, an order's execution and scrap records (#175); the execution routes answer 503 without it. */
@@ -2808,7 +2808,7 @@ export async function registerRealtime(
       !orders.pauseWork ||
       !orders.resumeWork ||
       !orders.signOff ||
-      !orders.endActivities ||
+      !orders.endCrewActivities ||
       !shifts?.crew ||
       !shifts.currentInstance ||
       !shifts.signOn ||

@@ -46,12 +46,14 @@
  *   went over half that without a poll, the machine slept or the clock stepped, judges no
  *   heartbeat for another half, until the others have beaten again, #350, so a machine waking up
  *   doesn't make every ticket look stale); the waiter that sees it removes it and says so, once,
- *   and only if it is still the very file it judged (a nonce per file, #350). A waiter that finds
- *   its own ticket gone takes it again under the same name when it is free (keeping its place),
- *   else a new one at the end. It removes its ticket when it takes the lock, times out or fails.
+ *   and only if it is still the very file it judged (a nonce per file, moved aside to check it,
+ *   #350). A waiter that finds its own ticket gone takes it again under the same name when it is
+ *   free (keeping its place), keeps it when it was put back, else takes a new one at the end. It
+ *   removes its ticket when it takes the lock, times out or fails, and looks once more a second
+ *   later; a ticket under the lock holder's token is dropped by any waiter (#350).
  *   The head of the queue tries the lock every `HEAD_POLL_MS` (at most), so a release is taken up
  *   within a fraction of a second, but asks whether the holder still lives (`ps`) only every
- *   poll interval, and at once for a new holder (#350).
+ *   poll interval, and at once for a new holder or after the clock stepped back (#350).
  *   Taking the lock is still the atomic rename above: the queue decides who tries, never whether
  *   two hold it, so a ticket removed by mistake costs at most one turn, never exclusivity.
  * - **Waiters of the old code (before #348)** take no ticket and keep trying the lock every 2 s
@@ -98,6 +100,8 @@ export const GUARD_MAX_AGE_MS = 60_000;
 export const NO_HOLDER_GRACE_MS = 60_000;
 /** A queue ticket not touched (its waiter's heartbeat) for longer than this is stale (#348). */
 export const TICKET_STALE_MS = 60_000;
+/** How long after removing its ticket a waiter looks whether it was put back (#350). */
+export const GHOST_RECHECK_MS = 1_000;
 /** The longest the head of the queue waits between two tries of the lock (#348). */
 export const HEAD_POLL_MS = 200;
 
@@ -375,29 +379,39 @@ const isCode = (error: unknown, code: string) =>
 /** The staging directory `tryTakeLock` makes beside the lock (`<lock>.<pid>.<hex>.tmp`). */
 const stagingPath = (lockPath: string) => `${lockPath}.${unique()}.tmp`;
 
-/** Whether `name` is a staging directory of the lock called `lockName` (a sibling's name). */
-function isStagingName(lockName: string, name: string): boolean {
+/** Whether `name` is `<lockName>.<pid>.<12 hex>.<suffix>` (a sibling of the lock). */
+function isSiblingName(lockName: string, name: string, suffix: 'tmp' | 'swept'): boolean {
   if (!name.startsWith(`${lockName}.`)) return false;
-  return /^\d+\.[0-9a-f]{12}\.tmp$/.test(name.slice(lockName.length + 1));
+  return new RegExp(`^\\d+\\.[0-9a-f]{12}\\.${suffix}$`).test(name.slice(lockName.length + 1));
 }
 
 /**
  * Removes the staging directories beside the lock (`<lock>.<pid>.<hex>.tmp`) older than
  * `GUARD_MAX_AGE_MS` (#350): `tryTakeLock` makes and removes one within microseconds, so an old one
- * was left by a process killed meanwhile (Ctrl-C, SIGKILL). Nothing else beside the lock is
- * touched.
+ * was left by a process killed meanwhile (Ctrl-C, SIGKILL), or belongs to one stopped for over a
+ * minute in the middle of it. Each is first renamed to a private `<lock>.<pid>.<hex>.swept`
+ * (atomic), then deleted there: a stopped owner's own rename onto the lock then either came first
+ * (it holds a complete lock) or fails with `ENOENT` (`tryTakeLock` says false), and never moves a
+ * half-deleted directory into place. A `.swept` directory (its sweeper died while deleting it) is
+ * removed whatever its age. Nothing else beside the lock is touched.
  */
 export function removeOldStaging(lockPath: string, now: number = Date.now()): void {
   const parent = dirname(lockPath);
   const lockName = basename(lockPath);
   for (const name of readdirSafe(parent)) {
-    if (!isStagingName(lockName, name)) continue;
     try {
-      if (now - statSync(join(parent, name)).mtimeMs > GUARD_MAX_AGE_MS) {
+      if (isSiblingName(lockName, name, 'swept')) {
         rmSync(join(parent, name), { recursive: true, force: true });
+      } else if (
+        isSiblingName(lockName, name, 'tmp') &&
+        now - statSync(join(parent, name)).mtimeMs > GUARD_MAX_AGE_MS
+      ) {
+        const swept = `${lockPath}.${unique()}.swept`;
+        renameSync(join(parent, name), swept);
+        rmSync(swept, { recursive: true, force: true });
       }
     } catch {
-      // removed meanwhile
+      // removed or taken meanwhile
     }
   }
 }
@@ -408,14 +422,17 @@ export function tryTakeLock(lockPath: string, holder: HeavyLockHolder): boolean 
   const staging = stagingPath(lockPath);
   mkdirSync(staging);
   try {
-    writeFileSync(holderFile(staging), `${JSON.stringify(holder)}\n`);
     try {
+      writeFileSync(holderFile(staging), `${JSON.stringify(holder)}\n`);
       renameSync(staging, lockPath);
-      return true;
     } catch (error) {
       if (isCode(error, 'ENOTEMPTY') || isCode(error, 'EEXIST')) return false;
+      // The staging directory was swept while this process stood still (#350): no lock taken.
+      if (isCode(error, 'ENOENT')) return false;
       throw error;
     }
+    // A complete directory was renamed into place, so it is ours; checked all the same (#350).
+    return readHolder(lockPath)?.token === holder.token;
   } finally {
     rmSync(staging, { recursive: true, force: true });
   }
@@ -548,6 +565,8 @@ export interface QueueEntry {
 
 const TICKET_NAME = /^ticket-(\d{12})$/;
 const DRAFT_NAME = /^draft-.+\.tmp$/;
+/** A ticket `removeTicket` moved aside to judge it (#350); never a draft name (see there). */
+const ASIDE_NAME = /^aside-.+\.tmp$/;
 
 /** The file name of the ticket with sequence `seq`: zero-padded, so names sort like numbers. */
 export function ticketName(seq: number): string {
@@ -600,6 +619,8 @@ export function readQueue(queue: string, now: number = Date.now()): QueueEntry[]
 
 /** A private name in `queue` (`draft-<pid>.<hex>.tmp`), swept by `removeOldDrafts` if left. */
 const draftPath = (queue: string) => join(queue, `draft-${unique()}.tmp`);
+/** A private name in `queue` (`aside-<pid>.<hex>.tmp`), swept by `removeOldDrafts` if left. */
+const asidePath = (queue: string) => join(queue, `aside-${unique()}.tmp`);
 
 /**
  * Writes a complete draft of `ticket` in `queue` with a new nonce, runs `use` with its path, then
@@ -667,9 +688,11 @@ function ticketSeq(name: string): number {
  * this call removed it.
  *
  * Checking, then unlinking would leave a gap in which the ticket can be made again; so the file is
- * first renamed to a private draft name (atomic: whatever is under `name` at that instant), then
- * checked there, and put back under `name` when it is not the one seen (unless the name was taken
- * meanwhile: its waiter then takes a ticket again on its next poll, as for any removal).
+ * first renamed to a private `aside-*.tmp` name (atomic: whatever is under `name` at that instant),
+ * then checked there, and put back under `name` when it is not the one seen (unless the name was
+ * taken meanwhile: its waiter then keeps or takes a ticket again on its next poll, as for any
+ * removal). Not a `draft-*.tmp` name: a ticket judged stale is over a minute old, `rename` keeps
+ * that mtime, and every waiter (also of the #348 code) sweeps drafts older than a minute.
  */
 export function removeTicket(
   queue: string,
@@ -677,7 +700,7 @@ export function removeTicket(
   token: string | undefined,
   nonce?: string,
 ): boolean {
-  const away = draftPath(queue);
+  const away = asidePath(queue);
   try {
     renameSync(join(queue, name), away);
   } catch (error) {
@@ -690,7 +713,8 @@ export function removeTicket(
     try {
       linkSync(away, join(queue, name)); // keeps its mtime: the heartbeat is not reset
     } catch (error) {
-      if (!isCode(error, 'EEXIST')) throw error;
+      // Taken meanwhile (EEXIST), or the aside file is gone (ENOENT): nothing to put back.
+      if (!isCode(error, 'EEXIST') && !isCode(error, 'ENOENT')) throw error;
     }
     return false;
   } finally {
@@ -726,12 +750,19 @@ export function ticketLiveness(
   return 'alive';
 }
 
-/** Removes drafts left by a waiter killed while taking a ticket (a draft lives microseconds). */
+/**
+ * Removes drafts left by a waiter killed while taking a ticket (a draft lives microseconds), and
+ * tickets moved aside by a waiter killed while judging them (#350), each over a minute old: a
+ * draft by its mtime, an aside file by its ctime (the rename that moved it there; its mtime is the
+ * ticket's last heartbeat, often over a minute old already).
+ */
 export function removeOldDrafts(queue: string, now: number = Date.now()): void {
   for (const name of readdirSafe(queue)) {
-    if (!DRAFT_NAME.test(name)) continue;
+    const draft = DRAFT_NAME.test(name);
+    if (!draft && !ASIDE_NAME.test(name)) continue;
     try {
-      if (now - statSync(join(queue, name)).mtimeMs > GUARD_MAX_AGE_MS) {
+      const stats = statSync(join(queue, name));
+      if (now - (draft ? stats.mtimeMs : stats.ctimeMs) > GUARD_MAX_AGE_MS) {
         rmSync(join(queue, name), { force: true });
       }
     } catch {
@@ -816,7 +847,10 @@ export interface QueuePlace {
 
 /**
  * Reads the queue for the waiter holding ticket `own`, removing every dead ticket it sees
- * (`ticketLiveness`; `removed` is told of each one this call removed), and returns its place.
+ * (`ticketLiveness`; `removed` is told of each one this call removed), and returns its place. A
+ * ticket under the token that holds the lock (`holderToken`) is dead too (#350): its waiter took
+ * the lock and waits no more, and only a remover that moved it aside while its waiter removed it
+ * can have put it back.
  */
 export function queuePlace(
   queue: string,
@@ -826,13 +860,18 @@ export function queuePlace(
   judgeAge: boolean,
   removed: (entry: QueueEntry) => void = () => undefined,
   now: number = Date.now(),
+  holderToken?: string,
 ): QueuePlace {
   const ownSeq = ticketSeq(own);
   let place = 1;
   let total = 0;
   let first: QueueEntry | undefined;
   for (const entry of readQueue(queue, now)) {
-    if (entry.name !== own && ticketLiveness(entry, probe, staleMs, judgeAge) === 'dead') {
+    const holds = holderToken !== undefined && entry.ticket?.token === holderToken;
+    if (
+      entry.name !== own &&
+      (holds || ticketLiveness(entry, probe, staleMs, judgeAge) === 'dead')
+    ) {
       if (removeTicket(queue, entry.name, entry.ticket?.token, entry.ticket?.nonce)) removed(entry);
       continue;
     }
@@ -843,6 +882,25 @@ export function queuePlace(
     }
   }
   return { place, total, first };
+}
+
+/**
+ * The instant from which a waiter judges heartbeats again (#350), given the one so far (`from`),
+ * its last poll and this one (wall clock, like the tickets' mtimes). After a gap of over half the
+ * stale time (the machine slept, or the clock stepped forward) every other ticket looks as old as
+ * the gap until its waiter beats again, up to `staleMs / 4` later: none is judged for another
+ * `staleMs / 2`. Never more than that ahead, so a clock stepped back after a gap doesn't stop the
+ * judging for as long as the step.
+ */
+export function ageJudgedFrom(
+  from: number,
+  lastBeat: number,
+  beat: number,
+  staleMs: number,
+): number {
+  const grace = staleMs / 2;
+  if (beat - lastBeat > grace) return beat + grace;
+  return Math.min(from, beat + grace);
 }
 
 /**
@@ -917,20 +975,22 @@ export async function acquireHeavyLock(options: AcquireOptions): Promise<HeavyLo
   };
   let own = takeTicket(queue, ticket);
   let lastBeat = Date.now();
-  /**
-   * Heartbeats are judged from this instant on (#350): after a gap in this waiter's own polls (the
-   * machine slept, or the clock stepped forward) every other ticket looks as old as the gap until
-   * its waiter's next heartbeat, which can be up to `staleMs / 4` away; so none is judged by age
-   * for `staleMs / 2` after the gap is seen.
-   */
+  /** Heartbeats are judged from this instant on (`ageJudgedFrom`, #350). */
   let judgeAgeFrom = 0;
   /** The holder whose liveness was last checked, and when the next check is due (#350). */
   let checkedToken: string | undefined;
   let nextHolderCheck = 0;
   /** Touches this waiter's ticket, or takes it again (same name if free) when it was removed. */
+  const ownTicketKept = () =>
+    readTicket(queue, own)?.token === holder.token && touchTicket(queue, own);
   const keepTicket = () => {
-    if (readTicket(queue, own)?.token === holder.token && touchTicket(queue, own)) return;
-    if (!retakeTicket(queue, own, ticket)) own = takeTicket(queue, ticket);
+    if (ownTicketKept()) return;
+    if (!retakeTicket(queue, own, ticket)) {
+      // Taken, maybe by our own ticket again: a waiter that had moved it aside to judge it put it
+      // back meanwhile (#350). Then it is still ours, in its place.
+      if (ownTicketKept()) return;
+      own = takeTicket(queue, ticket);
+    }
     log(`heavy lock: this waiter's queue ticket was removed; queued again as ${own}`);
   };
   const ticketRemoved = (entry: QueueEntry) => {
@@ -940,7 +1000,7 @@ export async function acquireHeavyLock(options: AcquireOptions): Promise<HeavyLo
         : describeTicket(entry.ticket);
     // Once per ticket: only the call that removed it reports it.
     log(
-      `heavy lock: removing the queue ticket of ${who} (no such process, or no heartbeat for ${String(staleMs)} ms)`,
+      `heavy lock: removing the queue ticket of ${who} (no such process, no heartbeat for ${String(staleMs)} ms, or it holds the lock)`,
     );
   };
 
@@ -949,7 +1009,7 @@ export async function acquireHeavyLock(options: AcquireOptions): Promise<HeavyLo
       const beat = Date.now();
       // A waiter that itself went without a poll for a while (the machine slept) doesn't judge
       // the others' heartbeats until they have had time to beat again: theirs are as old as its own.
-      if (beat - lastBeat > staleMs / 2) judgeAgeFrom = beat + staleMs / 2;
+      judgeAgeFrom = ageJudgedFrom(judgeAgeFrom, lastBeat, beat, staleMs);
       const judgeAge = beat >= judgeAgeFrom;
       lastBeat = beat;
       keepTicket();
@@ -963,6 +1023,7 @@ export async function acquireHeavyLock(options: AcquireOptions): Promise<HeavyLo
         judgeAge,
         ticketRemoved,
         beat,
+        readHolder(lockPath)?.token,
       );
       const inQueue = `place ${String(place)} of ${String(total)} in the queue`;
       let current: HeavyLockHolder | undefined;
@@ -983,7 +1044,12 @@ export async function acquireHeavyLock(options: AcquireOptions): Promise<HeavyLo
               `heavy lock: waiting for ${lockPath}, which has no valid holder.json (stale after ${String(grace)} ms), ${inQueue}`,
             );
           }
-        } else if (current.token === checkedToken && now() < nextHolderCheck) {
+        } else if (
+          current.token === checkedToken &&
+          now() < nextHolderCheck &&
+          // A clock stepped back never puts the next check further off than `pollMs`.
+          nextHolderCheck - now() <= pollMs
+        ) {
           // The head tries the lock every `headPollMs` but asks whether its holder still lives
           // (`kill`, `ps`) only every `pollMs`, and at once for a new holder (#350).
         } else {
@@ -1022,6 +1088,17 @@ export async function acquireHeavyLock(options: AcquireOptions): Promise<HeavyLo
     }
   } finally {
     removeTicket(queue, own, holder.token);
+    // Another waiter may hold our ticket aside this instant and put it back (#350): look again a
+    // little later (without keeping the process alive). Waiters also drop a ticket under the
+    // holder's token (`queuePlace`).
+    const ticketName = own;
+    setTimeout(() => {
+      try {
+        removeTicket(queue, ticketName, holder.token);
+      } catch {
+        // the queue is gone, or unreadable: nothing to remove
+      }
+    }, GHOST_RECHECK_MS).unref();
   }
   let released = false;
   return {

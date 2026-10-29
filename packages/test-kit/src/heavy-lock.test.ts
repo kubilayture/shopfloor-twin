@@ -20,11 +20,13 @@ import {
   HEAVY_LOCK_ENV,
   HEAVY_LOCK_PATH,
   HEAD_POLL_MS,
+  GHOST_RECHECK_MS,
   HeavyLockTimeoutError,
   TICKET_STALE_MS,
   MIN_DOCKER_FREE_BYTES,
   MIN_HOST_FREE_BYTES,
   acquireHeavyLock,
+  ageJudgedFrom,
   bootTime,
   breakStaleLock,
   compareStarts,
@@ -1104,7 +1106,7 @@ describe('the queue: first come, first served (#348)', () => {
     expect(existsSync(join(queue(), dead))).toBe(false);
     const removals = logs.filter((line) => line.includes('removing the queue ticket of'));
     expect(removals).toEqual([
-      `heavy lock: removing the queue ticket of wait-${String(pid)} (pid ${String(pid)}, waiting since 2026-10-24T08:00:00.000Z) (no such process, or no heartbeat for 60000 ms)`,
+      `heavy lock: removing the queue ticket of wait-${String(pid)} (pid ${String(pid)}, waiting since 2026-10-24T08:00:00.000Z) (no such process, no heartbeat for 60000 ms, or it holds the lock)`,
     ]);
     lock.release();
     expect(tickets()).toEqual([]);
@@ -1555,6 +1557,7 @@ describe('the queue: first come, first served (#348)', () => {
       touchTicket(queue(), live); // its waiter wakes and beats; the other one never does
       await until('the stopped waiter’s ticket removed', () => !tickets().includes(stopped), 5_000);
       expect(Date.now() - woke).toBeGreaterThanOrEqual(staleMs / 2);
+      expect(Date.now() - woke).toBeLessThan(staleMs / 2 + 700); // and not much later
       expect(tickets()).toContain(live);
       expect(logs.filter((line) => line.includes('removing the queue ticket of'))).toHaveLength(1);
       releaseLock(lockPath, 't-holder');
@@ -1629,11 +1632,16 @@ describe('the queue: first come, first served (#348)', () => {
       };
       make('heavy.lock.123.abcdef012345.tmp', 61_000);
       make('heavy.lock.124.abcdef012345.tmp', 59_000);
+      make('heavy.lock.131.abcdef012345.swept', 0); // a sweeper died deleting it: any age goes
       // Old, but not a staging directory of this lock: never touched.
       const kept = [
         'heavy.lock.125.abcdef012345.released',
         'heavy.lock.x.tmp',
         'heavy.lock.126.abcdef01234.tmp',
+        'heavy.lock.130.abcdef0123456.tmp',
+        'heavy.lock..abcdef012345.tmp',
+        'heavy.lock.x.swept',
+        'heavy.lock.132.abcdef0123456.swept',
         'heavy.lockx.127.abcdef012345.tmp',
         'other.lock.128.abcdef012345.tmp',
       ];
@@ -1656,7 +1664,14 @@ describe('the queue: first come, first served (#348)', () => {
       removeOldStaging(lockPath, at.getTime() + 60_001);
       expect(existsSync(young)).toBe(false);
       removeOldStaging(join(dir, 'none', 'heavy.lock')); // no directory yet: nothing to do
-      // A waiter sweeps them as it polls.
+      // A waiter sweeps them as it polls, behind others as at the head.
+      const ahead = takeTicket(queue(), ticket(process.pid, 'ahead'));
+      make('heavy.lock.128.abcdef012345.tmp', 61_000);
+      await expect(
+        acquireHeavyLock({ lockPath, command: 'x', env: {}, timeoutMs: 30, pollMs: 5, log }),
+      ).rejects.toBeInstanceOf(HeavyLockTimeoutError);
+      expect(existsSync(join(parent, 'heavy.lock.128.abcdef012345.tmp'))).toBe(false);
+      removeTicket(queue(), ahead, 'ahead');
       releaseLock(lockPath, 't-live');
       make('heavy.lock.129.abcdef012345.tmp', 61_000);
       const lock = await acquireHeavyLock({ lockPath, command: 'x', env: {}, log });
@@ -1719,6 +1734,127 @@ describe('the queue: first come, first served (#348)', () => {
       expect(ps).toBe(3);
       releaseLock(lockPath, 't-b');
       (await waiting).release();
+    });
+
+    it('judges heartbeats again half the stale time after a gap, and never later after a clock step back', () => {
+      // A gap of over half the stale time: wait half the stale time from it.
+      expect(ageJudgedFrom(0, 0, 10_000, 2_000)).toBe(11_000);
+      expect(ageJudgedFrom(0, 9_000, 10_000, 2_000)).toBe(0); // exactly half: no gap
+      // No gap: unchanged.
+      expect(ageJudgedFrom(11_000, 10_000, 10_200, 2_000)).toBe(11_000);
+      // A gap, then the clock steps back an hour: at most half the stale time from now.
+      const after = ageJudgedFrom(0, 3_590_000, 3_600_000, 2_000);
+      expect(after).toBe(3_601_000);
+      expect(ageJudgedFrom(after, 3_600_000, 100_000, 2_000)).toBe(101_000);
+    });
+
+    it('checks the holder at once when the clock steps back, so a holder that dies then is seen', async () => {
+      let clock = Date.parse('2026-10-29T08:00:00.000Z');
+      const live = [4242];
+      const probe = fakeProbe({}, { pid: (pid) => (live.includes(pid) ? 'alive' : 'dead') });
+      tryTakeLock(lockPath, holder(4242, 't-h'));
+      const waiting = acquireHeavyLock({
+        lockPath,
+        command: 'x',
+        env: {},
+        pollMs: 60_000,
+        headPollMs: 5,
+        timeoutMs: 10 * 3_600_000,
+        probe,
+        now: () => clock,
+        log,
+      });
+      await until('the first check', () => logs.some((line) => line.includes('place 1 of 1')));
+      clock -= 3_600_000; // NTP, a manual date change or a VM clock fix
+      live.length = 0; // and the holder dies
+      await until(
+        'the dead holder’s lock broken',
+        () => readHolder(lockPath)?.token !== 't-h',
+        3_000,
+      );
+      const lock = await waiting;
+      expect(readHolder(lockPath)?.token).toBe(lock.holder.token);
+      expect(logs.some((line) => line.includes('removing the stale lock of cmd-4242'))).toBe(true);
+      lock.release();
+    });
+
+    it('drops a ticket under the token that holds the lock (put back after its waiter took it)', () => {
+      const own = takeTicket(queue(), ticket(1, 'mine'));
+      const ghost = takeTicket(queue(), ticket(process.pid, 'held'));
+      const other = takeTicket(queue(), ticket(process.pid, 'other'));
+      writeFileSync(join(queue(), 'ticket-000000000009'), 'junk'); // fresh, not valid
+      const probe = fakeProbe({ pids: [1, process.pid] });
+      // No holder: a ticket that is not valid (no token) is not taken for the holder's.
+      expect(queuePlace(queue(), own, probe, 60_000, true, undefined, Date.now())).toMatchObject({
+        total: 4,
+      });
+      const removed: string[] = [];
+      const seen = queuePlace(
+        queue(),
+        own,
+        probe,
+        60_000,
+        true,
+        (entry) => removed.push(entry.name),
+        Date.now(),
+        'held',
+      );
+      expect(removed).toEqual([ghost]);
+      expect(seen).toMatchObject({ place: 1, total: 3 });
+      expect(tickets()).toEqual([own, other, 'ticket-000000000009']);
+      // Its own ticket is never dropped, whatever the token.
+      expect(
+        queuePlace(queue(), own, probe, 60_000, true, undefined, Date.now(), 'mine'),
+      ).toMatchObject({ total: 3 });
+    });
+
+    it('passes over a ghost ticket of the holder when waiting, instead of waiting behind it', async () => {
+      tryTakeLock(lockPath, holder(process.pid, 'held'));
+      const ghost = takeTicket(queue(), ticket(process.pid, 'held')); // live PID, fresh heartbeat
+      const error: unknown = await acquireHeavyLock({
+        lockPath,
+        command: 'x',
+        env: {},
+        timeoutMs: 100,
+        pollMs: 5,
+        log,
+      }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(HeavyLockTimeoutError);
+      expect(tickets()).not.toContain(ghost);
+      expect(logs.some((line) => line.includes('place 1 of 1'))).toBe(true);
+    });
+
+    it('removes its ticket again a moment later in case a remover put it back', async () => {
+      tryTakeLock(lockPath, holder(process.pid, 't-holder'));
+      const waiting = acquireHeavyLock({
+        lockPath,
+        command: 'x',
+        env: {},
+        timeoutMs: 100,
+        pollMs: 5,
+        log,
+      });
+      await until('its ticket', () => tickets().length === 1);
+      const [name] = tickets();
+      const mine = readTicket(queue(), name ?? '');
+      await expect(waiting).rejects.toBeInstanceOf(HeavyLockTimeoutError);
+      expect(tickets()).toEqual([]);
+      // Another waiter had it aside as it was removed, and puts it back now.
+      writeFileSync(join(queue(), name ?? ''), JSON.stringify(mine));
+      await sleep(GHOST_RECHECK_MS + 300);
+      expect(tickets()).toEqual([]);
+    });
+
+    it('sweeps a ticket left aside by a remover killed meanwhile a minute after it was moved, not by its age', () => {
+      mkdirSync(queue(), { recursive: true });
+      const aside = join(queue(), 'aside-1.abc.tmp');
+      writeFileSync(aside, JSON.stringify(ticket(1)));
+      const old = new Date(Date.now() - 120_000); // a stale ticket's heartbeat, kept by the rename
+      utimesSync(aside, old, old);
+      removeOldDrafts(queue());
+      expect(existsSync(aside)).toBe(true);
+      removeOldDrafts(queue(), Date.now() + 61_000);
+      expect(existsSync(aside)).toBe(false);
     });
   });
 });

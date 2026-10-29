@@ -42,5 +42,7 @@ export async function closeOrphansAtStart(
   shifts: Pick<Shifts, 'crewCheck'>,
   orders: Pick<Orders, 'endOrphanedActivities'>,
 ): Promise<number> {
+  // `readAt` (database time, read before the rows) matters only for the crew-check sweep: here the
+  // API isn't attached yet, so no sign-on or start can fall between it and the rows' read.
   return orders.endOrphanedActivities(await shifts.crewCheck());
 }

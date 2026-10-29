@@ -1797,7 +1797,36 @@ describe('the terminal API and push (#177)', () => {
     // Signed off at the terminal: the crew row ends and the next write needs a sign-on again.
     const omarOn = await call(omar, 'POST', '/terminal/line-a1/sign-on', {});
     expect(omarOn.statusCode).toBe(200);
+    const omarWork = await call(
+      omar,
+      'POST',
+      '/terminal/line-a1/orders/C-1/operations/OP40/start',
+      {
+        activity: null,
+      },
+    );
+    expect(omarWork.statusCode, omarWork.body).toBe(200);
+    // The sign-off route closes his work at the crew row's end itself (#383, #402 re-review L1):
+    // with the shifts module's notice dropped and the plant clock moved on as the row ends, the
+    // interval still ends where the row did, in wall and plant time.
+    h.notices.lost = true;
+    const moveOn = h.shifts.onChange((change) => {
+      if (change.type === 'crew' && change.event === 'ended') {
+        h.clock.at = (h.clock.at ?? PLANT_T0) + 60_000;
+      }
+    });
     expect((await call(omar, 'POST', '/terminal/line-a1/sign-off', {})).statusCode).toBe(200);
+    moveOn();
+    h.notices.lost = false;
+    const [omarRow] = await h.shifts.crew({ workCenter: 'line-a1', userId: h.omar.userId });
+    const [omarInterval] = await h.orders.activities({ orderId: 'C-1', operation: 'OP40' });
+    expect(omarInterval).toMatchObject({
+      userId: h.omar.userId,
+      endReason: 'crew-ended',
+      to: omarRow?.to,
+      toPlant: omarRow?.toPlant,
+    });
+    expect(omarInterval?.toPlant).not.toEqual(new Date(h.clock.at ?? 0));
     expect((await call(omar, 'POST', '/terminal/line-a1/sign-off', {})).json()).toMatchObject({
       type: PROBLEM_TYPES.notSignedOn,
     });

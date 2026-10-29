@@ -1215,6 +1215,19 @@ export class Holds {
   // ---- the scope copy and incidents ----
 
   /**
+   * How many entries the rebuild keeps in memory, by kind (#399; tests and diagnostics): each
+   * follows the holds there are now.
+   */
+  cached(): { copies: number; incidentFacts: number; lotReads: number; settled: number } {
+    return {
+      copies: this.#copies.size,
+      incidentFacts: this.#incidentFacts.size,
+      lotReads: this.#lotReads.size,
+      settled: this.#settled.size,
+    };
+  }
+
+  /**
    * One rebuild now: every open or rejected hold's scope derived from the genealogy again (units
    * that joined are added with the time they joined; a unit no longer covered, after a rebuild, is
    * removed), and `held-material-consumed` for every consumption of a held lot after its hold
@@ -1296,8 +1309,20 @@ export class Holds {
       this.#loadCopies(live.map((h) => h.id)),
       this.#loadKnown(lots.map((h) => h.id)),
     ]);
+    // What is kept in memory follows the holds there are now (review of #400, L1): copies of the
+    // open and rejected ones, incident facts and settled entries of the lot holds (the lot reads
+    // follow the held lots in `#readLots`).
     const liveIds = new Set(live.map((h) => h.id));
+    const lotIds = new Set(lots.map((h) => h.id));
     for (const id of this.#copies.keys()) if (!liveIds.has(id)) this.#copies.delete(id);
+    for (const id of this.#incidentFacts.keys())
+      if (!lotIds.has(id)) this.#incidentFacts.delete(id);
+    for (const id of this.#settled.keys()) if (!lotIds.has(id)) this.#settled.delete(id);
+    // A settled entry stands for a copy and incidents in line with one read at one version. Two
+    // guards keep it honest, as a pair (review of #400, L2): a transition (open, comment, decide)
+    // bumps the version, and `#replaceUnits` (the copy rewritten in an opening's or a decision's
+    // own transaction) drops the entry. Keep both: either alone covers a transition that does only
+    // the other.
     const unsettled = (hold: Selectable<HoldTable>): boolean => {
       const settled = this.#settled.get(hold.id);
       return settled?.version !== hold.version || settled.read !== byLot.get(hold.subject_id);
@@ -1430,7 +1455,8 @@ export class Holds {
       scope,
     );
     await this.#applyUnits(trx, [{ id, plan }]);
-    // Read again by the next rebuild (this transaction may still roll back).
+    // Read again by the next rebuild (this transaction may still roll back); the settled entry goes
+    // with the copy (with the version bump, the pair of guards in `#rebuildScopes`).
     this.#copies.delete(id);
     this.#settled.delete(id);
     return plan.gone.length + plan.added.length + plan.moved.length > 0;

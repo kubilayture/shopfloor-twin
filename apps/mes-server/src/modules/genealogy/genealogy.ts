@@ -828,9 +828,10 @@ export class Genealogy {
    * block with the same count and sum of hashes would pass for unchanged, a chance of about 2^-64
    * per changed block (ADR-0035).
    *
-   * Consumptions are sorted here (by plant time, epoch, machine and sequence as
-   * {@link lotConsumptions}; machines by code point, the database's byte-order collation on the
-   * stack's image).
+   * Consumptions are sorted here, by plant time, epoch, machine and sequence as
+   * {@link lotConsumptions} orders them; machines by code point, which is the database's order on
+   * the stack's image (libc collation on Alpine's musl: byte order). The order only decides the
+   * order in which a rebuild inserts the incidents of simultaneous consumptions (their ids).
    */
   async lotsScopesAndConsumptions(
     lots: readonly string[],

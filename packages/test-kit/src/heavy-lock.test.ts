@@ -48,6 +48,7 @@ import {
   recordGroup,
   releaseLock,
   removeOldDrafts,
+  removeOldStaging,
   removeTicket,
   retakeTicket,
   takeTicket,
@@ -843,7 +844,12 @@ describe('the queue: first come, first served (#348)', () => {
     expect(takeTicket(queue(), ticket(1))).toBe('ticket-000000000001');
     expect(takeTicket(queue(), ticket(2))).toBe('ticket-000000000002');
     expect(takeTicket(queue(), ticket(3))).toBe('ticket-000000000003');
-    expect(readTicket(queue(), 'ticket-000000000002')).toEqual(ticket(2));
+    // Each file made carries a nonce of its own (#350).
+    const nonce = expect.stringMatching(/^[0-9a-f]{16}$/) as string;
+    expect(readTicket(queue(), 'ticket-000000000002')).toEqual({ ...ticket(2), nonce });
+    expect(readTicket(queue(), 'ticket-000000000002')?.nonce).not.toBe(
+      readTicket(queue(), 'ticket-000000000003')?.nonce,
+    );
     // Ten sorts after nine as a number, and drafts and strangers are not tickets.
     for (let n = 4; n <= 10; n += 1) takeTicket(queue(), ticket(n));
     writeFileSync(join(queue(), 'draft-1.abc.tmp'), '{}');
@@ -879,6 +885,7 @@ describe('the queue: first come, first served (#348)', () => {
       { ...good, command: 1 },
       { ...good, since: undefined },
       { ...good, token: null },
+      { ...good, nonce: 5 },
     ]) {
       writeFileSync(join(queue(), 'ticket-000000000001'), JSON.stringify(bad));
       expect(readTicket(queue(), 'ticket-000000000001'), JSON.stringify(bad)).toBeUndefined();
@@ -1187,6 +1194,7 @@ describe('the queue: first come, first served (#348)', () => {
       command: 'x',
       since: expect.stringMatching(/^\d{4}-\d\d-\d\dT/) as string,
       token: expect.stringMatching(new RegExp(`^${String(process.pid)}-[0-9a-f]{16}$`)) as string,
+      nonce: expect.stringMatching(/^[0-9a-f]{16}$/) as string,
     });
     expect(existsSync(join(queue(), 'draft-1.left.tmp'))).toBe(false);
     const seen = readTicket(queue(), own);
@@ -1499,5 +1507,218 @@ describe('the queue: first come, first served (#348)', () => {
     expect(error).toBeInstanceOf(Error);
     expect(readdirSync(join(readOnlyParent, 'heavy.lock.queue'))).toEqual([]);
     expect(statSync(join(readOnlyParent, 'heavy.lock')).isFile()).toBe(true);
+  });
+
+  describe('follow-ups from the #349 review (#350)', () => {
+    it('judges no heartbeat for half the stale time after a gap in its own polls, until the others beat again', async () => {
+      // The review's reproduction: the head and the waiters behind it sleep with the machine; the
+      // head wakes first and must not remove their tickets before they have had time to beat.
+      tryTakeLock(lockPath, holder(process.pid, 't-holder'));
+      const staleMs = 2_000;
+      let polls = 0;
+      const probe = fakeProbe(
+        {},
+        {
+          pid: () => {
+            polls += 1;
+            return 'alive';
+          },
+        },
+      );
+      const waiting = acquireHeavyLock({
+        lockPath,
+        command: 'head',
+        env: {},
+        pollMs: 60_000,
+        headPollMs: 20,
+        ticketStaleMs: staleMs,
+        timeoutMs: 30_000,
+        probe,
+        log,
+      });
+      await until('the head', () => logs.some((line) => line.includes('place 1 of 1')));
+      const live = takeTicket(queue(), ticket(process.pid, 'behind-live'));
+      const stopped = takeTicket(queue(), ticket(process.pid, 'behind-stopped'));
+      const blockedUntil = Date.now() + staleMs / 2 + 100; // a gap of over half the stale time
+      while (Date.now() < blockedUntil) {
+        // the whole process stands still, as in a sleep of the machine
+      }
+      const woke = Date.now();
+      // The waiters behind slept as long: their tickets look older than the stale time.
+      backdate(live, staleMs + 100);
+      backdate(stopped, staleMs + 100);
+      const before = polls;
+      await sleep(staleMs / 2 - 400); // many head polls, all within the grace after the gap
+      expect(polls - before).toBeGreaterThan(10);
+      expect(tickets()).toContain(live);
+      expect(tickets()).toContain(stopped);
+      touchTicket(queue(), live); // its waiter wakes and beats; the other one never does
+      await until('the stopped waiter’s ticket removed', () => !tickets().includes(stopped), 5_000);
+      expect(Date.now() - woke).toBeGreaterThanOrEqual(staleMs / 2);
+      expect(tickets()).toContain(live);
+      expect(logs.filter((line) => line.includes('removing the queue ticket of'))).toHaveLength(1);
+      releaseLock(lockPath, 't-holder');
+      (await waiting).release();
+    }, 20_000);
+
+    it('never removes a ticket its waiter made again after another waiter removed the stale one', () => {
+      const owner = ticket(process.pid, 'owner');
+      const stale = takeTicket(queue(), owner);
+      backdate(stale, 10_000);
+      const a = takeTicket(queue(), ticket(91, 'a'));
+      const b = takeTicket(queue(), ticket(92, 'b'));
+      const plain = fakeProbe({ pids: [process.pid, 91, 92] });
+      const removedByA: string[] = [];
+      const removedByB: string[] = [];
+      let raced = false;
+      // b and a both judge the owner's ticket stale; a removes it first and the owner makes it
+      // again (same name, same token) while b is still judging the copy it read.
+      const racing = fakeProbe(
+        { pids: [process.pid, 91, 92] },
+        {
+          pid: (pid) => {
+            if (pid === process.pid && !raced) {
+              raced = true;
+              queuePlace(queue(), a, plain, 1_000, true, (entry) => removedByA.push(entry.name));
+              expect(retakeTicket(queue(), stale, owner)).toBe(true);
+            }
+            return plain.pid(pid);
+          },
+        },
+      );
+      queuePlace(queue(), b, racing, 1_000, true, (entry) => removedByB.push(entry.name));
+      expect(raced).toBe(true);
+      expect(removedByA).toEqual([stale]);
+      expect(removedByB).toEqual([]);
+      expect(readTicket(queue(), stale)?.token).toBe('owner');
+      expect(readQueue(queue())[0]?.ageMs).toBeLessThan(5_000); // the fresh one, not the old
+      expect(readdirSync(queue()).filter((name) => name.startsWith('draft-'))).toEqual([]);
+    });
+
+    it('removes a ticket only with the nonce seen, putting another one back as it was', () => {
+      const name = takeTicket(queue(), ticket(1));
+      backdate(name, 10_000);
+      const seen = readTicket(queue(), name);
+      expect(seen?.nonce).toMatch(/^[0-9a-f]{16}$/);
+      expect(removeTicket(queue(), name, 'q-1', 'another-nonce')).toBe(false);
+      // Put back with its heartbeat untouched (still stale), and nothing left beside it.
+      expect(readTicket(queue(), name)).toEqual(seen);
+      expect(readQueue(queue())[0]?.ageMs).toBeGreaterThan(9_000);
+      expect(readdirSync(queue())).toEqual([name]);
+      expect(removeTicket(queue(), name, 'q-1', seen?.nonce)).toBe(true);
+      expect(readdirSync(queue())).toEqual([]);
+      // A ticket of the code before #350 has no nonce: the token alone tells it.
+      writeFileSync(join(queue(), name), JSON.stringify(ticket(1)));
+      expect(removeTicket(queue(), name, 'q-1', 'any')).toBe(false);
+      expect(removeTicket(queue(), name, 'q-1')).toBe(true);
+      expect(readdirSync(queue())).toEqual([]);
+    });
+
+    it('removes staging directories left beside the lock by a killed process, after a minute', async () => {
+      const parent = join(dir, 'cache');
+      mkdirSync(parent, { recursive: true });
+      const make = (name: string, ageMs: number, file = false) => {
+        const path = join(parent, name);
+        if (file) writeFileSync(path, '');
+        else {
+          mkdirSync(path);
+          writeFileSync(join(path, 'holder.json'), '{}');
+        }
+        const at = new Date(Date.now() - ageMs);
+        utimesSync(path, at, at);
+      };
+      make('heavy.lock.123.abcdef012345.tmp', 61_000);
+      make('heavy.lock.124.abcdef012345.tmp', 59_000);
+      // Old, but not a staging directory of this lock: never touched.
+      const kept = [
+        'heavy.lock.125.abcdef012345.released',
+        'heavy.lock.x.tmp',
+        'heavy.lock.126.abcdef01234.tmp',
+        'heavy.lockx.127.abcdef012345.tmp',
+        'other.lock.128.abcdef012345.tmp',
+      ];
+      for (const name of kept) make(name, 120_000);
+      make('heavy.lock.break', 120_000, true);
+      tryTakeLock(lockPath, holder(process.pid, 't-live'));
+      const live = new Date(Date.now() - 120_000);
+      utimesSync(lockPath, live, live);
+      removeOldStaging(lockPath);
+      expect(readdirSync(parent).sort()).toEqual(
+        [...kept, 'heavy.lock', 'heavy.lock.124.abcdef012345.tmp', 'heavy.lock.break'].sort(),
+      );
+      expect(readHolder(lockPath)?.token).toBe('t-live');
+      // Exactly a minute old is still young.
+      const at = new Date('2026-10-24T08:00:00.000Z');
+      const young = join(parent, 'heavy.lock.124.abcdef012345.tmp');
+      utimesSync(young, at, at);
+      removeOldStaging(lockPath, at.getTime() + 60_000);
+      expect(existsSync(young)).toBe(true);
+      removeOldStaging(lockPath, at.getTime() + 60_001);
+      expect(existsSync(young)).toBe(false);
+      removeOldStaging(join(dir, 'none', 'heavy.lock')); // no directory yet: nothing to do
+      // A waiter sweeps them as it polls.
+      releaseLock(lockPath, 't-live');
+      make('heavy.lock.129.abcdef012345.tmp', 61_000);
+      const lock = await acquireHeavyLock({ lockPath, command: 'x', env: {}, log });
+      expect(existsSync(join(parent, 'heavy.lock.129.abcdef012345.tmp'))).toBe(false);
+      lock.release();
+    });
+
+    it('asks whether the holder lives (ps) only every poll interval at the head, and at once for a new holder', async () => {
+      let clock = Date.parse('2026-10-29T08:00:00.000Z');
+      let ps = 0;
+      let polls = 0;
+      const live = [4242, 4243, 4343];
+      const probe = fakeProbe(
+        {},
+        {
+          pid: (pid) => {
+            if (pid === 4343) polls += 1; // the ticket behind: judged once per poll
+            return live.includes(pid) ? 'alive' : 'dead';
+          },
+          processStart: (pid) => {
+            if (pid === 4242 || pid === 4243) ps += 1;
+            return undefined;
+          },
+        },
+      );
+      tryTakeLock(lockPath, holder(4242, 't-a'));
+      const waiting = acquireHeavyLock({
+        lockPath,
+        command: 'x',
+        env: {},
+        pollMs: 1_000,
+        headPollMs: 5,
+        timeoutMs: 600_000,
+        probe,
+        now: () => clock,
+        log,
+      });
+      await until('the head', () => logs.some((line) => line.includes('place 1 of 1')));
+      takeTicket(queue(), ticket(4343, 'behind'));
+      const pollsAfter = async (n: number) => {
+        const from = polls;
+        await until(`${String(n)} polls`, () => polls >= from + n);
+      };
+      await pollsAfter(20);
+      expect(ps).toBe(1); // the first poll at the head only
+      clock += 999;
+      await pollsAfter(10);
+      expect(ps).toBe(1);
+      clock += 1;
+      await until('the second check', () => ps === 2);
+      await pollsAfter(10);
+      expect(ps).toBe(2);
+      // Another holder (an old-code waiter, say) is checked and named at once, the clock unmoved.
+      writeFileSync(join(lockPath, 'holder.json'), JSON.stringify(holder(4243, 't-b')));
+      await until('the new holder named', () =>
+        logs.some((line) => line.startsWith('heavy lock: waiting for cmd-4243')),
+      );
+      expect(ps).toBe(3);
+      await pollsAfter(10);
+      expect(ps).toBe(3);
+      releaseLock(lockPath, 't-b');
+      (await waiting).release();
+    });
   });
 });

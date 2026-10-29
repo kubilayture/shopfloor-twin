@@ -12,7 +12,9 @@
  * followed by an orders, an execution and a genealogy round (timed), and in the run with holds by
  * one rebuild of every scope (timed): the MES rebuilds on a genealogy change, which a round that
  * rebuilt no unit and placed no carton doesn't raise, so a rebuild after every round is the upper
- * bound. At the end every hold's copy equals its scope derived from the genealogy.
+ * bound. A listener on the holds' changes, as the realtime module in the MES, keeps the cost of
+ * reading the changed holds' records in the rebuild (#399). At the end every hold's copy equals its
+ * scope derived from the genealogy.
  */
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -76,6 +78,8 @@ interface Replay {
   readonly scopes: number[];
   readonly holds: number;
   readonly units: number;
+  /** Scope changes the listener heard of. */
+  readonly scopeChanges: number;
 }
 
 /** The week replayed as described above; with `holds`, 200 opened halfway. */
@@ -166,6 +170,11 @@ async function replay(
     },
   });
   await holds.start();
+  // As the realtime module does in the MES: a rebuild reads the changed holds' records for it.
+  let scopeChanges = 0;
+  holds.onChange((change) => {
+    if (change.event === 'scope') scopeChanges += 1;
+  });
   orders.useCloseGuard(holds.closeGuard());
   const round = async (deliveries: readonly Delivery[]): Promise<void> => {
     for (const d of deliveries) await ingest.deliver(d.topic, d.payload);
@@ -245,7 +254,7 @@ async function replay(
       );
       held += copy.length;
     }
-    return { rounds, scopes, holds: open.length, units: held };
+    return { rounds, scopes, holds: open.length, units: held, scopeChanges };
   } finally {
     await holds.stop();
     await genealogy.stop();
@@ -274,6 +283,7 @@ describe('derived-work budgets: hold scopes on change (#238)', () => {
     expect(some.holds).toBe(HOLDS);
     expect(some.rounds).toHaveLength(none.rounds.length);
     expect(some.scopes).toHaveLength(some.rounds.length);
+    expect(some.scopeChanges).toBeGreaterThan(0);
     const base = quantile(none.rounds, 0.95);
     const round = quantile(some.rounds, 0.95);
     const scope = quantile(some.scopes, 0.95);
@@ -281,7 +291,7 @@ describe('derived-work budgets: hold scopes on change (#238)', () => {
     console.log(
       `#238 holds: ${String(none.rounds.length)} rounds over the second half of week-01; no hold: mes_genealogy_round_seconds p50 ${ms(quantile(none.rounds, 0.5))} ms, p95 ${ms(base)} ms; ` +
         `${String(HOLDS)} open holds (${String(some.units)} units held at the end): round p50 ${ms(quantile(some.rounds, 0.5))} ms, p95 ${ms(round)} ms, ` +
-        `mes_quality_hold_scope_seconds p50 ${ms(quantile(some.scopes, 0.5))} ms, p95 ${ms(scope)} ms, max ${ms(Math.max(...some.scopes))} ms; added ${ms(added)} ms (budget ${String(BUDGET_MS)} ms)`,
+        `mes_quality_hold_scope_seconds p50 ${ms(quantile(some.scopes, 0.5))} ms, p95 ${ms(scope)} ms, max ${ms(Math.max(...some.scopes))} ms (${String(some.scopeChanges)} scope changes heard); added ${ms(added)} ms (budget ${String(BUDGET_MS)} ms)`,
     );
     expect(added).toBeLessThanOrEqual(BUDGET_MS);
   }, 1_800_000);

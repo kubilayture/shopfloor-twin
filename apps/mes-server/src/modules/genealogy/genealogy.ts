@@ -241,6 +241,34 @@ export interface ScopeSubject {
   readonly id: string;
 }
 
+/** A lot's scope and consumptions, as {@link Genealogy.lotsScopesAndConsumptions} reads them. */
+export interface LotScopeAndConsumptions {
+  readonly scope: readonly UnitRef[];
+  readonly consumptions: readonly LotConsumption[];
+}
+
+/**
+ * A lot as {@link Genealogy.lotsScopesAndConsumptions} reads it: its scope and consumptions, and
+ * its links by block of units with their digests, which the next read of the lot reuses.
+ */
+export interface LotLinks extends LotScopeAndConsumptions {
+  /** By block (`epoch/⌊partId / 64⌋`). */
+  readonly blocks: ReadonlyMap<string, LotLinksBlock>;
+}
+
+/** A block of a lot's links: the digest of its rows, its units and its consumptions. */
+export interface LotLinksBlock {
+  readonly epoch: number;
+  readonly block: number;
+  readonly digest: string;
+  readonly scope: readonly UnitRef[];
+  readonly consumptions: readonly LotConsumption[];
+}
+
+/** Units per block of {@link LotLinks}: a change re-reads the blocks of the units it touched. */
+const LINK_BLOCK = 64;
+const blockKey = (epoch: number, block: number): string => `${String(epoch)}/${String(block)}`;
+
 /** A consumption of a lot by a unit's cycle (a `lot-unit` link), with the fact it came from. */
 export interface LotConsumption {
   readonly epoch: number;
@@ -786,35 +814,142 @@ export class Genealogy {
     return subjects.map((subject) => result.get(scopeKey(subject)) ?? []);
   }
 
-  /** {@link lotConsumptions} of many lots at once (#238), by lot, each in plant-time order. */
-  async lotsConsumptions(
+  /**
+   * Many lots' scopes and consumptions at once (#238, #399), by lot, from one read of their
+   * `lot-unit` links with their units: `scope` as {@link scopes} answers a lot (each unit once, in
+   * (epoch, partId) order), `consumptions` as {@link lotConsumptions} (each link, in plant-time
+   * order).
+   *
+   * Incremental with `previous` (what this answered last, by lot): the database reads every link
+   * but groups them in blocks of {@link LINK_BLOCK} units by digest (their count and the sum of
+   * their rows' 64-bit hashes), and sends only the rows of the blocks whose digest changed (new
+   * units, a unit rebuilt, cartons placed); the others are taken from `previous`, and a lot with no
+   * block changed is answered with the very object of `previous`. The digest is no proof: a changed
+   * block with the same count and sum of hashes would pass for unchanged, a chance of about 2^-64
+   * per changed block (ADR-0035).
+   *
+   * Consumptions are sorted here, by plant time, epoch, machine and sequence as
+   * {@link lotConsumptions} orders them; machines by code point, which is the database's order on
+   * the stack's image (libc collation on Alpine's musl: byte order). The order only decides the
+   * order in which a rebuild inserts the incidents of simultaneous consumptions (their ids).
+   */
+  async lotsScopesAndConsumptions(
     lots: readonly string[],
-    db: Kysely<Database> = this.#readDb,
-  ): Promise<Map<string, LotConsumption[]>> {
-    const result = new Map<string, LotConsumption[]>(lots.map((lot) => [lot, []]));
+    options: {
+      readonly db?: Kysely<Database>;
+      readonly previous?: ReadonlyMap<string, LotLinks>;
+    } = {},
+  ): Promise<Map<string, LotLinks>> {
+    const db = options.db ?? this.#readDb;
+    const result = new Map<string, LotLinks>();
     for (const chunk of chunks([...new Set(lots)], 5_000)) {
-      const rows = await db
-        .selectFrom('genealogy.genealogy_link')
-        .select(['lot', 'epoch', 'part_id', 'equipment', 'seq', 'operation', 'pass', 'at'])
-        .where('kind', '=', 'lot-unit')
-        .where('lot', 'in', chunk)
-        .orderBy('lot')
-        .orderBy('at')
-        .orderBy('epoch')
-        .orderBy('equipment')
-        .orderBy('seq')
-        .execute();
+      const known = chunk.flatMap((lot) =>
+        [...(options.previous?.get(lot)?.blocks.values() ?? [])].map((b) => ({
+          lot,
+          epoch: b.epoch,
+          block: b.block,
+          digest: b.digest,
+        })),
+      );
+      const { rows } = await sql<{
+        lot: string;
+        block_epoch: number;
+        block: number;
+        digest: string;
+        epoch: number | null;
+        part_id: number | null;
+        equipment: string | null;
+        seq: number | null;
+        operation: string | null;
+        pass: number | null;
+        at: Date | null;
+        serial: string | null;
+        order_id: string | null;
+        carton_id: string | null;
+        status: UnitRef['status'] | null;
+      }>`
+        WITH l AS MATERIALIZED (
+          SELECT l.lot, l.epoch, l.part_id / ${LINK_BLOCK} AS block, l.part_id, l.equipment,
+            l.seq, l.operation, l.pass, l.at, u.serial, u.order_id, u.carton_id, u.status
+          FROM genealogy.genealogy_link l
+          LEFT JOIN genealogy.serial_unit u ON u.epoch = l.epoch AND u.part_id = l.part_id
+          WHERE l.kind = 'lot-unit' AND l.lot = ANY(${chunk}::text[])
+        ), d AS (
+          SELECT lot, epoch, block,
+            count(*)::text || '/' || sum(hash_record_extended(l, 0))::text AS digest
+          FROM l GROUP BY lot, epoch, block
+        )
+        SELECT d.lot, d.epoch AS block_epoch, d.block, d.digest, l.epoch, l.part_id, l.equipment,
+          l.seq, l.operation, l.pass, l.at, l.serial, l.order_id, l.carton_id, l.status
+        FROM d
+        LEFT JOIN unnest(
+          ${known.map((k) => k.lot)}::text[],
+          ${known.map((k) => k.epoch)}::bigint[],
+          ${known.map((k) => k.block)}::bigint[],
+          ${known.map((k) => k.digest)}::text[]
+        ) AS k (lot, epoch, block, digest)
+          ON k.lot = d.lot AND k.epoch = d.epoch AND k.block = d.block
+        LEFT JOIN l ON l.lot = d.lot AND l.epoch = d.epoch AND l.block = d.block
+          AND d.digest IS DISTINCT FROM k.digest
+      `.execute(db);
+      const blocks = new Map<
+        string,
+        Map<
+          string,
+          LotLinksBlock & { readonly scope: UnitRef[]; readonly consumptions: LotConsumption[] }
+        >
+      >(chunk.map((lot) => [lot, new Map()]));
+      /** Blocks taken from `previous`, by lot. */
+      const kept = new Map<string, Map<string, LotLinksBlock>>(
+        chunk.map((lot) => [lot, new Map()]),
+      );
       for (const r of rows) {
+        const key = blockKey(r.block_epoch, r.block);
+        // An unchanged block: one row, without a link.
+        if (r.epoch === null || r.part_id === null) {
+          const block = options.previous?.get(r.lot)?.blocks.get(key);
+          if (!block) throw new Error(`genealogy: no previous block ${key} of lot ${r.lot}`);
+          kept.get(r.lot)?.set(key, block);
+          continue;
+        }
+        const byKey = blocks.get(r.lot);
+        if (!byKey) continue;
+        let block = byKey.get(key);
+        if (!block) {
+          block = {
+            epoch: r.block_epoch,
+            block: r.block,
+            digest: r.digest,
+            scope: [],
+            consumptions: [],
+          };
+          byKey.set(key, block);
+        }
+        // A unit genealogy keeps a row of, once (the scope's inner join and DISTINCT): its links
+        // are all in its block, of at most LINK_BLOCK units.
         if (
-          r.lot === null ||
+          r.status !== null &&
+          !block.scope.some((u) => u.partId === r.part_id && u.epoch === r.epoch)
+        ) {
+          block.scope.push({
+            epoch: r.epoch,
+            partId: r.part_id,
+            serial: r.serial,
+            orderId: r.order_id,
+            carton: r.carton_id,
+            status: r.status,
+          });
+        }
+        if (
           r.equipment === null ||
           r.seq === null ||
           r.operation === null ||
-          r.pass === null
+          r.pass === null ||
+          r.at === null
         ) {
           continue;
         }
-        result.get(r.lot)?.push({
+        block.consumptions.push({
           epoch: r.epoch,
           partId: r.part_id,
           equipment: r.equipment,
@@ -822,6 +957,40 @@ export class Genealogy {
           operation: r.operation,
           pass: r.pass,
           at: r.at,
+        });
+      }
+      for (const lot of chunk) {
+        const read = blocks.get(lot) ?? new Map<string, LotLinksBlock & { scope: UnitRef[] }>();
+        const same = kept.get(lot) ?? new Map<string, LotLinksBlock>();
+        const before = options.previous?.get(lot);
+        if (before && read.size === 0 && same.size === before.blocks.size) {
+          result.set(lot, before);
+          continue;
+        }
+        for (const block of read.values()) {
+          block.scope.sort((a, b) => a.epoch - b.epoch || a.partId - b.partId);
+        }
+        // Blocks in (epoch, block) order: their units are in (epoch, partId) order across them.
+        const all = [...same.values(), ...read.values()].sort(
+          (a, b) => a.epoch - b.epoch || a.block - b.block,
+        );
+        const scope: UnitRef[] = [];
+        const consumptions: LotConsumption[] = [];
+        for (const block of all) {
+          scope.push(...block.scope);
+          consumptions.push(...block.consumptions);
+        }
+        consumptions.sort(
+          (a, b) =>
+            a.at.getTime() - b.at.getTime() ||
+            a.epoch - b.epoch ||
+            byText(a.equipment, b.equipment) ||
+            a.seq - b.seq,
+        );
+        result.set(lot, {
+          scope,
+          consumptions,
+          blocks: new Map(all.map((block) => [blockKey(block.epoch, block.block), block])),
         });
       }
     }

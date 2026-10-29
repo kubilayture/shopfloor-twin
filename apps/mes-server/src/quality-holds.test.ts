@@ -37,10 +37,11 @@ import {
   PLANT_CONFIG,
   UnsFeed,
   freshDatabase,
+  ownerOf,
   type Delivery,
 } from './modules/equipment/test-support.ts';
 import { Execution } from './modules/execution/index.ts';
-import { Genealogy } from './modules/genealogy/index.ts';
+import { Genealogy, type LotLinks } from './modules/genealogy/index.ts';
 import { Identity } from './modules/identity/index.ts';
 import { Ingest } from './modules/ingest/index.ts';
 import { MasterData, erpMasterData } from './modules/master-data/index.ts';
@@ -657,6 +658,115 @@ describe('quality holds: scope, lifecycle and notifications (#201)', () => {
       ['hold.open', 'quinn'],
       ['hold.release', 'quinn'],
     ]);
+  });
+
+  it('reads every held lot’s scope and consumptions at once, as one lot’s reads answer them, and again only where its links or units change (#399)', async () => {
+    const h = await harness('lot_reads');
+    await dispatched(h, 'X-1', 3);
+    const l = h.line;
+    await send(h, [
+      l.job('accepted', 'X-1', 3),
+      l.job('started', 'X-1', 3),
+      ...l.unit(1, { blank: 'B1', kit: 'K1' }),
+      ...l.unit(2, { blank: 'B1', kit: 'K2' }),
+    ]);
+    await settle(h);
+    const lots = ['B1', 'K1', 'K2', 'K9'];
+    const asOne = async (lot: string) => ({
+      scope: (await h.genealogy.scopes([{ kind: 'lot', id: lot }]))[0],
+      consumptions: await h.genealogy.lotConsumptions(lot),
+    });
+    const read = async (previous?: ReadonlyMap<string, LotLinks>) => {
+      const answer = await h.genealogy.lotsScopesAndConsumptions(
+        lots,
+        previous === undefined ? {} : { previous },
+      );
+      for (const lot of lots) {
+        const got = answer.get(lot);
+        expect({ scope: got?.scope, consumptions: got?.consumptions }).toEqual(await asOne(lot));
+      }
+      return answer;
+    };
+    const first = await read();
+    // B1 is consumed by both units: one scope unit each; K9 by none.
+    expect(first.get('B1')?.scope.map((u) => u.partId)).toEqual([1, 2]);
+    expect(first.get('K9')?.scope).toEqual([]);
+    // Unchanged: the very same answers.
+    const again = await read(first);
+    for (const lot of lots) expect(again.get(lot)).toBe(first.get(lot));
+    // A new link of K1 and B1 (unit 3): those two are read again, K2 is not.
+    await send(h, l.unit(3, { blank: 'B1', kit: 'K1' }));
+    await settle(h);
+    const grown = await read(first);
+    expect(grown.get('K1')?.scope.map((u) => u.partId)).toEqual([1, 3]);
+    expect(grown.get('K1')).not.toBe(first.get('K1'));
+    expect(grown.get('B1')).not.toBe(first.get('B1'));
+    expect(grown.get('K2')).toBe(first.get('K2'));
+    // A unit's row changing without a new link (as a carton rewritten) changes its lots too, and a
+    // lot hold's copy follows it through the reads the holds keep between rebuilds.
+    const held = await h.holds.open(
+      { subject: { kind: 'lot', id: 'K2' }, reason: 'SUSPECT-LOT' },
+      h.qa,
+    );
+    await h.holds.tick();
+    await h.holds.tick();
+    await h.db
+      .updateTable('genealogy.serial_unit')
+      .set({ carton_id: 'X-1-C99' })
+      .where('epoch', '=', E1)
+      .where('part_id', '=', 2)
+      .execute();
+    const moved = await read(grown);
+    expect(moved.get('K2')?.scope.map((u) => u.carton)).toEqual(['X-1-C99']);
+    expect(moved.get('B1')).not.toBe(grown.get('B1'));
+    expect(moved.get('K1')).toBe(grown.get('K1'));
+    await h.holds.tick();
+    const detail = await h.holds.detail(held.id);
+    expect(detail?.units.map((u) => [u.partId, u.carton])).toEqual([[2, 'X-1-C99']]);
+    // Several blocks (review of #400, M1): unit 70 is in K2's second block of 64 units.
+    await send(h, l.unit(70, { blank: 'B1', kit: 'K2' }));
+    await settle(h);
+    const two = await read(moved);
+    expect(two.get('K2')?.scope.map((u) => u.partId)).toEqual([2, 70]);
+    // Block 0 read again, block 1 kept: the blocks merge in (epoch, block) order.
+    await h.db
+      .updateTable('genealogy.serial_unit')
+      .set({ carton_id: 'X-1-C98' })
+      .where('epoch', '=', E1)
+      .where('part_id', '=', 2)
+      .execute();
+    const reordered = await read(two);
+    expect(reordered.get('K2')?.scope.map((u) => u.partId)).toEqual([2, 70]);
+    // Block 0 emptied (as a unit rebuilt without the lot): the lot is no longer the previous one.
+    await h.db
+      .deleteFrom('genealogy.genealogy_link')
+      .where('kind', '=', 'lot-unit')
+      .where('lot', '=', 'K2')
+      .where('part_id', '=', 2)
+      .execute();
+    const emptied = await read(reordered);
+    expect(emptied.get('K2')?.scope.map((u) => u.partId)).toEqual([70]);
+    await h.holds.tick();
+    expect((await h.holds.detail(held.id))?.units.map((u) => u.partId)).toEqual([70]);
+    // What the rebuild keeps in memory follows the holds there are (review of #400, L1): the one
+    // lot hold, then none once it is gone from the database.
+    expect(h.holds.cached()).toEqual({ copies: 1, incidentFacts: 1, lotReads: 1, settled: 1 });
+    // Holds are never deleted by the MES: the superuser removes this one past the append-only
+    // trigger (`session_replication_role`), as an operator's cleanup would.
+    const owner = await ownerOf(serverUrl, h.db);
+    try {
+      await owner.transaction().execute(async (trx) => {
+        await sql`SET LOCAL session_replication_role = replica`.execute(trx);
+        for (const table of ['hold_incident', 'hold_unit', 'hold_transition'] as const) {
+          await trx.deleteFrom(`quality.${table}`).where('hold_id', '=', held.id).execute();
+        }
+        await trx.deleteFrom('quality.hold').where('id', '=', held.id).execute();
+      });
+    } finally {
+      await owner.destroy();
+    }
+    await h.holds.tick();
+    expect(h.holds.cached()).toEqual({ copies: 0, incidentFacts: 0, lotReads: 0, settled: 0 });
   });
 
   it('checks subjects, reasons, versions and decisions; a comment is not notified; transitions are append-only; serial, carton and order holds cover their units', async () => {

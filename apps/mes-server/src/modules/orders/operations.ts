@@ -405,14 +405,21 @@ export async function terminalWrite(
   return undefined;
 }
 
+/** A crew row's end as the orders module reads it: wall time and plant time (#383). */
+export interface CrewRowEnd {
+  readonly at: Date;
+  readonly plantAt: Date;
+}
+
 /**
  * Closes an operator's open intervals at a work center (`crew-ended`): their crew row there ended
  * (sign-off at the terminal, the session's end, the shift's end). Only intervals started under that
  * row (`crewId`, #366): a notice that arrives late never closes work begun under a newer sign-on.
- * An interval without a crew row (written before #366, or without the crew check) is judged by
- * time instead: started by `until`, the crew row's end in wall time, compared in whole
- * milliseconds as `until` was read (a start later in the same millisecond is not after it).
- * Returns the operations touched.
+ * Those close at the row's end (`end`, #383), as the orphan sweep closes them, so the interval's
+ * end doesn't depend on which of the two gets there first. An interval without a crew row (written
+ * before #366, or without the crew check) is judged by time instead: started by `until`, the crew
+ * row's end in wall time, compared in whole milliseconds as `until` was read (a start later in the
+ * same millisecond is not after it), and closed now. Returns the operations touched.
  */
 export async function endActivities(
   db: Kysely<Database>,
@@ -421,13 +428,15 @@ export async function endActivities(
     readonly workCenter: string;
     readonly until: Date;
     readonly crewId?: number;
+    /** The crew row's end, for the intervals started under it (`crewId`). */
+    readonly end?: CrewRowEnd;
   },
   plantAt: Date,
 ): Promise<{ orderId: string; operation: string }[]> {
   return db.transaction().execute(async (trx) => {
-    const ids = await trx
+    const rows = await trx
       .selectFrom('orders.operation_activity')
-      .select('id')
+      .select(['id', 'crew_id'])
       .where('user_id', '=', who.userId)
       .where('work_center', '=', who.workCenter)
       .where((eb) => {
@@ -440,17 +449,29 @@ export async function endActivities(
       .orderBy('id')
       .forUpdate()
       .execute();
-    return closeLocked(
+    const byRow = (r: { crew_id: number | null }) =>
+      who.end !== undefined && who.crewId !== undefined && r.crew_id === who.crewId;
+    const touched = await closeLocked(
       trx,
-      ids.map((r) => r.id),
+      rows.filter((r) => !byRow(r)).map((r) => r.id),
       plantAt,
     );
+    if (who.end) {
+      touched.push(
+        ...(await closeAt(
+          trx,
+          rows.filter(byRow).map((r) => r.id),
+          who.end,
+        )),
+      );
+    }
+    return touched;
   });
 }
 
 /**
- * Closes intervals (`crew-ended`) the caller locked in id order in this transaction; those another
- * transaction closed meanwhile keep their end. Returns the operations of those it closed.
+ * Closes intervals (`crew-ended`) the caller locked in id order in this transaction, now; those
+ * another transaction closed meanwhile keep their end. Returns the operations of those it closed.
  */
 async function closeLocked(
   trx: Transaction<Database>,
@@ -473,43 +494,128 @@ async function closeLocked(
 }
 
 /**
- * Closes every open interval whose operator holds no open crew row at its work center (a crew row
- * ended while the MES was down, or its notice was lost). `signedOn` holds `{userId}|{workCenter}`
- * as read after `before` (database time): only intervals started before it are judged, so a
- * sign-on and a start after the crew rows were read are never taken for orphans.
+ * As `closeLocked`, at a crew row's end (#383), never before an interval's own start, in wall time
+ * and in plant time each (a clock step back; work begun at a plant time after the shift's end, in
+ * the tick before the shift's end closed the row).
+ */
+async function closeAt(
+  trx: Transaction<Database>,
+  ids: readonly number[],
+  end: CrewRowEnd,
+): Promise<{ orderId: string; operation: string }[]> {
+  if (ids.length === 0) return [];
+  const rows = await trx
+    .updateTable('orders.operation_activity')
+    .set({
+      to_at: sql<Date>`greatest(${end.at}::timestamptz, from_at)`,
+      to_plant_at: sql<Date>`greatest(${end.plantAt}::timestamptz, from_plant_at)`,
+      end_reason: 'crew-ended',
+    })
+    .where('id', 'in', [...ids])
+    .where('to_at', 'is', null)
+    .returning(['order_id', 'operation'])
+    .execute();
+  return rows.map((r) => ({ orderId: r.order_id, operation: r.operation }));
+}
+
+/**
+ * A crew check as the orphan sweep reads it (#383; the shifts module's `CrewCheck`, passed in at
+ * composition): the open crew rows as `{userId}|{workCenter}` (`signedOn`) and by id (`open`), the
+ * database time read before them (`readAt`), and the ends of other rows (`ends`: a row of that
+ * user at that work center that has ended; rows still open, and unknown ones, left out).
+ */
+export interface SweepCheck {
+  readonly signedOn: ReadonlySet<string>;
+  readonly readAt: Date;
+  readonly crew?: {
+    readonly open: ReadonlySet<number>;
+    ends(
+      keys: readonly {
+        readonly id: number;
+        readonly userId: number;
+        readonly workCenter: string;
+      }[],
+    ): Promise<readonly ({ readonly id: number } & CrewRowEnd)[]>;
+  };
+}
+
+/**
+ * Closes (`crew-ended`) every open interval started before `check.readAt` (database time, read
+ * before the crew rows) that holds no crew row any more: a crew row ended while the MES was down,
+ * or its notice was lost. Only intervals started before it are judged, so a sign-on and a start
+ * after the crew rows were read are never taken for orphans.
+ *
+ * - An interval started under a crew row (`crew_id`, #366), given `check.crew`, is judged by that
+ *   row (#383): kept while the row is open (`crew.open`); otherwise closed at the row's end
+ *   (`crew.ends`), never before the interval's own start, in wall and plant time, as the row's
+ *   notice closes it (`endActivities`). So a lost crew end is closed even after the operator signed
+ *   on there again (a new row: `signedOn` has them), and at the time the row ended.
+ * - Any other (no crew row, a row `crew.ends` doesn't answer, or no `crew`): closed now when its
+ *   operator holds no open crew row at its work center (`{userId}|{workCenter}` in `signedOn`).
+ *
+ * As every closure: a closed interval keeps its end (only `to_at IS NULL` rows change), so a run
+ * again, a late crew-end notice and checks delivered out of order or twice change nothing more.
  */
 export async function endOrphanedActivities(
   db: Kysely<Database>,
-  signedOn: ReadonlySet<string>,
-  before: Date,
+  check: SweepCheck,
   plantAt: Date,
 ): Promise<{ orderId: string; operation: string }[]> {
+  const { signedOn, readAt, crew } = check;
   const open = await db
     .selectFrom('orders.operation_activity')
-    .select(['id', 'user_id', 'work_center', 'order_id', 'operation'])
+    .select(['id', 'user_id', 'work_center', 'crew_id'])
     .where('to_at', 'is', null)
-    .where('from_at', '<', before)
+    .where('from_at', '<', readAt)
     .execute();
-  const orphans = open.filter((a) => !signedOn.has(`${String(a.user_id)}|${a.work_center}`));
-  if (orphans.length === 0) return [];
+  // The crew rows of intervals whose row is no longer open, each asked once.
+  const keys = new Map<number, { id: number; userId: number; workCenter: string }>();
+  for (const a of open) {
+    if (!crew || a.crew_id === null || crew.open.has(a.crew_id)) continue;
+    keys.set(a.crew_id, { id: a.crew_id, userId: a.user_id, workCenter: a.work_center });
+  }
+  const ends = new Map(
+    (crew && keys.size > 0 ? await crew.ends([...keys.values()]) : []).map((e) => [e.id, e]),
+  );
+  /** The intervals to close: at a crew row's end, or now (undefined). */
+  const closing = new Map<number, CrewRowEnd | undefined>();
+  for (const a of open) {
+    if (crew && a.crew_id !== null) {
+      if (crew.open.has(a.crew_id)) continue;
+      const end = ends.get(a.crew_id);
+      if (end) {
+        closing.set(a.id, end);
+        continue;
+      }
+    }
+    if (!signedOn.has(`${String(a.user_id)}|${a.work_center}`)) closing.set(a.id, undefined);
+  }
+  if (closing.size === 0) return [];
   return db.transaction().execute(async (trx) => {
     // Locked in id order (no deadlock with a sign-off's or a crew end's closure, 40P01).
     const locked = await trx
       .selectFrom('orders.operation_activity')
       .select('id')
-      .where(
-        'id',
-        'in',
-        orphans.map((a) => a.id),
-      )
+      .where('id', 'in', [...closing.keys()])
       .where('to_at', 'is', null)
       .orderBy('id')
       .forUpdate()
       .execute();
-    return closeLocked(
-      trx,
-      locked.map((r) => r.id),
-      plantAt,
-    );
+    const now: number[] = [];
+    const byEnd = new Map<string, { end: CrewRowEnd; ids: number[] }>();
+    for (const { id } of locked) {
+      const end = closing.get(id);
+      if (!end) {
+        now.push(id);
+        continue;
+      }
+      const key = `${String(end.at.getTime())}|${String(end.plantAt.getTime())}`;
+      const group = byEnd.get(key) ?? { end, ids: [] };
+      group.ids.push(id);
+      byEnd.set(key, group);
+    }
+    const touched = await closeLocked(trx, now, plantAt);
+    for (const { end, ids } of byEnd.values()) touched.push(...(await closeAt(trx, ids, end)));
+    return touched;
   });
 }

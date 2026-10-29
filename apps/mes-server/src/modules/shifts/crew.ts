@@ -282,6 +282,47 @@ export async function lockCrew(
   return row?.id;
 }
 
+/** A crew row an activity interval was started under, with the user and work center it names. */
+export interface CrewKey {
+  readonly id: number;
+  readonly userId: number;
+  readonly workCenter: string;
+}
+
+/** A crew row's end (#383), in wall time and plant time. */
+export interface CrewEnd {
+  readonly id: number;
+  readonly at: Date;
+  readonly plantAt: Date;
+}
+
+/**
+ * The ends of these crew rows (#383), each only if it is the user's row at that work center and has
+ * ended (rows are never deleted, so a row not open has an end). The orphan sweep closes the activity
+ * intervals started under a row at its end, as the row's notice does.
+ */
+export async function crewEnds(db: Kysely<Database>, keys: readonly CrewKey[]): Promise<CrewEnd[]> {
+  if (keys.length === 0) return [];
+  const rows = await db
+    .selectFrom('shifts.crew_assignment')
+    .select(['id', 'user_id', 'work_center', 'to_at', 'to_plant_at'])
+    .where(
+      'id',
+      'in',
+      keys.map((k) => k.id),
+    )
+    .where('to_at', 'is not', null)
+    .orderBy('id')
+    .execute();
+  const named = new Map(keys.map((k) => [k.id, k]));
+  return rows.flatMap((r) => {
+    const key = named.get(r.id);
+    if (key?.userId !== r.user_id || key.workCenter !== r.work_center) return [];
+    if (r.to_at === null || r.to_plant_at === null) return [];
+    return [{ id: r.id, at: r.to_at, plantAt: r.to_plant_at }];
+  });
+}
+
 async function close(
   trx: Transaction<Database>,
   ids: readonly number[],

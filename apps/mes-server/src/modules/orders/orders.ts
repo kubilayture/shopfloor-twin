@@ -54,6 +54,8 @@ import {
   terminalWrite,
   type ActivityRecord,
   type OperationRecord,
+  type CrewRowEnd,
+  type SweepCheck,
   type TerminalAction,
   type TerminalRequest,
   type TerminalWriteContext,
@@ -1113,13 +1115,14 @@ export class Orders {
   /**
    * Closes an operator's open intervals at a work center started under the crew row `crewId`
    * (#366; those without one: started by `until`, the crew row's end in wall time): that crew row
-   * ended.
+   * ended. With `end` (#383), those started under the row close at its end; the rest now.
    */
   async endActivities(who: {
     readonly userId: number;
     readonly workCenter: string;
     readonly until: Date;
     readonly crewId?: number;
+    readonly end?: CrewRowEnd;
   }): Promise<number> {
     const touched = await endActivities(this.#db, who, this.#plantNow());
     await this.#emitOperations(touched);
@@ -1127,12 +1130,36 @@ export class Orders {
   }
 
   /**
-   * Closes every open interval whose operator has no open crew row at its work center
-   * (`{userId}|{workCenter}` in `signedOn`, read after `before`, database time) and started before
-   * it: crew rows that ended while the MES was down, or whose notice was lost.
+   * A crew row ended (its notice: the shifts module's change, or the terminal's sign-off): closes
+   * the intervals started under it at its end, in wall and plant time, as the orphan sweep would
+   * (#383), and those of its operator there without a crew row started by then, now.
    */
-  async endOrphanedActivities(signedOn: ReadonlySet<string>, before: Date): Promise<number> {
-    const touched = await endOrphanedActivities(this.#db, signedOn, before, this.#plantNow());
+  async endCrewActivities(crew: {
+    readonly id: number;
+    readonly userId: number;
+    readonly workCenter: string;
+    readonly to: Date | null;
+    readonly toPlant: Date | null;
+  }): Promise<number> {
+    const until = crew.to ?? new Date();
+    return this.endActivities({
+      userId: crew.userId,
+      workCenter: crew.workCenter,
+      until,
+      crewId: crew.id,
+      ...(crew.toPlant === null ? {} : { end: { at: until, plantAt: crew.toPlant } }),
+    });
+  }
+
+  /**
+   * Closes every open interval started before `check.readAt` (database time, read before the crew
+   * rows) that holds no crew row any more: crew rows that ended while the MES was down, or whose
+   * notice was lost. With `check.crew` (#383), an interval started under a crew row is judged by
+   * that row and closed at its end, even after a new sign-on of its operator there; any other when
+   * its operator has no open crew row at its work center (`check.signedOn`).
+   */
+  async endOrphanedActivities(check: SweepCheck): Promise<number> {
+    const touched = await endOrphanedActivities(this.#db, check, this.#plantNow());
     await this.#emitOperations(touched);
     return touched.length;
   }

@@ -18,6 +18,7 @@ import { Genealogy } from './modules/genealogy/index.ts';
 import { ErpClient, MqttCommandPublisher, Orders } from './modules/orders/index.ts';
 import { Holds, Quality, characteristicsOf } from './modules/quality/index.ts';
 import { Shifts } from './modules/shifts/index.ts';
+import { closeOrphansAtStart, wireTerminal } from './terminal-wiring.ts';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 /** How often a MES waiting for the migrate step looks at the migration history again. */
@@ -352,10 +353,10 @@ try {
     shiftPattern: await masterData.shiftPattern(),
     // Crew rows end with their terminal session (#177): idle and absolute expiry.
     sessions: identity,
-    // After each crew check, intervals whose operator holds no crew row any more are closed (the
-    // orders module exists from further down; until then there is nothing to close).
-    afterCrewCheck: (signedOn, readAt) =>
-      orders ? orders.endOrphanedActivities(signedOn, readAt) : Promise.resolve(),
+    // After each crew check, intervals that hold no crew row any more are closed, by crew row
+    // where they carry one (#383) (the orders module exists from further down; until then there
+    // is nothing to close).
+    afterCrewCheck: (check) => (orders ? orders.endOrphanedActivities(check) : Promise.resolve()),
     log: log.child({ module: 'shifts' }),
   });
   shifts = shiftsModule;
@@ -502,32 +503,13 @@ try {
   // The operator terminal (#177): a session that ends (logout, a disabled user, a password
   // change, a new login) ends its crew rows; a crew row that ends closes its operator's activity
   // intervals at that work center; intervals left open while the MES was down are closed now.
-  const terminalLog = log.child({ module: 'terminal' });
-  identity.onSessionsEnded((ended) => {
-    shiftsModule.endCrewForSessions(ended.ids).catch((error: unknown) => {
-      terminalLog.error({ err: error }, 'ending the crew rows of ended sessions failed');
-    });
+  wireTerminal({
+    identity,
+    shifts: shiftsModule,
+    orders: ordersModule,
+    log: log.child({ module: 'terminal' }),
   });
-  shiftsModule.onChange((change) => {
-    if (change.type !== 'crew' || change.event !== 'ended') return;
-    ordersModule
-      .endActivities({
-        userId: change.crew.userId,
-        workCenter: change.crew.workCenter,
-        until: change.crew.to ?? new Date(),
-        // The intervals started under this row (#366), whatever the clocks say.
-        crewId: change.crew.id,
-      })
-      .catch((error: unknown) => {
-        terminalLog.error({ err: error }, 'closing the activities of an ended crew row failed');
-      });
-  });
-  const startedAt = new Date();
-  const signedOn = await shiftsModule.crew({ open: true });
-  await ordersModule.endOrphanedActivities(
-    new Set(signedOn.map((row) => `${String(row.userId)}|${row.workCenter}`)),
-    startedAt,
-  );
+  await closeOrphansAtStart(shiftsModule, ordersModule);
   // The API and push follow the modules from here; until then they answer 503.
   await realtime.attach({
     masterData: apiMasterData,

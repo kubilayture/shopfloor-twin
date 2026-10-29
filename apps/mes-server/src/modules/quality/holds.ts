@@ -54,6 +54,16 @@ export interface LotConsumptionRef {
   readonly at: Date;
 }
 
+/**
+ * A lot's scope and consumptions, as the genealogy reads them for every held lot at once, with
+ * what its next read reuses (`blocks`, the genealogy's).
+ */
+export interface LotRead {
+  readonly scope: readonly HoldScopeUnit[];
+  readonly consumptions: readonly LotConsumptionRef[];
+  readonly blocks: ReadonlyMap<string, unknown>;
+}
+
 /** What the holds read of the genealogy module (#199): scope, consumptions and its watermark. */
 export interface HoldsGenealogy {
   scope(
@@ -65,11 +75,15 @@ export interface HoldsGenealogy {
     subjects: readonly HoldSubject[],
     db?: Kysely<Database>,
   ): Promise<readonly (readonly HoldScopeUnit[])[]>;
-  /** Many lots' consumptions at once, by lot, each in plant-time order (#238). */
-  lotsConsumptions(
+  /**
+   * Many lots' scopes (as `scopes`) and consumptions (each in plant-time order) at once, by lot, in
+   * one read of their links; with `previous` (its last answer), only the links that changed are
+   * sent, and a lot with none changed is answered with the very object of `previous` (#238, #399).
+   */
+  lotsScopesAndConsumptions(
     lots: readonly string[],
-    db?: Kysely<Database>,
-  ): Promise<ReadonlyMap<string, readonly LotConsumptionRef[]>>;
+    options?: { readonly db?: Kysely<Database>; readonly previous?: ReadonlyMap<string, LotRead> },
+  ): Promise<ReadonlyMap<string, LotRead>>;
   /** Called after a genealogy round that changed units or cartons (#238: the scopes follow it). */
   onChange(listener: () => void): () => void;
   units(keys: readonly { epoch: number; partId: number }[]): Promise<HoldScopeUnit[]>;
@@ -300,10 +314,15 @@ export const HOLD_AUDIT_ENTITY = 'quality_hold';
 /** Units a hold's detail lists at most. */
 const UNIT_LIMIT = 5_000;
 const CHUNK = 5_000;
+/** Rows one insert of scope copy units or incidents carries at most. */
+const INSERT_CHUNK = 1_000;
 
 const silent: HoldsLog = { info: () => undefined, warn: () => undefined, error: () => undefined };
 const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 const unitKey = (u: { epoch: number; partId: number }) => `${String(u.epoch)}/${String(u.partId)}`;
+/** A consumption's fact, as a hold's `held-material-consumed` incidents name it. */
+const consumedKey = (c: { equipment: string; epoch: number; seq: number }): string =>
+  `${c.equipment}/${String(c.epoch)}/${String(c.seq)}`;
 
 /** What brings a hold's scope copy in line with its scope. */
 /** A unit of a hold's stored scope copy, as the rebuild compares it. */
@@ -327,14 +346,22 @@ const copyOf = (u: HoldScopeUnit): CopyUnit => ({
   carton_id: u.carton,
 });
 
-function planUnits(stored: readonly CopyUnit[], scope: readonly HoldScopeUnit[]): UnitPlan {
-  const was = new Map(stored.map((u) => [unitKey({ epoch: u.epoch, partId: u.part_id }), u]));
-  const now = new Map(scope.map((u) => [unitKey(u), u]));
-  const gone = stored.filter((u) => !now.has(unitKey({ epoch: u.epoch, partId: u.part_id })));
+/** `stored` by `unitKey`, as the rebuild keeps the copies in memory. */
+function planUnits(
+  stored: ReadonlyMap<string, CopyUnit>,
+  scope: readonly HoldScopeUnit[],
+): UnitPlan {
   const added: HoldScopeUnit[] = [];
   const moved: HoldScopeUnit[] = [];
-  for (const [key, unit] of now) {
-    const before = was.get(key);
+  // The scope lists each unit once (genealogy's DISTINCT), so `kept` counts stored units in it.
+  const keys = new Set<string>();
+  let kept = 0;
+  for (const unit of scope) {
+    const key = unitKey(unit);
+    if (keys.has(key)) continue;
+    keys.add(key);
+    const before = stored.get(key);
+    if (before) kept += 1;
     if (!before) added.push(unit);
     else if (
       before.serial !== unit.serial ||
@@ -344,7 +371,44 @@ function planUnits(stored: readonly CopyUnit[], scope: readonly HoldScopeUnit[])
       moved.push(unit);
     }
   }
+  const gone: CopyUnit[] = [];
+  if (kept < stored.size) for (const [key, unit] of stored) if (!keys.has(key)) gone.push(unit);
   return { gone, added, moved };
+}
+
+/**
+ * A lot hold's consumptions after its opening (and before its release, for a released one) that
+ * its incidents don't name yet.
+ */
+function lateConsumptions(
+  hold: Selectable<HoldTable>,
+  consumptions: readonly LotConsumptionRef[],
+  known: ReadonlySet<string>,
+): LotConsumptionRef[] {
+  // Positions (epoch, plant time): within the hold's epoch by time, a newer epoch is later and an
+  // older one earlier (review of PR #222, L1); without an epoch, by time alone.
+  const position = (epoch: number | null, at: Date | null, fallback: number) => ({
+    epoch,
+    at: at?.getTime() ?? fallback,
+  });
+  const opened = position(hold.opened_epoch, hold.opened_plant_at, Number.NEGATIVE_INFINITY);
+  const decided =
+    hold.state === 'released'
+      ? position(hold.decided_epoch, hold.decided_plant_at, Number.NEGATIVE_INFINITY)
+      : { epoch: null, at: Number.POSITIVE_INFINITY };
+  const later = (
+    c: { epoch: number; at: Date },
+    than: { epoch: number | null; at: number },
+  ): boolean =>
+    than.epoch === null || c.epoch === than.epoch ? c.at.getTime() > than.at : c.epoch > than.epoch;
+  const earlier = (
+    c: { epoch: number; at: Date },
+    than: { epoch: number | null; at: number },
+  ): boolean =>
+    than.epoch === null || c.epoch === than.epoch ? c.at.getTime() < than.at : c.epoch < than.epoch;
+  return consumptions.filter(
+    (c) => later(c, opened) && earlier(c, decided) && !known.has(consumedKey(c)),
+  );
 }
 
 /**
@@ -373,6 +437,22 @@ export class Holds {
   #unsubscribe: (() => void) | undefined;
   /** The scope copies (`hold_unit`) as last read or written, by hold. */
   readonly #copies = new Map<string, Map<string, CopyUnit>>();
+  /**
+   * The facts (`equipment/epoch/seq`) of each lot hold's `held-material-consumed` incidents as last
+   * read or raised (#399: as the copies; incidents are never deleted, and only the rebuild raises
+   * them).
+   */
+  readonly #incidentFacts = new Map<string, Set<string>>();
+  /**
+   * Each held lot's links as last read (#399): a rebuild reads again only the links that changed.
+   */
+  readonly #lotReads = new Map<string, LotRead>();
+  /**
+   * The lot holds whose copy and incidents a rebuild brought in line with this read of their lot
+   * while the hold had this version (#399): with the same read (unchanged links) and version, the
+   * next rebuild has nothing to compare or raise for them. Dropped with their copy in memory.
+   */
+  readonly #settled = new Map<string, { readonly read: LotRead; readonly version: number }>();
   #started = false;
   #stopping = false;
 
@@ -1173,17 +1253,24 @@ export class Holds {
   }
 
   /**
-   * Every hold's scope and incidents in a few queries whatever the number of holds (#238): the
-   * scopes of every open and rejected hold's subject by kind, their stored copies, every held
-   * lot's consumptions and known incidents; then one transaction for the changed copies.
+   * Every hold's scope and incidents in a few queries whatever the number of holds (#238): every
+   * held lot's scope and consumptions in one read of its links, sent only where they changed since
+   * the last read (#399); the scopes of the other open and rejected holds' subjects by kind; and
+   * the stored copies and known incidents of holds not seen yet (both kept in memory). A lot hold
+   * already in line with an unchanged read of its lot, at the same version, is skipped. Then one
+   * insert for the added units (in a transaction when there is more to write), one for the new
+   * incidents, and one read of the changed holds' records when someone listens.
    */
   async #rebuild(): Promise<void> {
     try {
       await this.#rebuildScopes();
     } catch (error) {
-      // A failed rebuild may have committed or not (a connection lost at COMMIT): the copies in
-      // memory are read again from the database by the next one.
+      // A failed rebuild may have committed or not (a connection lost at COMMIT): the copies and
+      // incidents in memory are read again from the database by the next one.
       this.#copies.clear();
+      this.#incidentFacts.clear();
+      this.#lotReads.clear();
+      this.#settled.clear();
       throw error;
     }
   }
@@ -1198,36 +1285,40 @@ export class Holds {
       .execute();
     const live = holds.filter((h) => h.state !== 'released');
     const lots = holds.filter((h) => h.subject_kind === 'lot');
+    const others = live.filter((h) => h.subject_kind !== 'lot');
     const genealogy = this.#options.genealogy;
-    const [scopes, consumptions, stored, known] = await Promise.all([
-      live.length === 0
+    // A lot's scope and its consumptions come from the same links: one read for both (#399).
+    const [byLot, otherScopes, stored, known] = await Promise.all([
+      this.#readLots(lots.map((h) => h.subject_id)),
+      others.length === 0
         ? []
-        : genealogy.scopes(live.map((h) => ({ kind: h.subject_kind, id: h.subject_id }))),
-      lots.length === 0
-        ? new Map<string, readonly LotConsumptionRef[]>()
-        : genealogy.lotsConsumptions(
-            lots.map((h) => h.subject_id),
-            this.#db,
-          ),
+        : genealogy.scopes(others.map((h) => ({ kind: h.subject_kind, id: h.subject_id }))),
       this.#loadCopies(live.map((h) => h.id)),
-      this.#knownIncidents(lots.map((h) => h.id)),
+      this.#loadKnown(lots.map((h) => h.id)),
     ]);
-    for (const id of this.#copies.keys()) {
-      if (!live.some((h) => h.id === id)) this.#copies.delete(id);
-    }
+    const liveIds = new Set(live.map((h) => h.id));
+    for (const id of this.#copies.keys()) if (!liveIds.has(id)) this.#copies.delete(id);
+    const unsettled = (hold: Selectable<HoldTable>): boolean => {
+      const settled = this.#settled.get(hold.id);
+      return settled?.version !== hold.version || settled.read !== byLot.get(hold.subject_id);
+    };
+    const otherScope = new Map(others.map((h, index) => [h.id, otherScopes[index] ?? []]));
     const changed = new Set<string>();
     const plans: { readonly id: string; readonly plan: UnitPlan }[] = [];
-    for (const [index, hold] of live.entries()) {
-      const plan = planUnits([...(stored.get(hold.id)?.values() ?? [])], scopes[index] ?? []);
+    for (const hold of live) {
+      if (hold.subject_kind === 'lot' && !unsettled(hold)) continue;
+      const scope =
+        hold.subject_kind === 'lot'
+          ? (byLot.get(hold.subject_id)?.scope ?? [])
+          : (otherScope.get(hold.id) ?? []);
+      const plan = planUnits(stored.get(hold.id) ?? new Map<string, CopyUnit>(), scope);
       if (plan.gone.length + plan.added.length + plan.moved.length > 0) {
         plans.push({ id: hold.id, plan });
         changed.add(hold.id);
       }
     }
     if (plans.length > 0) {
-      await this.#db.transaction().execute(async (trx) => {
-        for (const { id, plan } of plans) await this.#applyUnits(trx, id, plan);
-      });
+      await this.#applyPlans(plans);
       // Committed: the copies in memory follow.
       for (const { id, plan } of plans) {
         const copy = this.#copies.get(id);
@@ -1237,22 +1328,49 @@ export class Holds {
         for (const unit of [...plan.added, ...plan.moved]) copy.set(unitKey(unit), copyOf(unit));
       }
     }
-    for (const hold of lots) {
-      const raised = await this.#consumptions(
+    const raised = await this.#consumptions(
+      lots.filter(unsettled).map((hold) => ({
         hold,
-        consumptions.get(hold.subject_id) ?? [],
-        known.get(hold.id) ?? new Set(),
-      );
-      if (raised) changed.add(hold.id);
+        consumptions: byLot.get(hold.subject_id)?.consumptions ?? [],
+        known: known.get(hold.id) ?? new Set<string>(),
+      })),
+    );
+    for (const id of raised) changed.add(id);
+    for (const hold of lots) {
+      const read = byLot.get(hold.subject_id);
+      // A released hold has no copy: only its incidents follow the read.
+      if (read && (hold.state === 'released' || this.#copies.has(hold.id))) {
+        this.#settled.set(hold.id, { read, version: hold.version });
+      }
     }
-    for (const hold of holds) {
-      if (!changed.has(hold.id)) continue;
-      const record = await this.hold(hold.id);
-      if (record) this.#emit({ type: 'hold', event: 'scope', hold: record });
+    // The changed holds' records, for the listeners only, in one read of their counts (#399): the
+    // rows read above are current, as transitions go through the same queue as this rebuild.
+    if (changed.size > 0 && this.#listeners.size > 0) {
+      const records = await this.#records(
+        this.#readDb,
+        holds.filter((h) => changed.has(h.id)),
+      );
+      for (const record of records) this.#emit({ type: 'hold', event: 'scope', hold: record });
     }
     const seconds = (performance.now() - started) / 1_000;
     this.#scopeSeconds?.observe(seconds);
     this.#options.onTiming?.({ metric: 'hold-scope', seconds, holds: holds.length });
+  }
+
+  /**
+   * These lots' scopes and consumptions, by lot: read again only where their links changed since
+   * the last read, which answers a lot with no change with the same object (#399).
+   */
+  async #readLots(lots: readonly string[]): Promise<ReadonlyMap<string, LotRead>> {
+    const wanted = new Set(lots);
+    for (const lot of this.#lotReads.keys()) if (!wanted.has(lot)) this.#lotReads.delete(lot);
+    if (wanted.size === 0) return new Map();
+    const reads = await this.#options.genealogy.lotsScopesAndConsumptions([...wanted], {
+      db: this.#db,
+      previous: this.#lotReads,
+    });
+    for (const [lot, read] of reads) this.#lotReads.set(lot, read);
+    return reads;
   }
 
   /**
@@ -1276,22 +1394,24 @@ export class Holds {
     return this.#copies;
   }
 
-  /** The facts of the `held-material-consumed` incidents of these holds, by hold. */
-  async #knownIncidents(ids: readonly string[]): Promise<Map<string, Set<string>>> {
-    const byHold = new Map<string, Set<string>>();
-    for (let i = 0; i < ids.length; i += CHUNK) {
+  /**
+   * The facts of the `held-material-consumed` incidents of these holds, by hold: kept in memory
+   * once read, as the copies (#399), so a rebuild reads only those of holds it has not seen yet.
+   */
+  async #loadKnown(ids: readonly string[]): Promise<Map<string, Set<string>>> {
+    const missing = ids.filter((id) => !this.#incidentFacts.has(id));
+    for (const id of missing) this.#incidentFacts.set(id, new Set());
+    for (let i = 0; i < missing.length; i += CHUNK) {
       const rows = await this.#db
         .selectFrom('quality.hold_incident')
         .select(['hold_id', 'equipment', 'epoch', 'seq'])
-        .where('hold_id', 'in', ids.slice(i, i + CHUNK))
+        .where('hold_id', 'in', missing.slice(i, i + CHUNK))
         .execute();
       for (const row of rows) {
-        const set = byHold.get(row.hold_id) ?? new Set<string>();
-        set.add(`${row.equipment}/${String(row.epoch)}/${String(row.seq)}`);
-        byHold.set(row.hold_id, set);
+        this.#incidentFacts.get(row.hold_id)?.add(consumedKey(row));
       }
     }
-    return byHold;
+    return this.#incidentFacts;
   }
 
   /** Brings the scope copy in line with `scope`; whether anything changed. */
@@ -1305,120 +1425,121 @@ export class Holds {
       .selectAll()
       .where('hold_id', '=', id)
       .execute();
-    const plan = planUnits(stored, scope);
-    await this.#applyUnits(trx, id, plan);
+    const plan = planUnits(
+      new Map(stored.map((u) => [unitKey({ epoch: u.epoch, partId: u.part_id }), u])),
+      scope,
+    );
+    await this.#applyUnits(trx, [{ id, plan }]);
     // Read again by the next rebuild (this transaction may still roll back).
     this.#copies.delete(id);
+    this.#settled.delete(id);
     return plan.gone.length + plan.added.length + plan.moved.length > 0;
   }
 
-  /** Writes a hold's scope copy changes (`planUnits`). */
-  async #applyUnits(trx: Transaction<Database>, id: string, plan: UnitPlan): Promise<void> {
-    const { gone, added, moved } = plan;
-    for (const unit of gone) {
-      await trx
-        .deleteFrom('quality.hold_unit')
-        .where('hold_id', '=', id)
-        .where('epoch', '=', unit.epoch)
-        .where('part_id', '=', unit.part_id)
-        .execute();
+  /**
+   * Writes holds' scope copy changes (`planUnits`) in one transaction; a single statement (units
+   * only added, the common case) runs on its own, being atomic already (#399: two round trips
+   * fewer per rebuild).
+   */
+  async #applyPlans(
+    plans: readonly { readonly id: string; readonly plan: UnitPlan }[],
+  ): Promise<void> {
+    const added = plans.reduce((n, { plan }) => n + plan.added.length, 0);
+    const single = plans.every(({ plan }) => plan.gone.length + plan.moved.length === 0);
+    if (single && added <= INSERT_CHUNK) await this.#applyUnits(this.#db, plans);
+    else await this.#db.transaction().execute((trx) => this.#applyUnits(trx, plans));
+  }
+
+  /** Writes holds' scope copy changes (`planUnits`): every added unit in one insert. */
+  async #applyUnits(
+    db: Kysely<Database>,
+    plans: readonly { readonly id: string; readonly plan: UnitPlan }[],
+  ): Promise<void> {
+    for (const { id, plan } of plans) {
+      for (const unit of plan.gone) {
+        await db
+          .deleteFrom('quality.hold_unit')
+          .where('hold_id', '=', id)
+          .where('epoch', '=', unit.epoch)
+          .where('part_id', '=', unit.part_id)
+          .execute();
+      }
     }
-    for (let i = 0; i < added.length; i += 1_000) {
-      await trx
+    const added = plans.flatMap(({ id, plan }) =>
+      plan.added.map((u): Omit<Selectable<HoldUnitTable>, 'joined_at'> => ({
+        hold_id: id,
+        epoch: u.epoch,
+        part_id: u.partId,
+        serial: u.serial,
+        order_id: u.orderId,
+        carton_id: u.carton,
+      })),
+    );
+    for (let i = 0; i < added.length; i += INSERT_CHUNK) {
+      await db
         .insertInto('quality.hold_unit')
-        .values(
-          added.slice(i, i + 1_000).map((u): Omit<Selectable<HoldUnitTable>, 'joined_at'> => ({
-            hold_id: id,
-            epoch: u.epoch,
-            part_id: u.partId,
-            serial: u.serial,
-            order_id: u.orderId,
-            carton_id: u.carton,
-          })),
-        )
+        .values(added.slice(i, i + INSERT_CHUNK))
         .execute();
     }
-    for (const unit of moved) {
-      await trx
-        .updateTable('quality.hold_unit')
-        .set({ serial: unit.serial, order_id: unit.orderId, carton_id: unit.carton })
-        .where('hold_id', '=', id)
-        .where('epoch', '=', unit.epoch)
-        .where('part_id', '=', unit.partId)
-        .execute();
+    for (const { id, plan } of plans) {
+      for (const unit of plan.moved) {
+        await db
+          .updateTable('quality.hold_unit')
+          .set({ serial: unit.serial, order_id: unit.orderId, carton_id: unit.carton })
+          .where('hold_id', '=', id)
+          .where('epoch', '=', unit.epoch)
+          .where('part_id', '=', unit.partId)
+          .execute();
+      }
     }
   }
 
   /**
-   * Raises `held-material-consumed` for a lot hold's consumptions after its opening, given the
-   * lot's consumptions and the facts its incidents already name.
+   * Raises `held-material-consumed` for lot holds' consumptions after their opening, given each
+   * lot's consumptions and the facts each hold's incidents already name (to which it adds those it
+   * raised), in one insert for all holds (#399); the holds that raised any.
    */
   async #consumptions(
-    hold: Selectable<HoldTable>,
-    consumptions: readonly LotConsumptionRef[],
-    known: ReadonlySet<string>,
-  ): Promise<boolean> {
-    // Positions (epoch, plant time): within the hold's epoch by time, a newer epoch is later and an
-    // older one earlier (review of PR #222, L1); without an epoch, by time alone.
-    const position = (epoch: number | null, at: Date | null, fallback: number) => ({
-      epoch,
-      at: at?.getTime() ?? fallback,
-    });
-    const opened = position(hold.opened_epoch, hold.opened_plant_at, Number.NEGATIVE_INFINITY);
-    const decided =
-      hold.state === 'released'
-        ? position(hold.decided_epoch, hold.decided_plant_at, Number.NEGATIVE_INFINITY)
-        : { epoch: null, at: Number.POSITIVE_INFINITY };
-    const later = (
-      c: { epoch: number; at: Date },
-      than: { epoch: number | null; at: number },
-    ): boolean =>
-      than.epoch === null || c.epoch === than.epoch
-        ? c.at.getTime() > than.at
-        : c.epoch > than.epoch;
-    const earlier = (
-      c: { epoch: number; at: Date },
-      than: { epoch: number | null; at: number },
-    ): boolean =>
-      than.epoch === null || c.epoch === than.epoch
-        ? c.at.getTime() < than.at
-        : c.epoch < than.epoch;
-    const late = consumptions.filter(
-      (c) =>
-        later(c, opened) &&
-        earlier(c, decided) &&
-        !known.has(`${c.equipment}/${String(c.epoch)}/${String(c.seq)}`),
+    lots: readonly {
+      readonly hold: Selectable<HoldTable>;
+      readonly consumptions: readonly LotConsumptionRef[];
+      readonly known: Set<string>;
+    }[],
+  ): Promise<Set<string>> {
+    const late = lots.flatMap(({ hold, consumptions, known }) =>
+      lateConsumptions(hold, consumptions, known).map((c) => ({ hold, c, known })),
     );
-    let raised = 0;
-    for (let i = 0; i < late.length; i += 1_000) {
-      raised += await this.#raiseConsumed(hold, late.slice(i, i + 1_000));
+    const raised = new Map<string, number>();
+    for (let i = 0; i < late.length; i += INSERT_CHUNK) {
+      for (const id of await this.#raiseConsumed(late.slice(i, i + INSERT_CHUNK))) {
+        raised.set(id, (raised.get(id) ?? 0) + 1);
+      }
     }
-    if (raised > 0) {
-      this.#consumed?.inc(raised);
+    // Every one of them has its incident now (raised here, or already there).
+    for (const { c, known } of late) known.add(consumedKey(c));
+    for (const { hold } of lots) {
+      const count = raised.get(hold.id) ?? 0;
+      if (count === 0) continue;
+      this.#consumed?.inc(count);
       this.#log.warn(
-        { hold: hold.id, lot: hold.subject_id, consumptions: raised },
+        { hold: hold.id, lot: hold.subject_id, consumptions: count },
         'held-material-consumed: a held lot was consumed after its hold opened',
       );
     }
-    return raised > 0;
+    return new Set(raised.keys());
   }
 
+  /** Inserts these incidents (a fact already there is skipped); the hold of each one inserted. */
   async #raiseConsumed(
-    hold: Selectable<HoldTable>,
     late: readonly {
-      readonly epoch: number;
-      readonly partId: number;
-      readonly equipment: string;
-      readonly seq: number;
-      readonly operation: string;
-      readonly pass: number;
-      readonly at: Date;
+      readonly hold: Selectable<HoldTable>;
+      readonly c: LotConsumptionRef;
     }[],
-  ): Promise<number> {
+  ): Promise<string[]> {
     const inserted = await this.#db
       .insertInto('quality.hold_incident')
       .values(
-        late.map((c) => ({
+        late.map(({ hold, c }) => ({
           type: 'held-material-consumed' as const,
           hold_id: hold.id,
           lot: hold.subject_id,
@@ -1433,9 +1554,9 @@ export class Holds {
         })),
       )
       .onConflict((oc) => oc.columns(['hold_id', 'equipment', 'epoch', 'seq', 'lot']).doNothing())
-      .returning('id')
+      .returning('hold_id')
       .execute();
-    return inserted.length;
+    return inserted.map((row) => row.hold_id);
   }
 
   // ---- internals ----

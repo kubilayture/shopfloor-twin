@@ -1,6 +1,6 @@
 # ADR-0035: Quality holds: a scope derived from the genealogy, append-only transitions and a close guard on one advisory lock
 
-- Status: accepted (#201; amended by #203 and #238, scopes rebuilt on change)
+- Status: accepted (#201; amended by #203, #238 (scopes rebuilt on change) and #399 (a rebuild reads only what changed))
 - Date: 2026-10-18
 - Deciders: Claude (#201), within the Phase 8 plan ("Quality holds", review rounds 1–3); recorded for the owner under the standing instruction of 2026-10-15
 
@@ -130,3 +130,29 @@ This amendment replaces the negative consequence above: "every open, rejected an
   - The first gate run, which reread every copy each time, measured 43.8 ms. The holds module now keeps the copies in memory after reading or writing them, since it is their only writer and every write goes through its queue. An opening or a decision drops its hold's entry, so the copy is read again.
 - **Checks.** At the end of the replay, every hold's copy equals its scope derived from the genealogy. A unit test (`quality-holds.test.ts`) shows that the copy and `held-material-consumed` follow a genealogy round and an opening without `tick()`, and that a round that changes nothing triggers no rebuild.
 - **Known limit.** The rebuild's cost grows with the number of units held, which come mostly from the lot holds' scopes. Hundreds of lot holds on long-used lots would need a rebuild limited to the units a round changed.
+
+## Amendment (#399): a rebuild reads only what changed
+
+The #238 budget test sat at its edge: the final gate on `87fa763` measured **added 50.4 ms** (round p95 25.6 ms, scope rebuild p95 49.2 ms against 24.3 ms with no hold), and a rerun of the same step 49.9 ms. The 50 ms budget and its assertion are unchanged; the rebuild was made cheaper.
+
+- **Where the time went** (the rebuild instrumented by phase over the test's 146 rebuilds): about 25 ms of the 40 ms median read the 7 held lots' links, twice: `Genealogy.scopes` for their scopes and `lotsConsumptions` for their consumptions, about 6,600 rows each by the end, every rebuild, though a round changes a few units. Each query's `ORDER BY` (the lot's text first) also made the database finish the read before sending a row. The rest: the known incidents read again every time (3–5 ms at p95), one statement per changed hold for the copies and the incidents, and three reads per changed hold for its `scope` event.
+- **One read of a lot's links, sent only where they changed.** `Genealogy.lotsScopesAndConsumptions(lots, { previous })` replaces `lotsConsumptions` and the lot part of `scopes` in the rebuild. It reads each lot's `lot-unit` links with their units once and answers both, each as `scopes` and `lotConsumptions` answer a single lot (a unit test checks that). The database groups a lot's rows in blocks of 64 units (epoch, ⌊partId / 64⌋) with a digest per block (the row count and the sum of the rows' 64-bit hashes, `hash_record_extended`), compares them with the digests of `previous`, and sends only the rows of the blocks whose digest changed: new units, a unit rebuilt, a carton placed or rewritten. The other blocks come from `previous`, and a lot with no block changed is answered with the very object it had. The database still reads and hashes every held link on every rebuild; only the transfer and the work in the MES shrink.
+- **Kept in memory by the holds module**, as the copies since #238, and dropped with them when a rebuild fails:
+  - each held lot's last read (the `previous` above);
+  - each lot hold's incident facts (incidents are never deleted, and only the rebuild raises them);
+  - the lot holds already in line with their lot's read at their version: with the same read object and the same version, the next rebuild neither compares their copy nor looks for incidents. An opening or a decision changes the version; a copy read again (after an opening's own transaction) drops the entry.
+- **Fewer round trips.** The added units of every hold go in one insert, without a transaction when that is the only statement (it is atomic on its own); the new incidents of every hold go in one insert. The `scope` events take the changed holds' records in one read (their rows are the rebuild's, current since transitions share its queue), and only when someone listens. The budget test now registers a listener, as the realtime module does in the MES, so this read stays in what it measures.
+- **The digest is no proof.** A changed block with the same row count and the same sum of hashes would pass for unchanged: a chance of about 2^-64 per changed block. The copy is a display (no decision reads it), and the close guard derives the scope at check time, as before; a consumption missed that way would be raised at its block's next change.
+- **Unchanged:** the copy's contents and the incidents (the budget test's end-of-replay equality of every copy with its scope, the `quality-holds` suite, and the reconciliation in the gate check them), the scheduling on change, the close guard and the histograms.
+- **Measured** locally (Apple M3, Colima, the target test alone under the heavy lock), before and after on the same host:
+
+  |                    | round p95 no hold | round p95, 200 holds | scope rebuild p50 / p95 | added |
+  | ------------------ | ----------------- | -------------------- | ----------------------- | ----- |
+  | before (`87fa763`) | MEAS_BEFORE       |
+  | after, run 1       | MEAS_1            |
+  | after, run 2       | MEAS_2            |
+  | after, run 3       | MEAS_3            |
+
+  The gate run's figures follow in the PR.
+
+- **Known limit,** replacing #238's: the database still reads every held link on every rebuild, so its share still grows with the units held, and a round that touches many blocks (a carton closing on every lot in use) is read in full for those blocks. With a change log in the genealogy, a rebuild could read only the units a round changed.
